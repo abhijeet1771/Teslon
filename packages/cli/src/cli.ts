@@ -11,6 +11,7 @@ import {
   proofPaths,
   shortestPathPerDestination,
   exportedSymbols,
+  readCode,
   resolveChange,
   gitIn,
   NoMergeBaseError,
@@ -172,6 +173,40 @@ switch (command) {
     break;
   }
 
+  case 'cases': {
+    // What a tester is obliged to cover, read out of what the code declares.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    if (rest.length === 0) {
+      console.error('usage: teslon cases <file...>');
+      process.exitCode = 1;
+      break;
+    }
+    for (const file of rest) {
+      const r = readCode(root, file);
+      if (!r) {
+        console.error(`${file}: unreadable`);
+        process.exitCode = 2;
+        continue;
+      }
+      console.log(`\n┌─ ${r.file}   [${r.kind}]`);
+      if (r.ui) {
+        console.log(`│ props        ${r.ui.props.join(', ') || '—'}`);
+        console.log(`│ state        ${r.ui.state.join(', ') || '—'}  ·  ${r.ui.effects} effect(s)`);
+        console.log(`│ events       ${r.ui.events.join(', ') || '—'}`);
+        console.log(`│ shows        ${r.ui.conditionalRenders.join(', ') || '—'}`);
+      }
+      for (const c of r.constraints) {
+        console.log(`│ ${c.field.padEnd(12)} ${c.rules.join(' ')}  →  try ${c.boundaries.join(', ')}`);
+      }
+      if (r.cases.length === 0) console.log('│ (nothing was recognised — no cases claimed)');
+      for (const c of r.cases) console.log(`│ • ${c}`);
+      for (const n of r.notRead) console.log(`└─ not read: ${n}`);
+      if (r.notRead.length === 0) console.log('└─');
+    }
+    console.log('');
+    break;
+  }
+
   case 'version':
     console.log(`teslon 0.1.0 (schema ${SCHEMA_VERSION})`);
     break;
@@ -189,6 +224,7 @@ teslon — what a change can actually break
   teslon analyze <file...>    blast radius for specific files
   teslon profile <file...>    what a file does: endpoint, reads, writes, effects
   teslon paths <file> [sym]   proof paths from each exported symbol outward
+  teslon cases <file...>      what a tester must cover, read from the code
   teslon version
 
 Teslon never narrows on a guess. When it cannot resolve something it widens
