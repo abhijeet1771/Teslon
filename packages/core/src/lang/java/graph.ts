@@ -103,6 +103,30 @@ export function buildJavaGraph(readings: readonly JavaReading[]): JavaGraph {
       }
     }
 
+    // ---- the test that names the class it tests -------------------------
+    // `OrderServiceTest` tests `OrderService`. This is not a guess about
+    // Java, it is how the ecosystem declares the link: Maven Surefire's
+    // default include is literally `**/*Test.java`, and Gradle's is the same.
+    // A test whose body is empty still declares its subject in its name, and
+    // ignoring that throws away the one coverage signal every Java shop has.
+    for (const suffix of ['Test', 'Tests', 'IT', 'ITCase', 'TestCase']) {
+      for (const declared of r.declares) {
+        if (!declared.endsWith(suffix) || declared === suffix) continue;
+        const subject = declared.slice(0, -suffix.length);
+        const target = declaredBy.get(r.packageName ? `${r.packageName}.${subject}` : subject);
+        if (target && target !== r.file) {
+          edges.push(
+            edge(
+              target,
+              r.file,
+              `${declared} names ${subject} as its subject — the convention Surefire and Gradle select tests by`,
+              'name',
+            ),
+          );
+        }
+      }
+    }
+
     // ---- shared database tables ----------------------------------------
     if (r.entityTables.length > 0) {
       for (const other of readings) {

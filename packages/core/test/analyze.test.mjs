@@ -196,3 +196,65 @@ test('a semantic diff turns a changed file into a breaking one, and Tier 1', () 
   const contract = result.completeness.signalsAbsent.find((s) => s.signal === 'contract');
   if (contract) assert.ok(!/not read at the merge base/.test(contract.why));
 });
+
+const JAVA = join(REPO, 'fixtures', 'java');
+
+/**
+ * Java was added for enterprise reach, and for one commit the front end was
+ * built, tested, and never called by the orchestrator: a Java repository got a
+ * radius of one — the changed file and nothing else. The front end passing its
+ * own unit tests said nothing about that, because the hole was in the wiring.
+ */
+test('a Java repository is analysed, not just parsed', () => {
+  const { result } = run(JAVA, ['src/main/java/com/acme/orders/OrderService.java']);
+  assert.ok(result.radius.length > 1, 'a Java change must reach something downstream of it');
+  assert.ok(
+    result.radius.some((r) => r.file.endsWith('OrderController.java')),
+    'the controller depends on the service and must be in the radius',
+  );
+  // The routes come from annotations, so they are declarations and belong in
+  // the surface inventory as they are written.
+  const routes = result.surfaces.filter((s) => s.kind === 'endpoint').map((s) => s.id);
+  assert.deepEqual(routes, ['GET /api/orders/{id}', 'POST /api/orders/{id}/cancel']);
+});
+
+test('the Java test naming convention is a coverage signal, not a guess', () => {
+  const { result } = run(JAVA, ['src/main/java/com/acme/orders/OrderService.java']);
+  const test_ = result.tests.find((t) => t.file.endsWith('OrderServiceTest.java'));
+  assert.ok(test_, 'OrderServiceTest names OrderService as its subject');
+  assert.deepEqual(test_.coversDirectly, ['src/main/java/com/acme/orders/OrderService.java']);
+  // The edge must say it came from the convention, so nobody mistakes it for
+  // evidence that a line was executed.
+  const item = result.radius.find((r) => r.file.endsWith('OrderServiceTest.java'));
+  assert.ok(
+    item.why.some((w) => w.signal === 'name' && /names OrderService as its subject/.test(w.detail)),
+    JSON.stringify(item.why),
+  );
+});
+
+test('@Transactional is declaration-strength evidence that a Java file writes', () => {
+  const { result } = run(JAVA, ['src/main/java/com/acme/orders/OrderService.java']);
+  const item = result.priority.find((p) => p.file.endsWith('OrderService.java'));
+  const mutation = item.because.find((f) => f.factor === 'mutation');
+  assert.ok(mutation, 'a @Transactional method writes, and the tiering must know it');
+  assert.match(mutation.detail, /@Transactional/);
+});
+
+/**
+ * Two true sentences that read as one contradiction cost the same trust as a
+ * false one. "Every changed file has a test" printed above "2 surfaces have no
+ * test" was both accurate and unbelievable.
+ */
+test('the brief never claims coverage it contradicts elsewhere', () => {
+  for (const [root, seed] of [
+    [JAVA, 'src/main/java/com/acme/orders/OrderService.java'],
+    [TORTURE, 'src/services/PriceService.ts'],
+  ]) {
+    const { result } = run(root, [seed]);
+    const untested = result.surfaces.filter((s) => s.directTests.length === 0 && s.indirectTests.length === 0);
+    const claimsAllCovered = result.brief.some((l) => /every affected surface has one too/.test(l));
+    if (untested.length > 0) {
+      assert.equal(claimsAllCovered, false, `${root}: claims full coverage with ${untested.length} untested surfaces`);
+    }
+  }
+});

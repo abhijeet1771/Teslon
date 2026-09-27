@@ -24,6 +24,21 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   never as "only these"*.
 - A tests-to-run list, separate from the priority list, with what each test
   covers directly versus only as a side effect.
+- Java is wired into the analysis. The front end was built, tested and never
+  called: a Java repository got a radius of one, the changed file and nothing
+  else. Its readings now join the same map the TypeScript ones do, its package
+  graph joins the same adjacency, and `@RestController` routes and `@Column`
+  names join the surface inventory as declarations.
+- Java test selection by naming convention: `OrderServiceTest` names
+  `OrderService` as its subject. That is not a guess about Java — it is how the
+  ecosystem declares the link, since Maven Surefire's default include is
+  `**/*Test.java` and Gradle's is the same. Ignoring it threw away the one
+  coverage signal every Java shop already has.
+- `@Transactional` and `@Table` feed the tiering as declaration-strength
+  evidence that a file writes, which is stronger than anything the TypeScript
+  profiler's pattern matching can offer. Without it a changed Java file could
+  not reach Tier 1 at all, so the tiering was quietly worse for the language it
+  had just been extended for.
 - `readAstSource`, so a file can be read as it was at the merge base — which
   is what turns "this file changed" into "this behaviour changed".
 - Core engine: change resolution (merge base with progressive deepening on
@@ -65,6 +80,10 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 - Two gap entries for one untested file made the brief report "2 coverage
   gaps" about a single file, overstating the problem to exactly the person
   least able to check it.
+- The brief printed "every changed file has a test that reaches it directly"
+  directly above "2 affected surfaces have no test reaching them at all". Both
+  sentences were true and together they read as a contradiction, which costs
+  the same trust a false one would.
 - The completeness report said `contract` "ran and found nothing" in runs where
   no merge-base readings were supplied, so it could not have run at all.
   Claiming a mechanism ran when it did not is the overstatement the whole

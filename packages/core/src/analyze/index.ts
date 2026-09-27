@@ -10,6 +10,7 @@ import {
   runtimeStringEdges,
   templateEdges,
 } from '../graph/widening.js';
+import { buildJavaGraph, readJava, unresolvedSummary, type JavaReading } from '../lang/java/index.js';
 import { readAst, type AstReading } from '../profile/ast.js';
 import { dataCouplingEdges, minimumCases, profileFile } from '../profile/capability.js';
 import { semanticDiff, sortChanges, type SemanticChange, type SemanticDiff } from '../profile/semantic-diff.js';
@@ -210,6 +211,7 @@ function prioritise(a: {
   radius: readonly RadiusItem[];
   surfaces: readonly Surface[];
   profiles: readonly CapabilityProfile[];
+  java: ReadonlyMap<string, JavaReading>;
   diffs: readonly SemanticDiff[];
   reachedBy: ReadonlyMap<string, { direct: Set<string>; indirect: Set<string> }>;
   readings: ReadonlyMap<string, AstReading | null>;
@@ -244,6 +246,18 @@ function prioritise(a: {
     );
     add('exposure', exposure, mine.length > 0 ? `a person can reach this: ${mine.map((s) => `${s.kind} ${s.id}`).slice(0, 2).join(', ')}` : '');
 
+    // Java says so in an annotation, which is a declaration rather than a
+    // pattern match — stronger evidence than anything the TypeScript profiler
+    // has. Without this a changed Java file could not reach Tier 1 at all,
+    // which made the tiering quietly worse for the language it was added for.
+    const java = a.java.get(item.file);
+    if (java) {
+      if (java.transactional) add('mutation', 3, '@Transactional — this method writes inside a transaction');
+      else if (java.entityTables.length > 0) add('mutation', 3, `maps the table${java.entityTables.length === 1 ? '' : 's'} ${java.entityTables.join(', ')}`);
+      if (java.httpRoutes.length > 0 && mine.length === 0) {
+        add('exposure', 3, `declares ${java.httpRoutes.slice(0, 2).join(', ')}`);
+      }
+    }
     const profile = profileByFile.get(item.file);
     if (profile && profile.nature !== 'read-only') {
       // `writes <table>` is evidenced by a SQL clause. A side effect is a
@@ -293,7 +307,8 @@ function prioritise(a: {
       }
     };
     if (breaking.length > 0) floor(1, 'a breaking change is never below Tier 1, whatever it scores');
-    if (direct === 0 && profile && profile.nature !== 'read-only') {
+    const writes = (profile && profile.nature !== 'read-only') || java?.transactional === true;
+    if (direct === 0 && writes) {
       floor(1, 'code that writes state with no test of its own is never below Tier 1');
     }
     if (item.hops === 0) floor(2, 'a file in the diff is never below Tier 2');
@@ -415,23 +430,37 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   }
 
   // ---- 1. what changed about the changed files ------------------------
+  // Java resolves by package, not by path, so none of the TypeScript
+  // machinery applies to it and it needs its own front end. The readings land
+  // in the same map because `JavaReading extends AstReading`, which is what
+  // lets the tiering, the surfaces and the gaps stay language-agnostic.
+  const javaFiles = allFiles.filter((f) => f.endsWith('.java'));
+  const javaReadings: JavaReading[] = [];
+  for (const f of javaFiles) {
+    const r = readJava(root, f);
+    if (r) javaReadings.push(r);
+  }
+  const javaByFile = new Map(javaReadings.map((r) => [r.file, r]));
+  const changedJava = change.files.filter((f) => f.endsWith('.java') && present.has(f));
+
   const headReadings = new Map<string, AstReading | null>();
   for (const f of changedCode) headReadings.set(f, readAst(root, f));
+  for (const f of changedJava) headReadings.set(f, javaByFile.get(f) ?? null);
 
   const diffs: SemanticDiff[] = [];
   if (opts.baseReadings) {
-    for (const f of changedCode) {
+    for (const f of [...changedCode, ...changedJava]) {
       const before = opts.baseReadings.get(f) ?? null;
       const after = headReadings.get(f) ?? null;
       const d = semanticDiff(before, after);
       if (d.changes.length > 0) diffs.push({ ...d, changes: sortChanges(d.changes) });
     }
-  } else if (changedCode.length > 0) {
+  } else if (changedCode.length + changedJava.length > 0) {
     limitations.push({
       what: 'The files were not read as they were at the merge base, so no semantic diff ran.',
       mitigation:
         'Every changed file is treated as changed in full, and its whole downstream radius is kept. Safe, but it cannot tell you which behaviour moved.',
-      files: changedCode,
+      files: [...changedCode, ...changedJava],
     });
   }
 
@@ -467,6 +496,18 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     });
   }
 
+  const javaGraph = buildJavaGraph(javaReadings);
+  if (javaFiles.length > 0) {
+    const outside = unresolvedSummary(javaGraph);
+    if (outside.length > 0) {
+      limitations.push({
+        what: `${outside.length} Java package prefix${outside.length === 1 ? '' : 'es'} could not be resolved inside this repository: ${outside.slice(0, 4).map((o) => `${o.prefix} (${o.count})`).join(', ')}.`,
+        mitigation:
+          'A third-party dependency and a module Teslon was not pointed at look identical from inside one repository, so these are left unresolved rather than assumed harmless. Point Teslon at the sibling module to close the gap.',
+      });
+    }
+  }
+
   const allEdges: Edge[] = [
     ...importGraph.edges,
     ...nameIndex.edges,
@@ -478,6 +519,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     ...runtimeStringEdges(root, allFiles),
     ...cloneEdges(root, allFiles),
     ...dataCouplingEdges(couplingProfiles),
+    ...javaGraph.edges,
   ];
 
   const adjacency = new Map<string, Set<string>>();
@@ -597,6 +639,16 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
       else withheld++;
     }
   }
+  for (const item of radius) {
+    const java = javaByFile.get(item.file);
+    if (!java) continue;
+    const isNew = newFiles.has(item.file);
+    // Both come from annotations, which are declarations and not string
+    // matches, so there is nothing to corroborate here.
+    for (const route of java.httpRoutes) addSurface('endpoint', route, item.file, isNew);
+    for (const column of java.entityColumns) addSurface('column', column, item.file, isNew);
+    for (const table of java.entityTables) addSurface('column', table, item.file, isNew);
+  }
   for (const p of profiles) {
     const isNew = newFiles.has(p.file);
     if (p.http) {
@@ -637,7 +689,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   // ---- 5. the gaps ----------------------------------------------------
   const gaps: { file: string; reason: string }[] = [];
   const profileByFile = new Map(profiles.map((p) => [p.file, p]));
-  for (const file of changedCode) {
+  for (const file of [...changedCode, ...changedJava]) {
     if (isTestFile(file)) continue;
     const reach = reachedBy.get(file);
     const direct = reach?.direct.size ?? 0;
@@ -747,7 +799,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   );
 
   // ---- 8. what to test first -----------------------------------------
-  const priority = prioritise({ radius, surfaces, profiles, diffs, reachedBy, readings: headReadings, newFiles });
+  const priority = prioritise({ radius, surfaces, profiles, java: javaByFile, diffs, reachedBy, readings: headReadings, newFiles });
 
   // ---- 9. which existing tests already cover this --------------------
   // Read straight out of the same measured walk the gaps came from, so the
@@ -790,7 +842,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     if (f.endsWith('.java')) continue; // read by the Java front end
     unreadable.push(f);
   }
-  for (const f of changedCode) {
+  for (const f of [...changedCode, ...changedJava]) {
     if (!headReadings.get(f)) unreadable.push(f);
   }
   const completeness = assessCompleteness({
@@ -854,6 +906,7 @@ function buildBrief(a: {
   profiles: readonly CapabilityProfile[];
 }): string[] {
   const lines: string[] = [];
+  let untestedSurfaces = 0;
   const counts = new Map<Band, number>();
   for (const r of a.radius) counts.set(r.band, (counts.get(r.band) ?? 0) + 1);
   const n = (b: Band): number => counts.get(b) ?? 0;
@@ -885,6 +938,7 @@ function buildBrief(a: {
 
   const newSurfaces = a.surfaces.filter((s) => s.isNew);
   const untested = a.surfaces.filter((s) => s.directTests.length === 0 && s.indirectTests.length === 0);
+  untestedSurfaces = untested.length;
   if (a.surfaces.length > 0) {
     lines.push(
       `${a.surfaces.length} thing${a.surfaces.length === 1 ? '' : 's'} a person can open ${a.surfaces.length === 1 ? 'is' : 'are'} affected${newSurfaces.length > 0 ? `, ${newSurfaces.length} of them new` : ''}: ${a.surfaces.slice(0, 4).map((s) => `${s.kind} ${s.id}`).join(', ')}${a.surfaces.length > 4 ? `, and ${a.surfaces.length - 4} more` : ''}.`,
@@ -897,12 +951,20 @@ function buildBrief(a: {
   }
 
   if (a.tests.length > 0) {
-    const withDirect = a.tests.filter((t) => t.coversDirectly.length > 0);
+    const direct = a.tests.filter((t) => t.coversDirectly.length > 0).length;
+    const how =
+      direct === a.tests.length
+        ? a.tests.length === 1
+          ? ', directly'
+          : ', all of them directly'
+        : direct === 0
+          ? ', all of them only as a side effect of testing something else'
+          : `, ${direct} of them directly and the rest only as a side effect`;
     lines.push(
-      `${a.tests.length} existing test${a.tests.length === 1 ? '' : 's'} already touch${a.tests.length === 1 ? 'es' : ''} this change${withDirect.length > 0 ? `, ${withDirect.length} of ${a.tests.length === 1 ? 'them' : 'which'} directly` : ', all of them only as a side effect of testing something else'}: ${a.tests.slice(0, 3).map((t) => t.file).join(', ')}${a.tests.length > 3 ? `, and ${a.tests.length - 3} more` : ''}.`,
+      `${a.tests.length} existing test${a.tests.length === 1 ? '' : 's'} already reach${a.tests.length === 1 ? 'es' : ''} a changed file${how}: ${a.tests.slice(0, 3).map((t) => t.file).join(', ')}${a.tests.length > 3 ? `, and ${a.tests.length - 3} more` : ''}.`,
     );
   } else if (a.change.files.length > 0) {
-    lines.push('No existing test in this repository touches any changed file, directly or indirectly.');
+    lines.push('No existing test in this repository reaches any changed file, directly or indirectly.');
   }
 
   const mutating = a.profiles.filter((p) => p.nature !== 'read-only');
@@ -918,7 +980,14 @@ function buildBrief(a: {
       `${a.gaps.length} coverage gap${a.gaps.length === 1 ? '' : 's'}: ${a.gaps[0]!.file} — ${a.gaps[0]!.reason}.`,
     );
   } else if (a.change.files.length > 0) {
-    lines.push('Every changed file has a test that reaches it directly.');
+    // Scoped on purpose. Saying "everything is covered" while the surfaces
+    // list says two endpoints have no test is two true sentences that read as
+    // one contradiction, and a reader who spots it stops believing both.
+    lines.push(
+      untestedSurfaces === 0
+        ? 'Every changed file has a test that reaches it directly, and every affected surface has one too.'
+        : `Every changed file has a test that reaches it directly, but ${untestedSurfaces} affected surface${untestedSurfaces === 1 ? '' : 's'} downstream of them still ${untestedSurfaces === 1 ? 'has' : 'have'} none.`,
+    );
   }
 
   if (n('unknown') > 0 || n('look') > 0) {
