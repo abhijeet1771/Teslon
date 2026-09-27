@@ -9,5 +9,7 @@ export * from './profile/reading.js';
 export * from './profile/ast.js';
 export * from './profile/semantic-diff.js';
 export * from './analyze/index.js';
+export * from './owners/index.js';
+export * from './effort/index.js';
 export * from './lang/java/index.js';
 export { listFiles } from './files.js';

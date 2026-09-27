@@ -155,6 +155,27 @@ No model is involved.
 | `teslon analyze <file…>` | Blast radius for specific files |
 | `teslon profile <file…>` | What a file does: endpoint, reads, writes, effects, auth, flags |
 
+| Flag | Does |
+|---|---|
+| `--json` | The whole `TeslonResult`, which is the contract every other surface renders |
+| `--junit <file>` | Gaps and untested surfaces as JUnit failures; limitations as *skipped* |
+| `--fail-on a,b` | Gate the build. `tier1-untested`, `breaking`, `untested-surface`, `undeclared-owner`. Exit 5 means the analysis worked and the policy said no |
+
+## What a lead and a manager get
+
+**Who to ask.** `CODEOWNERS` is a declaration; git history is evidence. The
+declaration wins where it exists, the evidence fills the gaps, and each
+assignment says which it came from — because a manager chasing the wrong person
+because a tool guessed confidently is worse off than one told "nobody has
+declared this."
+
+**How much testing.** Counted in **cases**, never in hours. Converting cases to
+a duration needs velocity, familiarity and how much setup already exists, none
+of which is in the repository; a tool printing "about 3.5 hours" has invented
+two thirds of it, and that number ends up quoted in a planning meeting. Each
+case traces to something counted: a new branch is two cases, a `min(3)` names
+exactly 2 and 3, a surface with no test is at least one.
+
 `pr` and `analyze` take `--json` and emit the whole `TeslonResult`, which is
 the contract every other surface renders: the brief, the tiers with their
 score factors, the surfaces with their test coverage, the tests to run, the

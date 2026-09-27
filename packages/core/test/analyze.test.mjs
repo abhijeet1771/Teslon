@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, mkdtempSync, cpSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -256,5 +257,91 @@ test('the brief never claims coverage it contradicts elsewhere', () => {
     if (untested.length > 0) {
       assert.equal(claimsAllCovered, false, `${root}: claims full coverage with ${untested.length} untested surfaces`);
     }
+  }
+});
+
+// ---- what a manager needs, which the engine already had the data for -----
+
+test('ownership prefers the declaration and labels the evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'teslon-owners-'));
+  try {
+    cpSync(TORTURE, dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'CODEOWNERS'),
+      [
+        '# comment line, ignored',
+        '*                       @platform',
+        'src/services/           @payments @platform',
+        '/src/services/flags.ts  @growth',
+      ].join('\n'),
+    );
+    const { result } = run(dir, ['src/services/PriceService.ts']);
+    const service = result.priority.find((p) => p.file === 'src/services/PriceService.ts');
+    // Last matching rule wins — CODEOWNERS' own precedence, not gitignore's.
+    assert.deepEqual(service.owners, ['@payments', '@platform']);
+    assert.equal(service.ownerSource, 'CODEOWNERS');
+
+    const flags = result.priority.find((p) => p.file === 'src/services/flags.ts');
+    if (flags) assert.deepEqual(flags.owners, ['@growth'], 'the anchored, more specific rule comes last and wins');
+
+    // A pattern with no slash matches at any depth; one with a slash is
+    // anchored. Getting that backwards assigns the whole tree to one team and
+    // still looks like a working feature.
+    const json = result.priority.find((p) => p.file === 'src/config/routes.json');
+    if (json) assert.deepEqual(json.owners, ['@platform']);
+
+    assert.ok(result.ownership.length > 0);
+    assert.ok(result.brief.some((l) => /^Ask /.test(l)), JSON.stringify(result.brief));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an undeclared owner on a Tier 1 file is reported as a gap in the repository', () => {
+  const { result } = run(TORTURE, ['src/services/PriceService.ts']);
+  const tier1Undeclared = result.priority.filter((p) => p.tier === 1 && p.ownerSource === 'none');
+  if (tier1Undeclared.length > 0) {
+    assert.ok(
+      result.limitations.some((l) => /no declared owner/.test(l.what)),
+      'a Tier 1 file nobody owns must be said out loud',
+    );
+  }
+});
+
+/**
+ * Effort is counted in cases and never converted to hours. Velocity and
+ * familiarity are not in the repository, so a duration would be two thirds
+ * invented — and it would be the number quoted in a planning meeting.
+ */
+test('effort is counted, attributable, and never expressed as time', () => {
+  const before = readAst(TORTURE, 'src/services/PriceService.ts');
+  const withExtra = { ...before, exports: [...before.exports, 'formatLegacyPrice'] };
+  const { result } = run(TORTURE, ['src/services/PriceService.ts'], {
+    baseReadings: new Map([['src/services/PriceService.ts', withExtra]]),
+  });
+  const { effort } = result;
+  assert.equal(
+    effort.minimumCases,
+    effort.lines.reduce((n, l) => n + l.cases, 0),
+    'the total must be the sum of its named lines',
+  );
+  assert.ok(effort.lines.some((l) => /breaking changes/.test(l.reason)), JSON.stringify(effort.lines));
+  for (const l of effort.lines) assert.ok(l.cases > 0 && l.examples.length > 0, `${l.reason} has no examples`);
+  assert.doesNotMatch(JSON.stringify(effort), /\bhours?\b(?!,)/i);
+  assert.match(effort.note, /will not turn this into hours/);
+});
+
+test('build output is not reported as a language nobody reads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'teslon-artifacts-'));
+  try {
+    cpSync(TORTURE, dir, { recursive: true });
+    writeFileSync(join(dir, 'tsconfig.tsbuildinfo'), '{"program":{}}');
+    writeFileSync(join(dir, 'app.min.js'), 'var a=1;');
+    const { result } = run(dir, ['src/services/PriceService.ts']);
+    for (const f of result.completeness.unreadable) {
+      assert.doesNotMatch(f, /tsbuildinfo|min\.js/, `${f} is build output, not a hole in the analysis`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

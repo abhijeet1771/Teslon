@@ -4,7 +4,7 @@
  * shows must exist here first.
  */
 
-export const SCHEMA_VERSION = '1.3.0';
+export const SCHEMA_VERSION = '1.4.0';
 
 /**
  * How sure we are that an item is affected.
@@ -137,6 +137,9 @@ export interface ScoreFactor {
 
 export interface PriorityItem {
   readonly file: string;
+  /** Who to ask about this file, and whether that was declared or inferred. */
+  readonly owners: readonly string[];
+  readonly ownerSource: 'CODEOWNERS' | 'git-history' | 'none';
   readonly tier: Tier;
   readonly score: number;
   /** Every component of the score, named and summing to it exactly. */
@@ -198,6 +201,20 @@ export interface TeslonResult {
   /** Changed lines no test executes. The highest-value output. */
   readonly gaps: readonly { readonly file: string; readonly reason: string }[];
   readonly limitations: readonly Limitation[];
+  /** Who to go and talk to, worst tier first. */
+  readonly ownership: readonly {
+    readonly owner: string;
+    readonly files: number;
+    readonly topTier: number;
+    readonly source: 'CODEOWNERS' | 'git-history' | 'none';
+  }[];
+  /** How much testing this implies, counted in cases and never in hours. */
+  readonly effort: {
+    readonly minimumCases: number;
+    readonly lines: readonly { readonly reason: string; readonly cases: number; readonly examples: readonly string[] }[];
+    readonly filesNeedingNewTests: number;
+    readonly note: string;
+  };
   readonly completeness: Completeness;
   /** Plain-language brief for whoever has to test this. */
   readonly brief: readonly string[];

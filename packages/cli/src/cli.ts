@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
 import {
   listFiles,
   buildImportGraph,
@@ -26,6 +27,7 @@ import {
   type AstReading,
   type TeslonResult,
   type Tier,
+  type Limitation,
   gitIn as gitRunner,
   resolveChange,
   gitIn,
@@ -69,6 +71,125 @@ function combinedReverse(root: string) {
 }
 
 
+
+/**
+ * Recent authors per file, as git evidence for ownership where CODEOWNERS says
+ * nothing. Bounded: one `git log` per file is fine for a pull request's worth
+ * of files and would be absurd for a whole repository, so only the changed
+ * files are looked up and the rest fall back to "nobody declared".
+ */
+function authorsFor(root: string, files: readonly string[]): Map<string, readonly string[]> {
+  const git = gitIn(root);
+  const out = new Map<string, readonly string[]>();
+  for (const file of files.slice(0, 200)) {
+    try {
+      const names = git(['log', '-n', '20', '--format=%an', '--', file])
+        .split('\n')
+        .map((n) => n.trim())
+        .filter(Boolean);
+      if (names.length === 0) continue;
+      const counts = new Map<string, number>();
+      for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+      const ranked = [...counts]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 2)
+        .map(([n]) => n);
+      out.set(file, ranked);
+    } catch {
+      // A file with no history is a new file. Nothing to infer, and saying so
+      // is better than naming whoever happened to touch the directory.
+    }
+  }
+  return out;
+}
+
+/**
+ * Policies a build can fail on.
+ *
+ * A gate has to be about something the analysis can prove, or it will be
+ * turned off within a week. Each of these is a counted fact, not a score
+ * threshold: "a Tier 1 file has no test" is arguable in a code review and not
+ * arguable in a build log.
+ */
+const GATES = {
+  'tier1-untested':
+    'a Tier 1 file has no test that reaches it directly',
+  breaking: 'the change removes or tightens an existing contract',
+  'untested-surface': 'an affected endpoint, screen or job has no test reaching it at all',
+  'undeclared-owner': 'a Tier 1 file has no owner in CODEOWNERS',
+} as const;
+
+type GateName = keyof typeof GATES;
+
+function evaluateGates(result: TeslonResult, names: readonly GateName[]): { name: GateName; hits: string[] }[] {
+  const failures: { name: GateName; hits: string[] }[] = [];
+  for (const name of names) {
+    let hits: string[] = [];
+    if (name === 'tier1-untested') {
+      hits = result.priority
+        .filter((p) => p.tier === 1 && p.because.some((f) => /^no test/.test(f.factor)))
+        .map((p) => p.file);
+    } else if (name === 'breaking') {
+      hits = result.priority
+        .filter((p) => p.because.some((f) => f.factor === 'breaking change'))
+        .map((p) => `${p.file}: ${p.because.find((f) => f.factor === 'breaking change')!.detail}`);
+    } else if (name === 'untested-surface') {
+      hits = result.surfaces
+        .filter((s) => s.directTests.length === 0 && s.indirectTests.length === 0)
+        .map((s) => `${s.kind} ${s.id}`);
+    } else if (name === 'undeclared-owner') {
+      hits = result.priority.filter((p) => p.tier === 1 && p.ownerSource === 'none').map((p) => p.file);
+    }
+    if (hits.length > 0) failures.push({ name, hits });
+  }
+  return failures;
+}
+
+const xml = (t: string): string =>
+  t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * JUnit XML, because every CI already knows how to read it.
+ *
+ * Each coverage gap and each untested surface becomes a failing case, so the
+ * findings land in the same place as test failures rather than in a log nobody
+ * opens. Everything Teslon could not do becomes a skipped case, which is how
+ * JUnit expresses "this was not checked" — a limitation rendered as a pass
+ * would be a lie told in a machine-readable format.
+ */
+function junitXml(result: TeslonResult): string {
+  const cases: string[] = [];
+  for (const g of result.gaps) {
+    cases.push(
+      `    <testcase classname="teslon.coverage" name="${xml(g.file)}">\n      <failure message="${xml(g.reason)}"/>\n    </testcase>`,
+    );
+  }
+  for (const s of result.surfaces.filter((x) => x.directTests.length === 0 && x.indirectTests.length === 0)) {
+    cases.push(
+      `    <testcase classname="teslon.surface" name="${xml(`${s.kind} ${s.id}`)}">\n      <failure message="no test reaches this surface"/>\n    </testcase>`,
+    );
+  }
+  for (const p of result.priority.filter((x) => x.tier === 1)) {
+    cases.push(`    <testcase classname="teslon.tier1" name="${xml(p.file)}"/>`);
+  }
+  for (const l of result.limitations) {
+    cases.push(
+      `    <testcase classname="teslon.limitation" name="${xml(l.what.slice(0, 120))}">\n      <skipped message="${xml(l.mitigation)}"/>\n    </testcase>`,
+    );
+  }
+  const failures = result.gaps.length + result.surfaces.filter((x) => x.directTests.length === 0 && x.indirectTests.length === 0).length;
+  const skipped = result.limitations.length;
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<testsuites name="teslon" tests="${cases.length}" failures="${failures}" skipped="${skipped}">`,
+    `  <testsuite name="teslon impact" tests="${cases.length}" failures="${failures}" skipped="${skipped}">`,
+    ...cases,
+    '  </testsuite>',
+    '</testsuites>',
+    '',
+  ].join('\n');
+}
+
 /**
  * Read the changed files as they were at the merge base, so the semantic diff
  * can run. The merge-base version of a file is not on disk — it is in git — so
@@ -95,6 +216,55 @@ const bar = (n: number, of: number, width = 18): string => {
   const filled = of === 0 ? 0 : Math.max(n > 0 ? 1 : 0, Math.round((n / of) * width));
   return '█'.repeat(filled) + '·'.repeat(width - filled);
 };
+
+/**
+ * Everything that happens after a result exists: render it, write the machine
+ * formats, and apply the gates.
+ *
+ * Shared between `analyze` and `pr` on purpose. The first version of this CLI
+ * had two impact code paths that could disagree, and the weaker one was the
+ * only one anyone saw; one tail means one behaviour.
+ */
+function finish(result: TeslonResult, argv: readonly string[], json: boolean): void {
+  if (json) console.log(JSON.stringify(result, null, 2));
+  else printResult(result);
+
+  const junitAt = argv.indexOf('--junit');
+  if (junitAt >= 0) {
+    const path = argv[junitAt + 1];
+    if (!path || path.startsWith('--')) {
+      console.error('--junit needs a file path');
+      process.exitCode = 1;
+      return;
+    }
+    writeFileSync(path, junitXml(result), 'utf8');
+    if (!json) console.log(`JUnit written to ${path}\n`);
+  }
+
+  const failAt = argv.indexOf('--fail-on');
+  if (failAt >= 0) {
+    const asked = (argv[failAt + 1] ?? '').split(',').filter(Boolean);
+    const unknown = asked.filter((a) => !(a in GATES));
+    if (asked.length === 0 || unknown.length > 0) {
+      console.error(
+        `--fail-on takes a comma-separated list of: ${Object.keys(GATES).join(', ')}${unknown.length ? `\nunknown: ${unknown.join(', ')}` : ''}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const failures = evaluateGates(result, asked as GateName[]);
+    for (const f of failures) {
+      console.error(`\x1b[31mgate failed\x1b[0m ${f.name}: ${GATES[f.name]}`);
+      for (const h of f.hits.slice(0, 10)) console.error(`  ${h}`);
+      if (f.hits.length > 10) console.error(`  … and ${f.hits.length - 10} more`);
+    }
+    if (failures.length > 0) {
+      // 5 is its own code: the analysis succeeded and the policy rejected the
+      // change. A build log has to be able to tell that from a broken run.
+      process.exitCode = 5;
+    }
+  }
+}
 
 function printResult(result: TeslonResult): void {
   const { brief, priority, tests, surfaces, gaps, limitations, completeness } = result;
@@ -146,6 +316,24 @@ function printResult(result: TeslonResult): void {
   if (gaps.length > 0) {
     console.log('\n\x1b[1mCOVERAGE GAPS\x1b[0m');
     for (const g of gaps) console.log(`  \x1b[33m${g.file}\x1b[0m\n      ${g.reason}`);
+  }
+
+  if (result.effort.minimumCases > 0) {
+    console.log('\n\x1b[1mHOW MUCH TESTING THIS IMPLIES\x1b[0m');
+    console.log(`  \x1b[1m${result.effort.minimumCases} cases minimum\x1b[0m`);
+    for (const l of result.effort.lines) {
+      console.log(`    ${String(l.cases).padStart(3)}  ${l.reason}`);
+      for (const e of l.examples) console.log(`         \x1b[2m${e}\x1b[0m`);
+    }
+    console.log(`  \x1b[2m${result.effort.note}\x1b[0m`);
+  }
+
+  if (result.ownership.length > 0) {
+    console.log('\n\x1b[1mWHO TO ASK\x1b[0m');
+    for (const o of result.ownership) {
+      const how = o.source === 'CODEOWNERS' ? 'declared' : o.source === 'git-history' ? 'from git history' : 'undeclared';
+      console.log(`  Tier ${o.topTier}  ${o.owner.padEnd(28)} ${String(o.files).padStart(3)} file(s)  \x1b[2m${how}\x1b[0m`);
+    }
   }
 
   console.log('\n\x1b[1mHOW MUCH OF THIS TO TRUST\x1b[0m');
@@ -224,9 +412,9 @@ switch (command) {
       allFiles,
       repo: root,
       change: { baseSha: '(working tree)', headSha: '(working tree)', mergeBase: '(none)', files },
+      authors: authorsFor(root, files),
     });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else printResult(result);
+    finish(result, rest, json);
     break;
   }
 
@@ -255,9 +443,9 @@ switch (command) {
         change,
         limitations,
         baseReadings: baseReadingsAt(root, change.mergeBase, change.files),
+        authors: authorsFor(root, change.files),
       });
-      if (json) console.log(JSON.stringify(result, null, 2));
-      else printResult(result);
+      finish(result, rest, json);
     } catch (err) {
       if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
         console.error(`\n${err.message}\n`);

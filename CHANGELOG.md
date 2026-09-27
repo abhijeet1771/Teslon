@@ -5,6 +5,29 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 ## Unreleased
 
 ### Added
+- Ownership. `CODEOWNERS` is a declaration and git history is evidence, so the
+  declaration wins where it exists, the evidence fills the gaps, and every
+  assignment says which of the two it came from. A manager chasing the wrong
+  person because a tool guessed confidently is worse off than one told "nobody
+  has declared this; the last commits were Priya's". A Tier 1 file with no
+  declared owner is reported as a gap in the repository.
+- Effort, counted in **cases** and deliberately never in hours. Converting
+  cases to a duration needs the team's velocity, the tester's familiarity and
+  how much setup exists — none of which is in the repository, so a tool that
+  prints "about 3.5 hours" has invented two thirds of it, and that number gets
+  quoted at someone in a planning meeting. Every case traces to something
+  counted: branches (two cases each, both sides), boundary values named by the
+  validation rules, breaking changes, new component states, surfaces with no
+  test.
+- `--fail-on tier1-untested,breaking,untested-surface,undeclared-owner`: gates
+  on counted facts rather than score thresholds, because a gate that is
+  arguable gets switched off within a week. Exit code 5 means the analysis
+  succeeded and the policy rejected the change, which a build log has to be
+  able to tell from a broken run.
+- `--junit <file>`: every CI already reads JUnit, so gaps and untested surfaces
+  land beside test failures instead of in a log nobody opens. Limitations are
+  emitted as *skipped*, since a limitation rendered as a pass would be a lie
+  told in a machine-readable format.
 - **The result object is now produced.** `analyze()` assembles a `TeslonResult`
   from the primitives: confidence bands per file, a testing-priority tiering,
   the surface inventory, which existing tests reach which changed file, the
@@ -52,6 +75,15 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   asserting it.
 
 ### Fixed
+- Clone detection was 87% of the runtime and a quadratic scaling wall: it
+  compared every pair of files, which measured 3,673ms of a 4,217ms run on
+  5,000 files, for the signal whose measured counterfactual on the torture
+  fixture is zero. An inverted index on the structural fragments, with
+  candidates drawn from each file's rarest ones, took the same analysis to
+  1,274ms with the exact Jaccard still deciding every verdict. 3.3x.
+- Build output (`.tsbuildinfo`, `.min.js`, `dist/`) was listed among the files
+  no signal can read, turning an honest list of holes into noise a reader
+  learns to skip.
 - The orchestrator handed the primitives a pre-filtered list of code files.
   Every primitive already filters its own input, so this bought nothing and
   starved every cross-language signal: ground-truth recall fell from 95.7% to

@@ -2,7 +2,7 @@ import { CODE_RE, buildImportGraph, walkWithParents, type Alias, type Edge } fro
 import { TEXT_RE, buildNameIndex, nameIndexLimitation } from '../graph/names.js';
 import { buildSymbolEdges, proofPaths, shortestPathPerDestination, type ProofPath } from '../graph/symbols.js';
 import {
-  cloneEdges,
+  cloneEdgesDetailed,
   configEdgesDetailed,
   dynamicDispatchEdges,
   dynamicImportEdges,
@@ -11,6 +11,8 @@ import {
   templateEdges,
 } from '../graph/widening.js';
 import { buildJavaGraph, readJava, unresolvedSummary, type JavaReading } from '../lang/java/index.js';
+import { estimateEffort } from '../effort/index.js';
+import { ownershipRollup, resolveOwnership, type Ownership } from '../owners/index.js';
 import { readAst, type AstReading } from '../profile/ast.js';
 import { dataCouplingEdges, minimumCases, profileFile } from '../profile/capability.js';
 import { semanticDiff, sortChanges, type SemanticChange, type SemanticDiff } from '../profile/semantic-diff.js';
@@ -71,6 +73,12 @@ export interface AnalyzeOptions {
    * still safe, just less specific — and it says so in `limitations`.
    */
   readonly baseReadings?: ReadonlyMap<string, AstReading | null>;
+  /**
+   * Recent authors per file, from git. Core does not run git, so the caller
+   * supplies this; leaving it out means files CODEOWNERS does not cover report
+   * ownership as `none`, which is true and worth knowing on a Tier 1 file.
+   */
+  readonly authors?: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface AnalyzeResult {
@@ -150,7 +158,15 @@ const NOT_WIRED: Partial<Record<SignalId, string>> = {
 };
 
 /** Files nothing reads, and nothing needs to. */
-const IRRELEVANT = /\.(?:png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|pdf|zip|gz|tgz|mp4|webm|mp3|wav|map|md|mdx|txt|log|snap|patch|license)$|(?:^|\/)(?:\.git|\.gitignore|\.gitattributes|\.npmrc|LICENSE|CHANGELOG)/i;
+const IRRELEVANT =
+  /\.(?:png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|pdf|zip|gz|tgz|mp4|webm|mp3|wav|map|md|mdx|txt|log|snap|patch|license)$|(?:^|\/)(?:\.git|\.gitignore|\.gitattributes|\.npmrc|\.editorconfig|LICENSE|CHANGELOG)/i;
+
+/**
+ * Build output. It cannot change behaviour, it is not in the pull request, and
+ * naming it as a file no signal reads turns an honest list of holes into noise
+ * the reader learns to skip.
+ */
+const BUILD_ARTIFACT = /\.(?:tsbuildinfo|min\.js|min\.css|bundle\.js|d\.ts\.map|lock)$|(?:^|\/)(?:dist|build|out|coverage|\.next|\.turbo|\.cache)\//;
 
 
 /**
@@ -216,6 +232,7 @@ function prioritise(a: {
   reachedBy: ReadonlyMap<string, { direct: Set<string>; indirect: Set<string> }>;
   readings: ReadonlyMap<string, AstReading | null>;
   newFiles: ReadonlySet<string>;
+  ownership: ReadonlyMap<string, Ownership>;
 }): PriorityItem[] {
   const surfacesByFile = new Map<string, Surface[]>();
   for (const s of a.surfaces) {
@@ -314,7 +331,17 @@ function prioritise(a: {
     if (item.hops === 0) floor(2, 'a file in the diff is never below Tier 2');
     if (item.band === 'unknown') floor(2, 'a file we could not analyse is never below Tier 2 — the gap is in our reading, not in the risk');
 
-    out.push({ file: item.file, tier, score, because, band: item.band, surfaces: mine.map((s) => `${s.kind} ${s.id}`) });
+    const owned = a.ownership.get(item.file);
+    out.push({
+      file: item.file,
+      owners: owned?.owners ?? [],
+      ownerSource: owned?.source ?? 'none',
+      tier,
+      score,
+      because,
+      band: item.band,
+      surfaces: mine.map((s) => `${s.kind} ${s.id}`),
+    });
   }
 
   return out.sort((x, y) => x.tier - y.tier || y.score - x.score || x.file.localeCompare(y.file));
@@ -496,6 +523,16 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     });
   }
 
+  const clones = cloneEdgesDetailed(root, allFiles);
+  if (clones.capped.length > 0) {
+    limitations.push({
+      what: `Copy-paste detection stopped short on ${clones.capped.length} file${clones.capped.length === 1 ? '' : 's'}, whose structure is shared with more candidates than it compares.`,
+      mitigation:
+        'Those files are compared against their most distinctive matches, not against every candidate, so a clone that shares only boilerplate with its twin can be missed. Everything else about them is unaffected.',
+      ...(clones.capped.length <= 20 ? { files: clones.capped } : {}),
+    });
+  }
+
   const javaGraph = buildJavaGraph(javaReadings);
   if (javaFiles.length > 0) {
     const outside = unresolvedSummary(javaGraph);
@@ -517,7 +554,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     ...config.edges,
     ...generatedEdges(root, allFiles),
     ...runtimeStringEdges(root, allFiles),
-    ...cloneEdges(root, allFiles),
+    ...clones.edges,
     ...dataCouplingEdges(couplingProfiles),
     ...javaGraph.edges,
   ];
@@ -798,8 +835,31 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
       (a.steps.at(-1)?.file ?? '').localeCompare(b.steps.at(-1)?.file ?? ''),
   );
 
-  // ---- 8. what to test first -----------------------------------------
-  const priority = prioritise({ radius, surfaces, profiles, java: javaByFile, diffs, reachedBy, readings: headReadings, newFiles });
+  // ---- 8. what to test first, and who to ask --------------------------
+  const ownershipList = resolveOwnership(root, radius.map((r) => r.file), opts.authors ?? new Map());
+  const ownership = new Map(ownershipList.map((o) => [o.file, o]));
+  const priority = prioritise({ radius, surfaces, profiles, java: javaByFile, diffs, reachedBy, readings: headReadings, newFiles, ownership });
+  const rollup = ownershipRollup(
+    ownershipList,
+    new Map(priority.map((p) => [p.file, p.tier])),
+  );
+  const undeclaredTier1 = priority.filter((p) => p.tier === 1 && p.ownerSource === 'none');
+  if (undeclaredTier1.length > 0) {
+    limitations.push({
+      what: `${undeclaredTier1.length} Tier 1 file${undeclaredTier1.length === 1 ? ' has' : 's have'} no declared owner: ${undeclaredTier1.slice(0, 3).map((p) => p.file).join(', ')}.`,
+      mitigation:
+        'Nothing in CODEOWNERS covers them, and no git evidence was supplied. Someone has to be asked about the highest-priority files in this change, so this is a gap in the repository rather than in the analysis.',
+      files: undeclaredTier1.map((p) => p.file),
+    });
+  }
+
+  const effort = estimateEffort({
+    profiles,
+    diffs,
+    readings: headReadings,
+    surfaces,
+    untestedFiles: mergedGaps.filter((g) => /no test in this repository reaches/.test(g.reason)).map((g) => g.file),
+  });
 
   // ---- 9. which existing tests already cover this --------------------
   // Read straight out of the same measured walk the gaps came from, so the
@@ -838,7 +898,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   // ---- 10. how much of this can be trusted ---------------------------
   const unreadable: string[] = [];
   for (const f of allFiles) {
-    if (CODE_RE.test(f) || TEXT_RE.test(f) || IRRELEVANT.test(f)) continue;
+    if (CODE_RE.test(f) || TEXT_RE.test(f) || IRRELEVANT.test(f) || BUILD_ARTIFACT.test(f)) continue;
     if (f.endsWith('.java')) continue; // read by the Java front end
     unreadable.push(f);
   }
@@ -863,7 +923,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   });
 
   // ---- 11. the brief -------------------------------------------------
-  const brief = buildBrief({ change, radius, priority, tests, surfaces, gaps: mergedGaps, limitations, completeness, diffs, profiles });
+  const brief = buildBrief({ change, radius, priority, tests, surfaces, gaps: mergedGaps, limitations, ownership: rollup, effort, completeness, diffs, profiles });
 
   return {
     result: {
@@ -877,6 +937,8 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
       profiles: [...profiles].sort(byPath),
       gaps: mergedGaps,
       limitations,
+      ownership: rollup,
+      effort,
       completeness,
       brief,
     },
@@ -901,6 +963,8 @@ function buildBrief(a: {
   surfaces: readonly Surface[];
   gaps: readonly { file: string; reason: string }[];
   limitations: readonly Limitation[];
+  ownership: TeslonResult['ownership'];
+  effort: TeslonResult['effort'];
   completeness: Completeness;
   diffs: readonly SemanticDiff[];
   profiles: readonly CapabilityProfile[];
@@ -975,6 +1039,17 @@ function buildBrief(a: {
     );
   }
 
+  if (a.effort.minimumCases > 0) {
+    lines.push(
+      `At least ${a.effort.minimumCases} test case${a.effort.minimumCases === 1 ? '' : 's'} are implied: ${a.effort.lines.slice(0, 3).map((l) => `${l.cases} for ${l.reason}`).join(', ')}. Counted, not estimated — multiply by your own average per case.`,
+    );
+  }
+  if (a.ownership.length > 0) {
+    const top = a.ownership.slice(0, 3);
+    lines.push(
+      `Ask ${top.map((o) => `${o.owner} (${o.files} file${o.files === 1 ? '' : 's'}, worst Tier ${o.topTier})`).join(', ')}${a.ownership.length > 3 ? `, and ${a.ownership.length - 3} more` : ''}.`,
+    );
+  }
   if (a.gaps.length > 0) {
     lines.push(
       `${a.gaps.length} coverage gap${a.gaps.length === 1 ? '' : 's'}: ${a.gaps[0]!.file} — ${a.gaps[0]!.reason}.`,
