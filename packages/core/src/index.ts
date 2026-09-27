@@ -3,6 +3,7 @@ export * from './change/index.js';
 export * from './graph/imports.js';
 export * from './graph/names.js';
 export * from './graph/symbols.js';
+export * from './graph/widening.js';
 export * from './profile/capability.js';
 export * from './profile/reading.js';
 export * from './profile/ast.js';
