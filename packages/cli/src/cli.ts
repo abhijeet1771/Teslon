@@ -12,6 +12,10 @@ import {
   shortestPathPerDestination,
   exportedSymbols,
   readCode,
+  readAst,
+  semanticDiff,
+  sortChanges,
+  gitIn as gitRunner,
   resolveChange,
   gitIn,
   NoMergeBaseError,
@@ -207,6 +211,64 @@ switch (command) {
     break;
   }
 
+  case 'changed': {
+    // What is different about behaviour, not about text. This is what the
+    // reading engine is for inside an impact analyser.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const base = rest[0] ?? 'origin/main';
+    const git = gitRunner(root);
+    let files: readonly string[];
+    try {
+      const resolved = resolveChange(git, { base, head: 'HEAD' });
+      files = resolved.change.files;
+      console.log(`\nmerge base ${resolved.change.mergeBase.slice(0, 10)} · ${files.length} file(s) changed`);
+    } catch (err) {
+      console.error(`\n${(err as Error).message}\n`);
+      process.exitCode = 3;
+      break;
+    }
+
+    const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join, dirname } = await import('node:path');
+    const scratch = mkdtempSync(join(tmpdir(), 'teslon-base-'));
+
+    try {
+      let reported = 0;
+      for (const file of files) {
+        if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
+
+        let beforeReading = null;
+        try {
+          const old = git(['show', `${base}:${file}`]);
+          const staged = join(scratch, file);
+          mkdirSync(dirname(staged), { recursive: true });
+          writeFileSync(staged, old);
+          beforeReading = readAst(scratch, file);
+        } catch {
+          // Added in this change: no previous version to read.
+        }
+
+        const changes = sortChanges(semanticDiff(beforeReading, readAst(root, file)).changes);
+        if (changes.length === 0) continue;
+        reported += 1;
+
+        console.log(`\n┌─ ${file}`);
+        for (const c of changes) {
+          console.log(`│ [${c.severity.toUpperCase().padEnd(9)}] ${c.what}`);
+          if (c.test) console.log(`│             → test: ${c.test}`);
+          if (c.detail) console.log(`│             ${c.detail}`);
+        }
+        console.log('└─');
+      }
+      if (reported === 0) console.log('\nno behaviour changes found in the changed source files');
+      console.log('');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+    break;
+  }
+
   case 'version':
     console.log(`teslon 0.1.0 (schema ${SCHEMA_VERSION})`);
     break;
@@ -225,6 +287,7 @@ teslon — what a change can actually break
   teslon profile <file...>    what a file does: endpoint, reads, writes, effects
   teslon paths <file> [sym]   proof paths from each exported symbol outward
   teslon cases <file...>      what a tester must cover, read from the code
+  teslon changed [base]       what changed about behaviour, not about text
   teslon version
 
 Teslon never narrows on a guess. When it cannot resolve something it widens
