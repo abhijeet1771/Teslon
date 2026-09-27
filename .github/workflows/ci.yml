@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported runtime and the current one. Teslon runs on
+        # whatever a team's CI already has, so both have to stay green.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Teslon's own tests exercise merge-base resolution, which needs
+          # more than the default shallow checkout.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Invariants must be covered, not merely passing
+        run: |
+          # A green suite that stopped asserting the invariants is worse than
+          # a red one, because it looks like a guarantee.
+          for inv in "I1 ·" "I2 ·" "I3 ·" "I4 ·"; do
+            grep -q "$inv" packages/core/test/*.test.mjs \
+              || { echo "::error::no test asserts invariant $inv"; exit 1; }
+          done
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm audit --audit-level=high

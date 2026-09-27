@@ -18,13 +18,52 @@ export interface GitRunner {
   (args: readonly string[]): string;
 }
 
+/** Raised when the directory is not a git working tree at all. */
+export class NotAGitRepositoryError extends Error {
+  constructor(readonly cwd: string) {
+    super(`"${cwd}" is not a git repository. Run Teslon inside a checkout, or pass a path to one.`);
+    this.name = 'NotAGitRepositoryError';
+  }
+}
+
+/** Raised when git itself is unavailable. */
+export class GitUnavailableError extends Error {
+  constructor(cause: string) {
+    super(`git could not be run: ${cause}. Teslon needs git on PATH.`);
+    this.name = 'GitUnavailableError';
+  }
+}
+
 export function gitIn(cwd: string): GitRunner {
-  return (args) =>
-    execFileSync('git', args as string[], {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    }).trim();
+  return (args) => {
+    try {
+      return execFileSync('git', args as string[], {
+        cwd,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        // Captured, not inherited: git's own diagnostics are ours to
+        // interpret. Letting them through printed "fatal: not a git
+        // repository" three times and then blamed unrelated branches.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & { stderr?: Buffer | string };
+      if (e.code === 'ENOENT') throw new GitUnavailableError('command not found');
+      const stderr = typeof e.stderr === 'string' ? e.stderr : (e.stderr?.toString() ?? '');
+      if (/not a git repository/i.test(stderr)) throw new NotAGitRepositoryError(cwd);
+      // Everything else is a normal non-zero exit — callers decide what it means.
+      throw err;
+    }
+  };
+}
+
+/** True when the directory is a git working tree. Never throws. */
+export function isGitRepository(git: GitRunner): boolean {
+  try {
+    return git(['rev-parse', '--is-inside-work-tree']) === 'true';
+  } catch {
+    return false;
+  }
 }
 
 /** Depths we try, in order, when the clone is too shallow to reach a merge base. */
@@ -107,6 +146,10 @@ function changedFiles(git: GitRunner, from: string, to: string): string[] {
 export function resolveChange(git: GitRunner, opts: ResolveOptions): Resolved {
   const limitations: Limitation[] = [];
   const { base, head } = opts;
+
+  // Diagnose the real problem first. "No merge base, are they related?" is a
+  // misleading thing to say to someone standing in the wrong directory.
+  if (!isGitRepository(git)) throw new NotAGitRepositoryError('.');
 
   let mergeBase = tryMergeBase(git, base, head);
 

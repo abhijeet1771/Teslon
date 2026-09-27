@@ -10,6 +10,8 @@ import {
   resolveChange,
   gitIn,
   NoMergeBaseError,
+  NotAGitRepositoryError,
+  GitUnavailableError,
   SCHEMA_VERSION,
   type Provenance,
 } from '@teslon/core';
@@ -90,7 +92,10 @@ switch (command) {
       for (const l of limitations) console.log(`note:       ${l.what}`);
       if (change.files.length) printRadius(root, change.files);
     } catch (err) {
-      if (err instanceof NoMergeBaseError) {
+      if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
+        console.error(`\n${err.message}\n`);
+        process.exitCode = 4;
+      } else if (err instanceof NoMergeBaseError) {
         console.error(`\n${err.message}\n`);
         console.error('Teslon will not guess a change set. Fetch more history and try again.');
         process.exitCode = 3;
@@ -102,6 +107,11 @@ switch (command) {
   case 'profile': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
     for (const file of rest) {
+      if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file)) {
+        console.error(`${file}: not a source file — nothing to profile`);
+        process.exitCode = 2;
+        continue;
+      }
       const p = profileFile(root, file);
       if (!p) {
         console.log(`${file}: unreadable`);
@@ -128,6 +138,11 @@ switch (command) {
     break;
 
   default:
+    // A mistyped command must not look like success in a pipeline.
+    if (command !== 'help' && command !== '--help' && command !== '-h') {
+      console.error(`unknown command: ${command}\n`);
+      process.exitCode = 1;
+    }
     console.log(`
 teslon — what a change can actually break
 
