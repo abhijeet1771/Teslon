@@ -155,28 +155,7 @@ export function walk(
   adjacency: ReadonlyMap<string, ReadonlySet<string>>,
   seeds: readonly string[],
 ): Map<string, number> {
-  const dist = new Map<string, number>();
-  const queue: string[] = [];
-
-  for (const s of seeds) {
-    if (!dist.has(s)) {
-      dist.set(s, 0);
-      queue.push(s);
-    }
-  }
-
-  for (let i = 0; i < queue.length; i++) {
-    const current = queue[i]!;
-    const d = dist.get(current)!;
-    for (const next of adjacency.get(current) ?? []) {
-      if (!dist.has(next)) {
-        dist.set(next, d + 1);
-        queue.push(next);
-      }
-    }
-  }
-
-  return dist;
+  return walkWithParents(adjacency, seeds).dist;
 }
 
 /**

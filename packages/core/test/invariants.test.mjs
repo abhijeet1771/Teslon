@@ -14,6 +14,8 @@ import {
   dataCouplingEdges,
   strongerBand,
   bandRank,
+  nameIndexLimitation,
+  defaultMaxFiles,
 } from '../dist/index.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -79,9 +81,12 @@ test('I1 · band merging only ever moves toward certainty', () => {
   assert.equal(strongerBand('possible', 'certain'), 'certain');
   assert.equal(strongerBand('certain', 'look'), 'certain');
   assert.equal(strongerBand('look', 'likely'), 'likely');
-  // An unknown outranks a history hint: a thing we failed to analyse is more
-  // alarming than a thing history merely gossips about.
-  assert.ok(bandRank('unknown') > bandRank('look'));
+  // A thing we failed to analyse outranks anything we merely inferred, and
+  // every band has a distinct rank so merge order can never decide the result.
+  assert.ok(bandRank('unknown') > bandRank('likely'));
+  assert.equal(new Set(['certain','unknown','likely','possible','look'].map(bandRank)).size, 5);
+  assert.equal(strongerBand('possible', 'unknown'), 'unknown');
+  assert.equal(strongerBand('unknown', 'possible'), 'unknown');
 });
 
 test('the import graph alone is the floor, not the product', () => {
@@ -174,4 +179,84 @@ test('core makes no network calls', () => {
   };
   scan(src);
   assert.deepEqual(offenders, [], `core must stay offline, found network use in: ${offenders.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Regressions from the first code review. Each of these was a real defect in
+// the initial commit; three of them violated an invariant.
+// ---------------------------------------------------------------------------
+
+test('regression · the declared auth guard is reported, not a fixed string', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'teslon-'));
+  try {
+    writeFileSync(
+      join(tmp, 'h.ts'),
+      '@UseGuards(requireAdmin)\nexport async function del(r: Req): Promise<Res> { return {} as any; }\n',
+    );
+    // `a ?? b ? c : d` parses as `(a ?? b) ? c : d`, which reported
+    // 'requireAuth' for every guarded handler and hid the real guard.
+    assert.equal(profileFile(tmp, 'h.ts')?.auth, 'requireAdmin');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('regression · I1 · prose containing a SQL verb does not fake an analysis', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'teslon-'));
+  try {
+    writeFileSync(
+      join(tmp, 'dialog.ts'),
+      "export const copy = { title: 'Delete your account', body: 'This cannot be undone' };\n",
+    );
+    // Matching a bare SQL keyword set nature to 'read-only' on a file we had
+    // learnt nothing about — an assumption of innocence.
+    assert.equal(profileFile(tmp, 'dialog.ts')?.nature, 'unknown');
+
+    writeFileSync(join(tmp, 'real.ts'), 'await db.query(`DELETE FROM sessions WHERE expired`);\n');
+    const real = profileFile(tmp, 'real.ts');
+    assert.equal(real?.nature, 'mutating');
+    assert.deepEqual(real?.writesTables, ['sessions']);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('regression · I1 · dotfiles are visible, so a changed .env can reach the radius', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'teslon-'));
+  try {
+    writeFileSync(join(tmp, '.env'), 'PAYMENT_GW=stripe\n');
+    writeFileSync(join(tmp, 'app.ts'), 'export const x = 1;\n');
+    const files = listFiles(tmp);
+    assert.ok(files.includes('.env'), 'a file the lister cannot see can never appear in a radius');
+    assert.ok(files.includes('app.ts'));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('regression · I1/I2 · a discarded name is reported, never dropped in silence', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'teslon-'));
+  try {
+    // 60 files sharing one token, above the adaptive cap for a repo this size.
+    for (let i = 0; i < 60; i++) {
+      writeFileSync(join(tmp, `m${i}.ts`), "export const K = 'shared.everywhere';\n");
+    }
+    const index = buildNameIndex(tmp, listFiles(tmp));
+    assert.equal(index.edges.length, 0, 'expected the common token to be excluded');
+    assert.ok(index.tooCommon.length > 0, 'the exclusion must be recorded');
+
+    const limitation = nameIndexLimitation(index);
+    assert.ok(limitation, 'a cap that removes a signal must produce a limitation');
+    assert.match(limitation.what, /shared\.everywhere/);
+    assert.match(limitation.mitigation, /not in the radius/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('the name index cap scales with the repository instead of being fixed', () => {
+  // A fixed cap of 12 disabled this index entirely on a 2,000-file repo.
+  assert.equal(defaultMaxFiles(100), 12);
+  assert.equal(defaultMaxFiles(2000), 40);
+  assert.equal(defaultMaxFiles(1_000_000), 120);
 });

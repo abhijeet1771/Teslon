@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Limitation } from '../schema/index.js';
 import type { Edge } from './imports.js';
 
 /**
@@ -50,10 +51,23 @@ const STOPWORDS = new Set([
  */
 export interface NameIndexOptions {
   readonly minFiles?: number;
+  /**
+   * Absolute cap. Leave unset: the default scales with the repository, because
+   * a fixed cap is wrong at both ends. A name shared by twenty files is strong
+   * evidence in a 200-file repo and unremarkable in a 20,000-file one.
+   */
   readonly maxFiles?: number;
 }
 
-const DEFAULTS = { minFiles: 2, maxFiles: 12 } as const;
+const MIN_FILES = 2;
+/** A name in more than this share of the repository is a common word. */
+const MAX_SHARE = 0.02;
+const MAX_FLOOR = 12;
+const MAX_CEILING = 120;
+
+export function defaultMaxFiles(fileCount: number): number {
+  return Math.min(MAX_CEILING, Math.max(MAX_FLOOR, Math.ceil(fileCount * MAX_SHARE)));
+}
 
 function isInteresting(token: string): boolean {
   if (token.length < 3 || token.length > 60) return false;
@@ -111,6 +125,17 @@ export interface NameIndex {
   readonly edges: readonly Edge[];
   /** token -> files mentioning it, for tokens that survived the rarity filter. */
   readonly shared: ReadonlyMap<string, readonly string[]>;
+  /** The cap actually applied, so callers can report it. */
+  readonly maxFiles: number;
+  /**
+   * Tokens discarded for appearing in too many files, most common first.
+   *
+   * This list exists because the alternative is silence. A cap that quietly
+   * removes an entire signal is narrowing without evidence, which invariants
+   * I1 and I2 forbid — a fixed cap of 12 disabled this index completely on a
+   * 2,000-file repository during review, and reported nothing.
+   */
+  readonly tooCommon: readonly { readonly token: string; readonly fileCount: number }[];
 }
 
 export function buildNameIndex(
@@ -118,8 +143,8 @@ export function buildNameIndex(
   allFiles: readonly string[],
   options: NameIndexOptions = {},
 ): NameIndex {
-  const minFiles = options.minFiles ?? DEFAULTS.minFiles;
-  const maxFiles = options.maxFiles ?? DEFAULTS.maxFiles;
+  const minFiles = options.minFiles ?? MIN_FILES;
+  const maxFiles = options.maxFiles ?? defaultMaxFiles(allFiles.length);
 
   const byToken = new Map<string, string[]>();
 
@@ -140,11 +165,16 @@ export function buildNameIndex(
 
   const edges: Edge[] = [];
   const shared = new Map<string, readonly string[]>();
+  const tooCommon: { token: string; fileCount: number }[] = [];
 
   // Sorted so the edge list is deterministic regardless of Map iteration order.
   for (const token of [...byToken.keys()].sort()) {
     const files = byToken.get(token)!.slice().sort();
-    if (files.length < minFiles || files.length > maxFiles) continue;
+    if (files.length < minFiles) continue;
+    if (files.length > maxFiles) {
+      tooCommon.push({ token, fileCount: files.length });
+      continue;
+    }
     shared.set(token, files);
 
     // Coupling here is symmetric: we do not know which side declares the name
@@ -161,5 +191,25 @@ export function buildNameIndex(
     }
   }
 
-  return { edges, shared };
+  tooCommon.sort((a, b) => b.fileCount - a.fileCount || a.token.localeCompare(b.token));
+  return { edges, shared, maxFiles, tooCommon };
+}
+
+/**
+ * Turn a name index into something the caller can put in front of a person.
+ * Returns nothing when no token was discarded.
+ */
+export function nameIndexLimitation(index: NameIndex): Limitation | null {
+  if (index.tooCommon.length === 0) return null;
+  const examples = index.tooCommon
+    .slice(0, 5)
+    .map((t) => `"${t.token}" (${t.fileCount} files)`)
+    .join(', ');
+  return {
+    what:
+      `${index.tooCommon.length} name(s) appear in more than ${index.maxFiles} files and were treated as common words ` +
+      `rather than identifiers: ${examples}.`,
+    mitigation:
+      'Dependencies expressed only through those names are not in the radius. Raise maxFiles to include them, at the cost of a wider result.',
+  };
 }

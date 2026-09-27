@@ -22,7 +22,15 @@ const HTTP_DECORATOR_RE = /@(Get|Post|Put|Delete|Patch|All)\(\s*['"`]([^'"`]+)['
 const HTTP_CALL_RE = /\b(?:app|router|server)\s*\.\s*(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/i;
 
 const WRITE_SQL_RE = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|ALTER\s+TABLE|DROP\s+TABLE|TRUNCATE|CREATE\s+TABLE)\b/i;
-const ANY_SQL_RE = /\b(?:SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|TRUNCATE)\b/i;
+/**
+ * A string only counts as SQL when a verb is followed by the clause that names
+ * a table. Matching a bare keyword meant the UI copy "Delete your account"
+ * was read as a statement, which set `nature` to `read-only` on a file we had
+ * in fact learnt nothing about — the exact assumption of innocence this
+ * module exists to avoid.
+ */
+const ANY_SQL_RE =
+  /\b(?:SELECT\b[\s\S]*\bFROM|INSERT\s+INTO|UPDATE\s+["'`]?\w+["'`]?\s+SET|DELETE\s+FROM|ALTER\s+TABLE|CREATE\s+TABLE|TRUNCATE\s+(?:TABLE\s+)?\w)/i;
 const TABLE_RE = /\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+["'`]?([a-z_][\w]*)["'`]?/gi;
 
 const SIDE_EFFECTS: readonly (readonly [RegExp, string])[] = [
@@ -96,7 +104,10 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
     sideEffects.push(m[1] ? `${label} ${m[1]}` : label);
   }
 
-  const auth = /@UseGuards\(\s*(\w+)/.exec(src)?.[1] ?? /\brequireAuth\b/.test(src) ? 'requireAuth' : undefined;
+  // `a ?? b ? c : d` parses as `(a ?? b) ? c : d`, which threw the real guard
+  // name away and reported 'requireAuth' for every guarded handler.
+  const declaredGuard = /@UseGuards\(\s*(\w+)/.exec(src)?.[1];
+  const auth = declaredGuard ?? (/\brequireAuth\b/.test(src) ? 'requireAuth' : undefined);
 
   const flags = [...new Set([...src.matchAll(/\b(?:isOn|isEnabled|flag|getFlag)\s*\(\s*['"`]([^'"`]+)/g)].map((m) => m[1]!))];
 
@@ -110,9 +121,11 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
   const nature: CapabilityProfile['nature'] =
     writes.size > 0 || sideEffects.length > 0
       ? 'mutating'
-      : sawSql || callsOut.length > 0 || http !== undefined
+      : sawSql || callsOut.length > 0
         ? 'read-only'
-        : 'unknown';
+        : // An endpoint we could not read the data access of is not read-only,
+          // it is unexamined. Downstream treats unknown as mutating.
+          'unknown';
 
   const profile: CapabilityProfile = {
     file,

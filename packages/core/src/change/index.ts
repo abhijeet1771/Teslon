@@ -35,6 +35,8 @@ export interface ResolveOptions {
   readonly head: string;
   /** Set false in tests, or when the repo is known to be complete. */
   readonly allowFetch?: boolean;
+  /** Not every checkout calls its remote "origin". */
+  readonly remote?: string;
 }
 
 export interface Resolved {
@@ -70,12 +72,13 @@ function deepenUntilMergeBase(
   git: GitRunner,
   base: string,
   head: string,
+  remote: string,
 ): { mergeBase: string | null; deepened: number } {
   let deepened = 0;
   for (const step of DEEPEN_STEPS) {
     for (const ref of [base, head]) {
       try {
-        git(['fetch', '--quiet', `--deepen=${step}`, 'origin', stripRemote(ref)]);
+        git(['fetch', '--quiet', `--deepen=${step}`, remote, stripRemote(ref, remote)]);
       } catch {
         // A ref we cannot fetch is not fatal on its own; the merge-base check
         // below is the real test of whether we have enough history.
@@ -88,8 +91,9 @@ function deepenUntilMergeBase(
   return { mergeBase: null, deepened };
 }
 
-function stripRemote(ref: string): string {
-  return ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref;
+function stripRemote(ref: string, remote: string): string {
+  const prefix = `${remote}/`;
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
 }
 
 function changedFiles(git: GitRunner, from: string, to: string): string[] {
@@ -107,7 +111,7 @@ export function resolveChange(git: GitRunner, opts: ResolveOptions): Resolved {
   let mergeBase = tryMergeBase(git, base, head);
 
   if (!mergeBase && isShallow(git) && opts.allowFetch !== false) {
-    const r = deepenUntilMergeBase(git, base, head);
+    const r = deepenUntilMergeBase(git, base, head, opts.remote ?? 'origin');
     mergeBase = r.mergeBase;
     if (mergeBase) {
       limitations.push({

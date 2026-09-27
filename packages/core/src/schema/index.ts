@@ -124,6 +124,12 @@ export interface TeslonResult {
 export function bandRank(b: Band): number {
   switch (b) {
     case 'certain':
+      return 5;
+    case 'unknown':
+      // A thing we failed to analyse outranks everything we merely inferred.
+      // It was tied with `possible` in the first draft, which made the result
+      // depend on the order signals happened to merge in — a determinism bug
+      // (I3) hiding inside a correctness one.
       return 4;
     case 'likely':
       return 3;
@@ -131,10 +137,6 @@ export function bandRank(b: Band): number {
       return 2;
     case 'look':
       return 1;
-    case 'unknown':
-      // Deliberately above `look`: an unknown is a thing we failed to analyse,
-      // which is more alarming than a history hint, not less.
-      return 2;
   }
 }
 
