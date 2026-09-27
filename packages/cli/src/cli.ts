@@ -7,6 +7,10 @@ import {
   walkWithParents,
   profileFile,
   dataCouplingEdges,
+  buildSymbolEdges,
+  proofPaths,
+  shortestPathPerDestination,
+  exportedSymbols,
   resolveChange,
   gitIn,
   NoMergeBaseError,
@@ -133,6 +137,41 @@ switch (command) {
     break;
   }
 
+  case 'paths': {
+    // Proof, not a picture. A graph of two thousand nodes is a hairball;
+    // two thousand paths sorted by length are read one at a time.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const file = rest[0];
+    if (!file) {
+      console.error('usage: teslon paths <file> [symbol]');
+      process.exitCode = 1;
+      break;
+    }
+    const files = listFiles(root);
+    const edges = buildSymbolEdges(root, files);
+    const symbols = rest[1] ? [rest[1]] : exportedSymbols(root, file);
+    if (symbols.length === 0) {
+      console.error(`${file}: no exported symbols found`);
+      process.exitCode = 2;
+      break;
+    }
+
+    for (const symbol of symbols) {
+      const paths = shortestPathPerDestination(proofPaths(edges, file, symbol));
+      console.log(`\n── change ${symbol}() ──`);
+      if (paths.length === 0) {
+        console.log('   nothing imports it');
+        continue;
+      }
+      for (const p of paths) {
+        const chain = p.steps.map((step) => step.file.split('/').pop()).join('  →  ');
+        console.log(`   ${symbol}()  →  ${chain}${p.exact ? '' : '   [widened: import did not name a symbol]'}`);
+      }
+    }
+    console.log('');
+    break;
+  }
+
   case 'version':
     console.log(`teslon 0.1.0 (schema ${SCHEMA_VERSION})`);
     break;
@@ -149,6 +188,7 @@ teslon — what a change can actually break
   teslon pr [base] [head]     analyse the current branch against its merge base
   teslon analyze <file...>    blast radius for specific files
   teslon profile <file...>    what a file does: endpoint, reads, writes, effects
+  teslon paths <file> [sym]   proof paths from each exported symbol outward
   teslon version
 
 Teslon never narrows on a guess. When it cannot resolve something it widens
