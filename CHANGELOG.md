@@ -5,6 +5,22 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 ## Unreleased
 
 ### Added
+- `teslon merged <sha>`: the pull request is already on the base branch and the
+  branch may be gone, which the change-resolution layer has handled since the
+  first commit — recovering the base from a merge commit's first parent, a
+  squash commit's single parent, or a supplied range for a rebase — with no
+  command that reached it. This is the case a reviewer hits most often: asked
+  about a change after it landed.
+- Git co-change (S5): the mock that has to move whenever its client does, the
+  fixture that encodes an endpoint's response shape — coupling that exists in
+  nobody's imports because there is nothing there for a parser to see. A
+  sweeping commit (a rename, a reformat, a dependency bump) is excluded from
+  coupling but still counted toward how often each file changes, so it cannot
+  make the pairs that survive look stronger than they are.
+- Lockfile diff: a dependency bump has no source diff, so without this a pull
+  request that replaced the date library under twelve screens reported an
+  empty radius. The lockfile names which packages moved; the bare imports name
+  who uses them.
 - Ownership. `CODEOWNERS` is a declaration and git history is evidence, so the
   declaration wins where it exists, the evidence fills the gaps, and every
   assignment says which of the two it came from. A manager chasing the wrong
@@ -75,6 +91,27 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   asserting it.
 
 ### Fixed
+- Two of the three surfaces `teslon` fabricated when run on its own source are
+  fixed at the source rather than suppressed at the report. Every profiler
+  pattern read raw source text including comments and strings, so a line of
+  prose describing a decorator (`// @Get('/x'), @Injectable()`) matched the
+  same regex as a real one, and `Set.add('literal')` matched the same regex as
+  a job queue. Source is now stripped of comments once, at the point of
+  reading (string contents are kept — a route lives inside one), and the job
+  pattern now requires a queue-shaped receiver. The endpoint-gating rule added
+  for the third fabrication had also suppressed a real endpoint whose file
+  read as `types` because TypeScript permits decorators only on classes and
+  members, not on the exported function `@Post(...)` actually sat on; the gate
+  now checks where the route came from (a decorator versus a registration-
+  pattern match) rather than what shape the file classified as.
+- `teslon pr` and `teslon merged` had two live callers of the impact engine
+  that could disagree, because the CLI's own hand-rolled `combinedReverse` /
+  `printRadius` — superseded the day the orchestrator shipped — was still
+  wired to `analyze` before `analyze` existed as a command and was never
+  removed. `teslon cases` read files through the regex profiler `readCode`
+  instead of the AST reader every other command uses, so its case count could
+  disagree with the one the brief quotes; it now shares `casesFor` with the
+  effort roll-up.
 - Clone detection was 87% of the runtime and a quadratic scaling wall: it
   compared every pair of files, which measured 3,673ms of a 4,217ms run on
   5,000 files, for the signal whose measured counterfactual on the torture

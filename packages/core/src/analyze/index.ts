@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { CODE_RE, buildImportGraph, walkWithParents, type Alias, type Edge } from '../graph/imports.js';
 import { TEXT_RE, buildNameIndex, nameIndexLimitation } from '../graph/names.js';
 import { buildSymbolEdges, proofPaths, shortestPathPerDestination, type ProofPath } from '../graph/symbols.js';
@@ -12,6 +14,7 @@ import {
 } from '../graph/widening.js';
 import { buildJavaGraph, readJava, unresolvedSummary, type JavaReading } from '../lang/java/index.js';
 import { estimateEffort } from '../effort/index.js';
+import { bareImports, coChangeEdges, lockfileEdges, type Commit } from '../history/index.js';
 import { ownershipRollup, resolveOwnership, type Ownership } from '../owners/index.js';
 import { readAst, type AstReading } from '../profile/ast.js';
 import { dataCouplingEdges, minimumCases, profileFile } from '../profile/capability.js';
@@ -79,6 +82,19 @@ export interface AnalyzeOptions {
    * ownership as `none`, which is true and worth knowing on a Tier 1 file.
    */
   readonly authors?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Recent commits, each as the set of files it touched. This turns on the one
+   * signal that reads what people did rather than what the code says — the mock
+   * that moves with its client, the fixture that encodes a response shape.
+   * Core does not run git, so the caller supplies it.
+   */
+  readonly commits?: readonly Commit[];
+  /**
+   * A changed lockfile, before and after. A dependency bump has no source diff,
+   * so without this a pull request that replaced the date library under twelve
+   * screens reports an empty radius.
+   */
+  readonly lockfile?: { readonly file: string; readonly before: string; readonly after: string };
 }
 
 export interface AnalyzeResult {
@@ -545,6 +561,41 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     }
   }
 
+  const coChange = opts.commits ? coChangeEdges(opts.commits) : null;
+  if (coChange) limitations.push(...coChange.limitations);
+
+  let lockEdges: readonly Edge[] = [];
+  if (opts.lockfile) {
+    const cache = new Map<string, string>();
+    const readFile = (f: string): string => {
+      const hit = cache.get(f);
+      if (hit !== undefined) return hit;
+      let text = '';
+      try {
+        text = readFileSync(join(root, f), 'utf8');
+      } catch {
+        text = '';
+      }
+      cache.set(f, text);
+      return text;
+    };
+    const lock = lockfileEdges(
+      opts.lockfile.file,
+      opts.lockfile.before,
+      opts.lockfile.after,
+      bareImports(readFile, allFiles),
+    );
+    lockEdges = lock.edges;
+    limitations.push(...lock.limitations);
+    if (lock.moved.length > 0) {
+      limitations.push({
+        what: `${lock.moved.length} dependenc${lock.moved.length === 1 ? 'y' : 'ies'} moved with no change to their own source: ${lock.moved.slice(0, 5).map((m) => `${m.name} ${m.from} → ${m.to}`).join(', ')}${lock.moved.length > 5 ? `, and ${lock.moved.length - 5} more` : ''}.`,
+        mitigation:
+          'Files importing them are in the radius under the lockfile signal. What changed inside those packages is not visible from here, so their own release notes are the only place to read it.',
+      });
+    }
+  }
+
   const allEdges: Edge[] = [
     ...importGraph.edges,
     ...nameIndex.edges,
@@ -557,6 +608,8 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     ...clones.edges,
     ...dataCouplingEdges(couplingProfiles),
     ...javaGraph.edges,
+    ...(coChange?.edges ?? []),
+    ...lockEdges,
   ];
 
   const adjacency = new Map<string, Set<string>>();
@@ -689,10 +742,22 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   for (const p of profiles) {
     const isNew = newFiles.has(p.file);
     if (p.http) {
-      // A route is only asserted when the file reads as an endpoint. A route
-      // string found in a file that is not one is a string, not a route.
+      // Gate on where the route came from, not on what shape the file reads
+      // as. Gating on shape suppressed a real endpoint: `@Post('/api/...')` on
+      // an exported function is as declared as a route gets, but TypeScript
+      // only permits decorators on classes and members, so the AST reader
+      // cannot attach it and the file classified as `types` on the strength of
+      // the two interfaces beside it.
+      //
+      // Provenance is the thing that actually separates the two cases. A
+      // decorator sits on what it routes to. A registration pattern can match
+      // text that merely looks like one — the fabricated `GET /x` came from a
+      // comment reading `// app.get('/x', …)` — so that one needs the file to
+      // read as an endpoint before it is asserted.
       const reading = headReadings.get(p.file);
-      if (reading && (reading.shape === 'endpoint' || reading.httpRoute)) {
+      const declared = p.httpFrom === 'decorator';
+      const corroborated = reading ? reading.shape === 'endpoint' || reading.httpRoute !== undefined : false;
+      if (declared || corroborated) {
         addSurface('endpoint', `${p.http.method} ${p.http.path}`, p.file, isNew);
       } else withheld++;
     }
@@ -907,14 +972,22 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   }
   const completeness = assessCompleteness({
     allEdges,
-    contextual: opts.baseReadings
-      ? {}
-      : {
+    contextual: {
+      ...(opts.commits
+        ? {}
+        : { cochange: 'no commit history was supplied to this run, so files that always move together were not linked' }),
+      ...(opts.lockfile
+        ? {}
+        : { lockfile: 'no lockfile diff was supplied, so a dependency bump with no source change is invisible' }),
+      ...(opts.baseReadings
+        ? {}
+        : {
           // Saying "ran and found nothing" about a mechanism that never ran is
           // the exact overstatement this whole block exists to prevent.
-          contract:
-            'the files were not read at the merge base, so no contract change could be detected even if there was one',
-        },
+            contract:
+              'the files were not read at the merge base, so no contract change could be detected even if there was one',
+          }),
+    },
     seeds: change.files,
     radiusSize: dist.size,
     allFiles,

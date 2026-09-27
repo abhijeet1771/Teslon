@@ -1,19 +1,13 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   listFiles,
-  buildImportGraph,
-  buildNameIndex,
-  walk,
-  walkWithParents,
   profileFile,
-  dataCouplingEdges,
   buildSymbolEdges,
-  wideningEdges,
   proofPaths,
   shortestPathPerDestination,
   exportedSymbols,
-  readCode,
   readAst,
   readJava,
   buildJavaGraph,
@@ -22,55 +16,79 @@ import {
   sortChanges,
   analyze,
   readAstSource,
-  isTestFile,
   TIER_LABEL,
   type AstReading,
   type TeslonResult,
   type Tier,
-  type Limitation,
   gitIn as gitRunner,
   resolveChange,
+  resolveMerged,
+  casesFor,
   gitIn,
   NoMergeBaseError,
   NotAGitRepositoryError,
   GitUnavailableError,
   SCHEMA_VERSION,
-  type Provenance,
 } from '@teslon/core';
 
 const [, , command = 'help', ...rest] = process.argv;
 
-function combinedReverse(root: string) {
-  const files = listFiles(root);
-  const graph = buildImportGraph(root, files);
-  const names = buildNameIndex(root, files);
-  const profiles = files
-    .filter((f) => /\.(ts|tsx|js|mjs)$/.test(f))
-    .map((f) => profileFile(root, f))
-    .filter((p): p is NonNullable<typeof p> => p !== null);
 
-  const rev = new Map<string, Set<string>>(files.map((f) => [f, new Set<string>()]));
-  const why = new Map<string, Provenance[]>();
-
-  // The widening layers are what take recall from roughly two thirds to
-  // almost all of it: every one exists because a dependency has no import to
-  // follow. Measured on the torture fixture, 69.6% without them, 95.7% with.
-  for (const e of [
-    ...graph.edges,
-    ...names.edges,
-    ...dataCouplingEdges(profiles),
-    ...wideningEdges(root, files),
-  ]) {
-    rev.get(e.from)?.add(e.to);
-    const key = `${e.from}\u0000${e.to}`;
-    const list = why.get(key) ?? [];
-    list.push(e.why);
-    why.set(key, list);
+/**
+ * Recent commits as sets of touched files, which is all the co-change signal
+ * needs. `--no-history` turns it off; a shallow clone simply yields fewer
+ * commits, and the analysis says so rather than pretending it looked.
+ */
+function commitsFrom(root: string, limit = 400): readonly (readonly string[])[] {
+  const git = gitIn(root);
+  let raw: string;
+  try {
+    raw = git(['log', '-n', String(limit), '--name-only', '--no-merges', '--format=%x00', '--diff-filter=d']);
+  } catch {
+    return [];
   }
-  return { files, rev, why, profiles };
+  return raw
+    .split('\u0000')
+    .map((block) =>
+      block
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0),
+    )
+    .filter((files) => files.length > 0);
 }
 
+const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'npm-shrinkwrap.json'];
 
+/**
+ * The lockfile as it was and as it is, when the change touched one.
+ *
+ * A dependency bump has no source diff, so the radius computed from it is empty
+ * and the report reads as "nothing is affected" for a change that replaced a
+ * library under a dozen screens.
+ */
+function lockfileDiff(
+  root: string,
+  change: { readonly mergeBase: string; readonly files: readonly string[] },
+): { file: string; before: string; after: string } | undefined {
+  const touched = change.files.find((f) => LOCKFILES.some((l) => f === l || f.endsWith(`/${l}`)));
+  if (!touched) return undefined;
+  const git = gitIn(root);
+  const at = (ref: string): string => {
+    try {
+      return git(['show', `${ref}:${touched}`]);
+    } catch {
+      return '';
+    }
+  };
+  let after: string;
+  try {
+    after = readFileSync(join(root, touched), 'utf8');
+  } catch {
+    after = '';
+  }
+  return { file: touched, before: at(change.mergeBase), after };
+}
 
 /**
  * Recent authors per file, as git evidence for ownership where CODEOWNERS says
@@ -359,35 +377,6 @@ function printResult(result: TeslonResult): void {
   console.log('');
 }
 
-function printRadius(root: string, seeds: readonly string[]): void {
-  const { files, rev, why } = combinedReverse(root);
-  const missing = seeds.filter((s) => !files.includes(s));
-  if (missing.length) {
-    console.error(`not in the repository: ${missing.join(', ')}`);
-    process.exitCode = 2;
-    return;
-  }
-
-  const { dist, parent } = walkWithParents(rev, seeds);
-  const rows = [...dist]
-    .filter(([f]) => !seeds.includes(f))
-    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
-
-  console.log(`\nchanged: ${seeds.join(', ')}`);
-  console.log(`radius:  ${rows.length} file(s) reached of ${files.length}\n`);
-
-  for (const [file, hops] of rows) {
-    const from = parent.get(file);
-    const reason = from ? why.get(`${from}\u0000${file}`)?.[0] : undefined;
-    const label = reason
-      ? `${reason.signal}: ${reason.detail}`
-      : 'reached, reason unavailable';
-    const through = from && hops > 1 ? `  (through ${from.split('/').pop()})` : '';
-    console.log(`  hop ${hops}  ${file.padEnd(42)} ${label}${through}`);
-  }
-  console.log('');
-}
-
 switch (command) {
   case 'analyze': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
@@ -444,6 +433,11 @@ switch (command) {
         limitations,
         baseReadings: baseReadingsAt(root, change.mergeBase, change.files),
         authors: authorsFor(root, change.files),
+        ...(rest.includes('--no-history') ? {} : { commits: commitsFrom(root) }),
+        ...((): { lockfile?: { file: string; before: string; after: string } } => {
+          const lock = lockfileDiff(root, { mergeBase: change.mergeBase, files: change.files });
+          return lock ? { lockfile: lock } : {};
+        })(),
       });
       finish(result, rest, json);
     } catch (err) {
@@ -455,6 +449,70 @@ switch (command) {
         console.error('Teslon will not guess a change set. Fetch more history and try again.');
         process.exitCode = 3;
       } else throw err;
+    }
+    break;
+  }
+
+  case 'merged': {
+    // The pull request is already on the base branch and the branch may be
+    // gone. This is the case a reviewer hits most often — you are asked about a
+    // change after it landed — and the recovery for it has existed since the
+    // first commit with no way to reach it.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const json = rest.includes('--json');
+    const args = rest.filter((r) => !r.startsWith('--'));
+    const sha = args[0];
+    if (!sha) {
+      console.error('usage: teslon merged <sha> [<from>..<to>] [--json] [--junit f] [--fail-on ...]');
+      console.error('');
+      console.error('  <sha>        the merge or squash commit the pull request landed as');
+      console.error('  <from>..<to> the commit range, for a rebase merge — the replayed commits');
+      console.error('               carry new hashes and nothing ties them together, so this');
+      console.error('               cannot be recovered from the tree and has to be supplied');
+      process.exitCode = 1;
+      break;
+    }
+    const range = args[1]?.includes('..')
+      ? { from: args[1].split('..')[0]!, to: args[1].split('..')[1]! }
+      : undefined;
+    try {
+      const { change, limitations } = resolveMerged(gitIn(root), sha, range);
+      if (!json) {
+        console.log(
+          `\nrecovered from: ${change.recoveredFrom}   base: ${change.baseSha.slice(0, 10)}   changed: ${change.files.length} file(s)`,
+        );
+      }
+      if (change.files.length === 0) {
+        console.log('That commit changed nothing.\n');
+        break;
+      }
+      const { result } = analyze({
+        root,
+        allFiles: listFiles(root),
+        repo: root,
+        change,
+        limitations,
+        // The tree on disk is whatever is checked out now, which for a merged
+        // change is usually later than the change itself. Reading the files at
+        // the recovered base is what keeps the semantic diff about *this*
+        // change rather than about everything since.
+        baseReadings: baseReadingsAt(root, change.baseSha, change.files),
+        authors: authorsFor(root, change.files),
+        ...(rest.includes('--no-history') ? {} : { commits: commitsFrom(root) }),
+        ...((): { lockfile?: { file: string; before: string; after: string } } => {
+          const lock = lockfileDiff(root, { mergeBase: change.baseSha, files: change.files });
+          return lock ? { lockfile: lock } : {};
+        })(),
+      });
+      finish(result, rest, json);
+    } catch (err) {
+      if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
+        console.error(`\n${err.message}\n`);
+        process.exitCode = 4;
+      } else {
+        console.error(`\ncould not recover a change set from ${sha}: ${(err as Error).message}\n`);
+        process.exitCode = 2;
+      }
     }
     break;
   }
@@ -525,6 +583,9 @@ switch (command) {
 
   case 'cases': {
     // What a tester is obliged to cover, read out of what the code declares.
+    // The obligations come from `casesFor`, which is the same function the
+    // effort roll-up counts with — a per-file list that did not add up to the
+    // number in the brief would discredit both.
     const root = process.env.TESLON_ROOT ?? process.cwd();
     if (rest.length === 0) {
       console.error('usage: teslon cases <file...>');
@@ -532,31 +593,38 @@ switch (command) {
       break;
     }
     for (const file of rest) {
-      const r = readCode(root, file);
+      const r = readAst(root, file);
       if (!r) {
         console.error(`${file}: unreadable`);
         process.exitCode = 2;
         continue;
       }
-      console.log(`\n┌─ ${r.file}   [${r.kind}]`);
-      if (r.ui) {
-        console.log(`│ props        ${r.ui.props.join(', ') || '—'}`);
-        console.log(`│ state        ${r.ui.state.join(', ') || '—'}  ·  ${r.ui.effects} effect(s)`);
-        console.log(`│ events       ${r.ui.events.join(', ') || '—'}`);
-        console.log(`│ shows        ${r.ui.conditionalRenders.join(', ') || '—'}`);
+      const cases = casesFor(r);
+      console.log(`\n┌─ ${r.file}   [${r.shape}]`);
+      if (r.exports.length) console.log(`│ exports      ${r.exports.join(', ')}`);
+      if (r.props.length) console.log(`│ props        ${r.props.join(', ')}`);
+      if (r.state.length) console.log(`│ state        ${r.state.join(', ')}`);
+      if (r.methods.length) console.log(`│ methods      ${r.methods.join(', ')}`);
+      if (r.injected.length) console.log(`│ depends on   ${r.injected.join(', ')}`);
+      if (r.auth) console.log(`│ guarded by   ${r.auth}`);
+      if (r.httpRoute) console.log(`│ route        ${r.httpRoute}`);
+      if (r.claims.length) {
+        console.log(`│ already claimed by tests:`);
+        for (const c of r.claims) console.log(`│   ✓ ${[...c.context, c.name].join(' › ')}`);
       }
-      for (const c of r.constraints) {
-        console.log(`│ ${c.field.padEnd(12)} ${c.rules.join(' ')}  →  try ${c.boundaries.join(', ')}`);
+      console.log('├─');
+      if (cases.length === 0) {
+        console.log('│ (nothing was recognised — no cases claimed)');
+      } else {
+        console.log(`│ ${cases.length} case(s) this file obliges:`);
+        for (const c of cases) console.log(`│ • ${c}`);
       }
-      if (r.cases.length === 0) console.log('│ (nothing was recognised — no cases claimed)');
-      for (const c of r.cases) console.log(`│ • ${c}`);
       for (const n of r.notRead) console.log(`└─ not read: ${n}`);
       if (r.notRead.length === 0) console.log('└─');
     }
     console.log('');
     break;
   }
-
   case 'changed': {
     // What is different about behaviour, not about text. This is what the
     // reading engine is for inside an impact analyser.

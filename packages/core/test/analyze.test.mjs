@@ -5,7 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { analyze, listFiles, isTestFile, readAst, TIER_LABEL } from '../dist/index.js';
+import {
+  analyze,
+  listFiles,
+  isTestFile,
+  readAst,
+  profileFile,
+  stripComments,
+  coChangeEdges,
+  lockfileVersions,
+  TIER_LABEL,
+} from '../dist/index.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
@@ -344,4 +354,139 @@ test('build output is not reported as a language nobody reads', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- history: what the repository did, not what the code says ------------
+
+test('co-change links files that move together and refuses to link sweeps', () => {
+  // client and its mock move together; unrelated.ts just happens to be busy.
+  const commits = [
+    ['src/client.ts', 'test/client.mock.ts'],
+    ['src/client.ts', 'test/client.mock.ts'],
+    ['src/client.ts', 'test/client.mock.ts'],
+    ['src/unrelated.ts'],
+    ['src/unrelated.ts'],
+    ['src/unrelated.ts'],
+    ['src/unrelated.ts', 'src/client.ts'],
+  ];
+  const { edges, commitsRead } = coChangeEdges(commits);
+  assert.equal(commitsRead, 4);
+  const pairs = new Set(edges.map((e) => [e.from, e.to].sort().join(' ~ ')));
+  assert.ok(pairs.has('src/client.ts ~ test/client.mock.ts'), [...pairs].join(', '));
+  // One shared commit out of four is coincidence, not coupling.
+  assert.ok(!pairs.has('src/client.ts ~ src/unrelated.ts'), [...pairs].join(', '));
+  // History does not say which one leads, so both directions exist.
+  assert.equal(edges.filter((e) => e.from === 'src/client.ts').length, 1);
+  assert.equal(edges.filter((e) => e.to === 'src/client.ts').length, 1);
+  for (const e of edges) assert.equal(e.why.signal, 'cochange');
+});
+
+/**
+ * A commit that moves 200 files is a rename or a reformat. Reading it as
+ * coupling links every pair in it — 19,900 false edges from one commit — and
+ * the files must still count toward how often each one changes, or the
+ * surviving pairs are made to look stronger than they are.
+ */
+test('a sweeping commit is excluded from coupling but still counted as change', () => {
+  const sweep = Array.from({ length: 60 }, (_, i) => `src/f${i}.ts`);
+  const commits = [sweep, sweep, sweep, ['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/b.ts']];
+  const { edges, commitsRead, commitsSkipped, limitations } = coChangeEdges(commits);
+  assert.equal(commitsSkipped, 3);
+  assert.equal(commitsRead, 3);
+  assert.ok(!edges.some((e) => /f0|f1\b/.test(e.from)), 'the sweep must not couple its files');
+  assert.ok(edges.some((e) => e.from === 'src/a.ts' && e.to === 'src/b.ts'));
+  assert.ok(limitations.some((l) => /more than 40 files/.test(l.what)));
+  assert.doesNotMatch(limitations[0].what, /commit touched.*were not/, 'singular commit, singular verb');
+});
+
+test('I3 · co-change is deterministic regardless of commit order within a set', () => {
+  const commits = [
+    ['b.ts', 'a.ts'],
+    ['a.ts', 'b.ts'],
+    ['b.ts', 'a.ts'],
+  ];
+  const one = coChangeEdges(commits);
+  const two = coChangeEdges([...commits].reverse());
+  assert.equal(JSON.stringify(one.edges), JSON.stringify(two.edges));
+});
+
+test('a dependency bump with no source diff is not an empty radius', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'teslon-lock-'));
+  try {
+    cpSync(TORTURE, dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'src/uses-dates.ts'),
+      "import { format } from 'date-fns';\nimport _ from 'lodash/fp';\nexport const f = () => format(new Date(), 'x') + _.identity(1);\n",
+    );
+    const before = JSON.stringify({
+      packages: { 'node_modules/date-fns': { version: '2.30.0' }, 'node_modules/lodash': { version: '4.17.21' } },
+    });
+    const after = JSON.stringify({
+      packages: { 'node_modules/date-fns': { version: '3.0.0' }, 'node_modules/lodash': { version: '4.17.21' } },
+    });
+    writeFileSync(join(dir, 'package-lock.json'), after);
+
+    const { result } = run(dir, ['package-lock.json'], {
+      lockfile: { file: 'package-lock.json', before, after },
+    });
+
+    const reached = result.radius.find((r) => r.file === 'src/uses-dates.ts');
+    assert.ok(reached, 'the file importing the bumped package must be in the radius');
+    const why = reached.why.find((w) => w.signal === 'lockfile');
+    assert.ok(why, JSON.stringify(reached.why));
+    assert.match(why.detail, /date-fns, which moved 2\.30\.0 → 3\.0\.0/);
+    // lodash did not move, so importing it is not a reason.
+    assert.doesNotMatch(JSON.stringify(reached.why), /lodash/);
+    assert.ok(result.limitations.some((l) => /moved with no change to their own source/.test(l.what)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lockfile versions are read from all three formats', () => {
+  const npm = lockfileVersions(
+    JSON.stringify({ packages: { 'node_modules/@scope/pkg': { version: '1.2.3' }, 'node_modules/plain': { version: '4.5.6' } } }),
+    'package-lock.json',
+  );
+  assert.equal(npm.get('@scope/pkg'), '1.2.3');
+  assert.equal(npm.get('plain'), '4.5.6');
+
+  const yarn = lockfileVersions('lodash@^4.17.0:\n  version "4.17.21"\n\n"@scope/x@^1.0.0":\n  version "1.4.0"\n', 'yarn.lock');
+  assert.equal(yarn.get('lodash'), '4.17.21');
+  assert.equal(yarn.get('@scope/x'), '1.4.0');
+
+  const pnpm = lockfileVersions("packages:\n  /lodash@4.17.21:\n    resolution: {}\n  /@scope/y@2.0.1:\n    resolution: {}\n", 'pnpm-lock.yaml');
+  assert.equal(pnpm.get('lodash'), '4.17.21');
+  assert.equal(pnpm.get('@scope/y'), '2.0.1');
+});
+
+// ---- the fabrications, fixed at the source rather than suppressed --------
+
+/**
+ * All three fabricated surfaces came from the profiler reading prose. The
+ * endpoint `GET /x` was matched in a line documenting decorator syntax; the
+ * background job was matched on `Set.add('literal')`.
+ */
+test('the profiler reads code, never the prose around it', () => {
+  const selfRead = join(REPO, 'packages', 'core', 'src', 'profile', 'ast.ts');
+  assert.ok(readFileSync(selfRead, 'utf8').includes("@Get('/x')"), 'the comment this test guards must still exist');
+
+  const p = profileFile(REPO, 'packages/core/src/profile/ast.ts');
+  assert.equal(p.http, undefined, 'a decorator inside a comment is not a route');
+  assert.deepEqual(p.sideEffects, [], 'Set.add() is not a job queue');
+
+  // And the real thing still reads.
+  const real = profileFile(join(REPO, 'fixtures', 'api'), 'api/cancelOrder.ts');
+  assert.deepEqual(real.http, { method: 'POST', path: '/api/orders/:orderId/cancel' });
+  assert.equal(real.httpFrom, 'decorator');
+  assert.ok(real.sideEffects.includes('sends email'));
+});
+
+test('stripComments keeps the strings a route lives in', () => {
+  assert.equal(stripComments("const a = 'http://x/y'; // gone"), "const a = 'http://x/y'; ");
+  assert.equal(stripComments('const a = `a//b`;'), 'const a = `a//b`;');
+  assert.equal(stripComments("const a = 1; /* gone */ const b = 2;"), 'const a = 1;   const b = 2;');
+  // An escaped quote does not close the string, so the whole thing — comment
+  // text included — is inside it and stripComments must leave it alone.
+  assert.equal(stripComments("const s = '\\'; // real'"), "const s = '\\'; // real'");
 });

@@ -4,7 +4,7 @@
  * shows must exist here first.
  */
 
-export const SCHEMA_VERSION = '1.4.0';
+export const SCHEMA_VERSION = '1.5.0';
 
 /**
  * How sure we are that an item is affected.
@@ -72,6 +72,13 @@ export interface CapabilityProfile {
   readonly file: string;
   readonly symbol?: string;
   readonly http?: { readonly method: string; readonly path: string };
+  /**
+   * How the route was found. A decorator or a route registration is a
+   * declaration; a call-shaped match anywhere in the source is a guess, and the
+   * two must not be asserted with the same confidence — a fabricated endpoint
+   * `GET /x` once came from a *comment* reading `// app.get('/x', …)`.
+   */
+  readonly httpFrom?: 'decorator' | 'registration';
   readonly input?: { readonly type: string; readonly fields: readonly string[] };
   readonly output?: { readonly type: string; readonly fields: readonly string[] };
   readonly readsTables: readonly string[];

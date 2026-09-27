@@ -103,3 +103,44 @@ export function estimateEffort(a: {
         : `${minimumCasesTotal} cases is the floor, derived from counted branches, boundaries and surfaces. Multiply by your own average per case; Teslon will not turn this into hours, because velocity and familiarity are not in the repository.`,
   };
 }
+
+/**
+ * What a tester is obliged to cover in one file, read out of what the code
+ * declares about itself.
+ *
+ * This lives next to `estimateEffort` rather than in the CLI on purpose: the
+ * per-file obligation list and the roll-up total have to be derived from the
+ * same rules, or a reader will find a file whose cases do not add up to the
+ * number the brief quoted, and stop trusting both.
+ */
+export function casesFor(reading: AstReading): string[] {
+  const cases: string[] = [];
+
+  for (const c of reading.constraints) {
+    if (c.boundaries.length > 0) {
+      cases.push(`${c.field}: try ${c.boundaries.join(', ')} — the values its own rules (${c.rules.join(' ')}) turn on`);
+    } else {
+      cases.push(`${c.field}: input that fails ${c.rules.join(' ')}`);
+    }
+  }
+
+  // Both sides of every branch. A branch tested one way round is half tested,
+  // and the literals in the condition name the inputs that choose the side.
+  for (const b of reading.branches) {
+    cases.push(
+      b.literals.length > 0
+        ? `line ${b.line}: both sides of \`${b.condition}\` — using ${b.literals.join(', ')}`
+        : `line ${b.line}: both sides of \`${b.condition}\``,
+    );
+  }
+
+  for (const r of reading.conditionalRenders) cases.push(`reach the state that renders <${r}>`);
+  for (const e of reading.events) cases.push(`fire ${e}`);
+  for (const a of reading.actions) cases.push(`dispatch ${a}`);
+  for (const t of reading.throws) cases.push(`make it throw ${t}`);
+  for (const p of reading.props) cases.push(`with and without ${p}`);
+
+  // Deduplicated and sorted so the same file always reads the same way — a
+  // list that reorders between runs cannot be diffed or reviewed.
+  return [...new Set(cases)].sort();
+}

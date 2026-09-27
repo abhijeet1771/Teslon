@@ -152,6 +152,7 @@ No model is involved.
 | Command | Does |
 |---|---|
 | `teslon pr [base] [head]` | Analyse a branch against its merge base |
+| `teslon merged <sha> [from..to]` | Recover an already-merged pull request and analyse it |
 | `teslon analyze <file…>` | Blast radius for specific files |
 | `teslon profile <file…>` | What a file does: endpoint, reads, writes, effects, auth, flags |
 

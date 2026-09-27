@@ -37,7 +37,10 @@ const SIDE_EFFECTS: readonly (readonly [RegExp, string])[] = [
   [/\bsend(?:Mail|Email)\s*\(/i, 'sends email'],
   [/\bemit\s*\(\s*['"`]([^'"`]+)/, 'emits event'],
   [/\bpublish\s*\(\s*['"`]([^'"`]+)/, 'publishes message'],
-  [/\benqueue\s*\(|\.\s*add\s*\(\s*['"`]/i, 'enqueues a job'],
+  // The receiver has to look like a queue. Matching any `.add('…')` made every
+  // `Set.add('literal')` in the codebase report a background job, which is how
+  // the AST reader came to be described as enqueuing work.
+  [/\benqueue\s*\(|\b(?:queue|jobs?|tasks?|worker|bull|sqs|kafka|producer|scheduler)\w*\s*\.\s*add\s*\(/i, 'enqueues a job'],
   [/\bcharge\s*\(|payments?\.|stripe\.|\/refund\b/i, 'touches payments'],
   [/\bwriteFile|\bunlink|\bmkdir/i, 'writes to disk'],
 ];
@@ -62,10 +65,80 @@ function sqlLiterals(src: string): string[] {
   return out;
 }
 
+
+/**
+ * Source with its comments removed, for the patterns that must not match prose.
+ *
+ * Every fabricated surface this profiler has produced came from a comment. The
+ * endpoint `GET /x` was read out of a line documenting decorator syntax —
+ * `// ---- decorators: @Get('/x'), @Injectable() ----` — in the AST reader's
+ * own source. A regex cannot tell a route from a sentence about routes, and the
+ * cheapest thing that can is a scanner that knows where the code is.
+ *
+ * String literals are deliberately kept: a route *is* a string literal, so
+ * stripping those would remove the thing being looked for. This is not the full
+ * AST migration, which would also stop a route inside an unrelated string from
+ * matching; it removes the source that produced every case seen so far.
+ *
+ * Written as a state machine rather than a regex because the cases that break
+ * naive stripping are ordinary: `'http://example.com'` contains `//`, a
+ * template literal can span lines, and a regular expression can contain both
+ * quotes and slashes.
+ */
+export function stripComments(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+
+  while (i < n) {
+    const c = src[i]!;
+    const next = src[i + 1];
+
+    if (c === '/' && next === '/') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      // Keep a space so `a/*x*/b` does not become the single token `ab`.
+      out += ' ';
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < n) {
+        const d = src[i]!;
+        out += d;
+        i++;
+        if (d === '\\') {
+          if (i < n) {
+            out += src[i]!;
+            i++;
+          }
+          continue;
+        }
+        if (d === quote) break;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+
+  return out;
+}
+
 export function profileFile(root: string, file: string): CapabilityProfile | null {
   let src: string;
   try {
-    src = readFileSync(join(root, file), 'utf8');
+    // Stripped once, here, so that every pattern below reads code and none of
+    // them reads prose. Doing it per-pattern was the first attempt and it left
+    // the next pattern someone adds free to match a comment again.
+    src = stripComments(readFileSync(join(root, file), 'utf8'));
   } catch {
     return null;
   }
@@ -81,6 +154,10 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
     : call
       ? { method: call[1]!.toUpperCase(), path: call[2]! }
       : undefined;
+  // A decorator sits on the thing it routes to. A registration pattern can
+  // match text that merely looks like one, including a comment, so which of
+  // the two it was has to travel with the route.
+  const httpFrom: 'decorator' | 'registration' | undefined = dec ? 'decorator' : call ? 'registration' : undefined;
 
   const inTypeName = /function\s+\w+\s*\(\s*\w+\s*:\s*(\w+)/.exec(src)?.[1];
   const outTypeName = /\)\s*:\s*Promise<\s*(\w+)\s*>/.exec(src)?.[1];
@@ -131,6 +208,7 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
     file,
     ...(symbol ? { symbol } : {}),
     ...(http ? { http } : {}),
+    ...(httpFrom ? { httpFrom } : {}),
     ...(inTypeName ? { input: { type: inTypeName, fields: interfaceFields(src, inTypeName) } } : {}),
     ...(outTypeName ? { output: { type: outTypeName, fields: interfaceFields(src, outTypeName) } } : {}),
     readsTables: [...reads].sort(),
