@@ -4,7 +4,7 @@
  * shows must exist here first.
  */
 
-export const SCHEMA_VERSION = '1.0.0';
+export const SCHEMA_VERSION = '1.3.0';
 
 /**
  * How sure we are that an item is affected.
@@ -17,6 +17,7 @@ export type Band = (typeof BANDS)[number];
 
 /** Signals that can put an item in the radius. One edge, one reason. */
 export type SignalId =
+  | 'changed' // the file is in the diff itself. Not an inference — the seed.
   | 'import' // S1  reverse import graph
   | 'route' // S2  url -> page -> spec
   | 'coverage' // S3  a test really executed this line
@@ -106,16 +107,98 @@ export interface ChangeSet {
   readonly recoveredFrom?: 'merge-commit' | 'squash-commit' | 'commit-range';
 }
 
+/**
+ * Testing priority, which is deliberately *not* the same thing as a band.
+ *
+ * A band says how sure we are that a file is affected. A tier says what to
+ * open first. They come apart constantly: a `possible` change to an untested
+ * payment endpoint has to be tested before a `certain` change to a comment in
+ * a well-covered helper. Ranking work by confidence alone inverts the order
+ * a lead actually needs.
+ *
+ * The labels never say "not impacted". Tier 4 means we could not rule it out,
+ * and a reader who treats it as "safe to skip" has been told something false.
+ */
+export type Tier = 1 | 2 | 3 | 4;
+
+export const TIER_LABEL: Record<Tier, string> = {
+  1: 'Test first — directly impacted',
+  2: 'Test next — moderately impacted',
+  3: 'Smoke — lightly impacted',
+  4: 'Eyes on — could not be ruled out',
+};
+
+export interface ScoreFactor {
+  readonly factor: string;
+  readonly points: number;
+  /** Why this factor scored what it did. A number nobody can explain is a number nobody trusts. */
+  readonly detail: string;
+}
+
+export interface PriorityItem {
+  readonly file: string;
+  readonly tier: Tier;
+  readonly score: number;
+  /** Every component of the score, named and summing to it exactly. */
+  readonly because: readonly ScoreFactor[];
+  readonly band: Band;
+  /** Things a person can open that live in this file. */
+  readonly surfaces: readonly string[];
+}
+
+/**
+ * A test that is inside the radius, and what it covers of this change.
+ *
+ * Tests are in the radius because they are genuinely impacted, but they do not
+ * belong in the priority list: a lead reading "Tier 4: checkout.spec.ts" is
+ * being told to keep an eye on a spec file, which is not a thing anyone does.
+ * A test is something you *run*, so it gets its own list, ordered by how much
+ * of the change it covers.
+ */
+export interface TestToRun {
+  readonly file: string;
+  /** Changed files this test reaches directly, by import. */
+  readonly coversDirectly: readonly string[];
+  /** Changed files it reaches only through something else. */
+  readonly coversIndirectly: readonly string[];
+  /** Highest tier among the files it covers — run the highest first. */
+  readonly highestTierCovered: Tier;
+}
+
+/**
+ * The result's own account of how much it can be trusted.
+ *
+ * This exists because the dangerous failure of an impact analyser is not being
+ * wrong — it is being confidently incomplete. A radius printed with no caveat
+ * reads as "the impact is exactly this", and a lead who believes that ships
+ * untested code. So the run states which signals ran, which are not wired up
+ * at all, and what it could not read, and the verdict is written to be quoted.
+ */
+export interface Completeness {
+  readonly signalsRun: readonly { readonly signal: SignalId; readonly edges: number; readonly filesAdded: number }[];
+  /** Declared signals that contributed nothing in this run, and why. */
+  readonly signalsAbsent: readonly { readonly signal: SignalId; readonly why: string }[];
+  /** Files no signal could read. Each one is a hole of unknown size. */
+  readonly unreadable: readonly string[];
+  /** The sentence to read before trusting the radius. */
+  readonly verdict: string;
+}
+
 export interface TeslonResult {
   readonly schemaVersion: string;
   readonly repo: string;
   readonly change: ChangeSet;
   readonly radius: readonly RadiusItem[];
+  /** The radius again, ordered by what to test first. Production code only. */
+  readonly priority: readonly PriorityItem[];
+  /** Existing tests that touch this change, and what each one covers. */
+  readonly tests: readonly TestToRun[];
   readonly surfaces: readonly Surface[];
   readonly profiles: readonly CapabilityProfile[];
   /** Changed lines no test executes. The highest-value output. */
   readonly gaps: readonly { readonly file: string; readonly reason: string }[];
   readonly limitations: readonly Limitation[];
+  readonly completeness: Completeness;
   /** Plain-language brief for whoever has to test this. */
   readonly brief: readonly string[];
 }

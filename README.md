@@ -57,6 +57,57 @@ A fifth rule has no test but governs the design: Teslon never guesses a change
 set. If the merge base cannot be resolved it fails loudly rather than
 reporting a confident wrong answer.
 
+### The one place the invariants reverse
+
+I1 and I2 are about the **radius**: doubt widens it, because a file left out is
+a file nobody tests. They are not about **claims**. When Teslon says "this
+endpoint is affected" or "this event fires", doubt has to do the opposite and
+stay quiet, because a fabricated endpoint sends a tester to a page that does
+not exist and discredits every true row beside it.
+
+So a surface is only asserted when the file reads as something that declares
+it. Nothing is dropped from the radius by that rule — the file keeps its band
+and its tier — and every withheld claim is counted in `limitations`. The rule
+was written after running Teslon on its own source, which reported an endpoint
+`GET /x` that was a string inside a parser, and the events `gt`, `gte`, `min`,
+`max` and `length`, which were the keys of a lookup table.
+
+## Confidence and priority are two different things
+
+A **band** says how sure Teslon is that a file is affected: `certain`,
+`likely`, `possible`, `look`, and `unknown` — which ranks *above* `likely`,
+because a file we failed to analyse is more dangerous than one we merely
+inferred.
+
+A **tier** says what to open first. They come apart constantly: a `possible`
+change to an untested payment endpoint has to be tested before a `certain`
+change to a comment in a well-covered helper. Ranking work by confidence alone
+inverts the order a lead actually needs, so both are reported.
+
+| Tier | Label | Means |
+|---|---|---|
+| 1 | Test first — directly impacted | changed, or breaking, or writes state with no test |
+| 2 | Test next — moderately impacted | close, exposed, or unanalysable |
+| 3 | Smoke — lightly impacted | downstream with some cover |
+| 4 | Eyes on — could not be ruled out | **not** "unaffected" |
+
+The tier is a score, and every row shows the factors that produced it, summing
+to the score exactly. A lead who cannot see why a file is Tier 1 will either
+ignore the tier or test everything, and both waste the analysis.
+
+## What the result says about itself
+
+Every run reports a `completeness` block: which of the fifteen signals
+contributed, a counterfactual measuring how many files each signal found that
+nothing else did, which signals are not wired up in this build and why, which
+files no signal can read, and a verdict written to be quoted —
+
+> Treat this list as "at least these", never as "only these".
+
+The dangerous failure of an impact analyser is not being wrong. It is being
+confidently incomplete: a radius printed with no caveat reads as "the impact is
+exactly this", and a lead who believes that ships untested code.
+
 ## Try it
 
 ```bash
@@ -103,6 +154,11 @@ No model is involved.
 | `teslon pr [base] [head]` | Analyse a branch against its merge base |
 | `teslon analyze <file…>` | Blast radius for specific files |
 | `teslon profile <file…>` | What a file does: endpoint, reads, writes, effects, auth, flags |
+
+`pr` and `analyze` take `--json` and emit the whole `TeslonResult`, which is
+the contract every other surface renders: the brief, the tiers with their
+score factors, the surfaces with their test coverage, the tests to run, the
+gaps, the limitations and the completeness block.
 
 ## Layout
 

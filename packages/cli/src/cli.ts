@@ -19,6 +19,13 @@ import {
   unresolvedSummary,
   semanticDiff,
   sortChanges,
+  analyze,
+  readAstSource,
+  isTestFile,
+  TIER_LABEL,
+  type AstReading,
+  type TeslonResult,
+  type Tier,
   gitIn as gitRunner,
   resolveChange,
   gitIn,
@@ -61,6 +68,109 @@ function combinedReverse(root: string) {
   return { files, rev, why, profiles };
 }
 
+
+/**
+ * Read the changed files as they were at the merge base, so the semantic diff
+ * can run. The merge-base version of a file is not on disk — it is in git — so
+ * it is piped through the reader from a string.
+ *
+ * A file that did not exist at the base reads as null, which is exactly right:
+ * the diff then reports it as new, with nothing ever exercised.
+ */
+function baseReadingsAt(root: string, sha: string, files: readonly string[]): Map<string, AstReading | null> {
+  const git = gitIn(root);
+  const out = new Map<string, AstReading | null>();
+  for (const file of files) {
+    if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
+    try {
+      out.set(file, readAstSource(file, git(['show', `${sha}:${file}`])));
+    } catch {
+      out.set(file, null); // absent at the base, or unreadable there
+    }
+  }
+  return out;
+}
+
+const bar = (n: number, of: number, width = 18): string => {
+  const filled = of === 0 ? 0 : Math.max(n > 0 ? 1 : 0, Math.round((n / of) * width));
+  return '█'.repeat(filled) + '·'.repeat(width - filled);
+};
+
+function printResult(result: TeslonResult): void {
+  const { brief, priority, tests, surfaces, gaps, limitations, completeness } = result;
+
+  console.log('\n\x1b[1mWHAT TO KNOW\x1b[0m');
+  for (const line of brief) console.log(`  ${line}`);
+
+  console.log('\n\x1b[1mWHAT TO TEST, IN ORDER\x1b[0m');
+  const counts = ([1, 2, 3, 4] as Tier[]).map((t) => priority.filter((p) => p.tier === t).length);
+  const most = Math.max(1, ...counts);
+  for (const tier of [1, 2, 3, 4] as Tier[]) {
+    const rows = priority.filter((p) => p.tier === tier);
+    if (rows.length === 0) continue;
+    console.log(`\n  ${bar(rows.length, most)}  \x1b[1mTier ${tier} · ${TIER_LABEL[tier]}\x1b[0m  (${rows.length})`);
+    for (const p of rows) {
+      const surfaces = p.surfaces.length ? `  \x1b[2m${p.surfaces.slice(0, 2).join(', ')}\x1b[0m` : '';
+      console.log(`      ${String(p.score).padStart(2)}  ${p.file}${surfaces}`);
+      // Every row shows why it is where it is. A tier nobody can argue with is
+      // a tier nobody reads.
+      for (const f of p.because.filter((x) => x.points !== 0)) {
+        console.log(`          \x1b[2m+${f.points} ${f.factor} — ${f.detail}\x1b[0m`);
+      }
+    }
+  }
+
+  if (surfaces.length > 0) {
+    console.log('\n\x1b[1mWHAT A PERSON CAN OPEN\x1b[0m');
+    for (const s of surfaces) {
+      const cov =
+        s.directTests.length > 0
+          ? `${s.directTests.length} direct test(s)`
+          : s.indirectTests.length > 0
+            ? `${s.indirectTests.length} indirect only`
+            : '\x1b[33mno test reaches it\x1b[0m';
+      console.log(`  ${s.isNew ? '\x1b[32mNEW\x1b[0m ' : '    '}${s.kind.padEnd(9)} ${s.id.padEnd(38)} ${cov}`);
+    }
+  }
+
+  if (tests.length > 0) {
+    console.log('\n\x1b[1mEXISTING TESTS THAT TOUCH THIS\x1b[0m');
+    for (const t of tests) {
+      const what = t.coversDirectly.length
+        ? `covers ${t.coversDirectly.length} changed file(s) directly`
+        : `reaches ${t.coversIndirectly.length} changed file(s) only as a side effect`;
+      console.log(`  Tier ${t.highestTierCovered}  ${t.file.padEnd(44)} ${what}`);
+    }
+  }
+
+  if (gaps.length > 0) {
+    console.log('\n\x1b[1mCOVERAGE GAPS\x1b[0m');
+    for (const g of gaps) console.log(`  \x1b[33m${g.file}\x1b[0m\n      ${g.reason}`);
+  }
+
+  console.log('\n\x1b[1mHOW MUCH OF THIS TO TRUST\x1b[0m');
+  console.log(`  ${completeness.verdict}`);
+  for (const s of completeness.signalsRun) {
+    const worth = s.filesAdded < 0 ? 'not measured on a tree this size' : `${s.filesAdded} file(s) found by nothing else`;
+    console.log(`    \x1b[2m${s.signal.padEnd(15)} ${String(s.edges).padStart(5)} edges   ${worth}\x1b[0m`);
+  }
+  for (const s of completeness.signalsAbsent) {
+    console.log(`    \x1b[2m${s.signal.padEnd(15)} \x1b[33moff\x1b[0m\x1b[2m — ${s.why}\x1b[0m`);
+  }
+  if (completeness.unreadable.length > 0) {
+    console.log(`  \x1b[33m${completeness.unreadable.length} file(s) no signal can read:\x1b[0m ${completeness.unreadable.slice(0, 6).join(', ')}${completeness.unreadable.length > 6 ? ', …' : ''}`);
+  }
+
+  if (limitations.length > 0) {
+    console.log('\n\x1b[1mLIMITATIONS\x1b[0m');
+    for (const l of limitations) {
+      console.log(`  ${l.what}`);
+      console.log(`      \x1b[2m${l.mitigation}\x1b[0m`);
+    }
+  }
+  console.log('');
+}
+
 function printRadius(root: string, seeds: readonly string[]): void {
   const { files, rev, why } = combinedReverse(root);
   const missing = seeds.filter((s) => !files.includes(s));
@@ -93,12 +203,30 @@ function printRadius(root: string, seeds: readonly string[]): void {
 switch (command) {
   case 'analyze': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
-    if (rest.length === 0) {
-      console.error('usage: teslon analyze <file> [<file>...]');
+    const json = rest.includes('--json');
+    const files = rest.filter((r) => !r.startsWith('--'));
+    if (files.length === 0) {
+      console.error('usage: teslon analyze <file> [<file>...] [--json]');
       process.exitCode = 1;
       break;
     }
-    printRadius(root, rest);
+    const allFiles = listFiles(root);
+    const present = new Set(allFiles);
+    if (files.every((f) => !present.has(f))) {
+      // Every path wrong is a mistake worth stopping for. Some paths wrong is
+      // a deleted file, which the analysis handles and reports.
+      console.error(`none of those paths are in the repository: ${files.join(', ')}`);
+      process.exitCode = 2;
+      break;
+    }
+    const { result } = analyze({
+      root,
+      allFiles,
+      repo: root,
+      change: { baseSha: '(working tree)', headSha: '(working tree)', mergeBase: '(none)', files },
+    });
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else printResult(result);
     break;
   }
 
@@ -108,10 +236,28 @@ switch (command) {
     const head = rest[1] ?? 'HEAD';
     try {
       const { change, limitations } = resolveChange(gitIn(root), { base, head });
-      console.log(`\nmerge base: ${change.mergeBase.slice(0, 10)}`);
-      console.log(`changed:    ${change.files.length} file(s)`);
-      for (const l of limitations) console.log(`note:       ${l.what}`);
-      if (change.files.length) printRadius(root, change.files);
+      const json = rest.includes('--json');
+      if (!json) {
+        console.log(`\nmerge base: ${change.mergeBase.slice(0, 10)}   changed: ${change.files.length} file(s)`);
+      }
+      if (change.files.length === 0) {
+        console.log('Nothing changed between those two refs.\n');
+        break;
+      }
+      // A PR that deletes a file lists it in the diff and it is not on disk.
+      // The analysis reports that as a limitation; refusing to run, which is
+      // what this command used to do, made Teslon unusable on any PR with a
+      // deletion in it.
+      const { result } = analyze({
+        root,
+        allFiles: listFiles(root),
+        repo: root,
+        change,
+        limitations,
+        baseReadings: baseReadingsAt(root, change.mergeBase, change.files),
+      });
+      if (json) console.log(JSON.stringify(result, null, 2));
+      else printResult(result);
     } catch (err) {
       if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
         console.error(`\n${err.message}\n`);

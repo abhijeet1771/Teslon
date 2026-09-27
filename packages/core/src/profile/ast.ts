@@ -114,7 +114,17 @@ export function readAst(root: string, file: string): AstReading | null {
   } catch {
     return null;
   }
+  return readAstSource(file, src);
+}
 
+/**
+ * The same reading, from source text rather than from disk.
+ *
+ * This is what makes the semantic diff possible: the merge-base version of a
+ * file does not exist on disk, it exists in git, so the reader has to be able
+ * to work on a string that was never written down.
+ */
+export function readAstSource(file: string, src: string): AstReading {
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, scriptKind(file));
   const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
   const text = (n: ts.Node): string => n.getText(sf).replace(/\s+/g, ' ').trim();
