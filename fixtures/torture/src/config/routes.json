@@ -1,0 +1,1 @@
+{ "/checkout": "src/pages/CheckoutPage.ts", "/invoice": "src/handlers/InvoiceHandler.ts" }

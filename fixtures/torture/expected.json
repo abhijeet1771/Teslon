@@ -1,0 +1,92 @@
+{
+ "src/services/PriceService.ts": {
+  "why": "the shared price helper",
+  "expect": [
+   "src/pages/CheckoutPage.ts",
+   "src/services/bootstrap.ts",
+   "src/services/ReceiptEmail.ts",
+   "src/pages/CartPage.ts",
+   "src/handlers/InvoiceHandler.ts",
+   "src/handlers/registry.ts",
+   "src/services/jobRunner.ts",
+   "src/handlers/PaymentHandler.ts",
+   "src/pages/router.ts",
+   "e2e/checkout.spec.ts",
+   "e2e/invoice.spec.ts",
+   "src/services/Reflect.ts",
+   "src/services/monkey.ts",
+   "src/services/DuplicateFormatter.ts"
+  ],
+  "classes": {
+   "src/handlers/InvoiceHandler.ts": "M2 DI container",
+   "src/handlers/registry.ts": "M3 string registry",
+   "src/services/jobRunner.ts": "M3 string registry",
+   "src/handlers/PaymentHandler.ts": "M4 event bus",
+   "src/pages/router.ts": "M1 dynamic import",
+   "e2e/checkout.spec.ts": "M8 config route",
+   "e2e/invoice.spec.ts": "M8 config route",
+   "src/services/Reflect.ts": "M13 reflection",
+   "src/services/monkey.ts": "M14 prototype patch",
+   "src/services/DuplicateFormatter.ts": "M18 copy-paste clone"
+  }
+ },
+ "src/styles/price.css": {
+  "why": "the .price-tag class",
+  "expect": [
+   "src/components/PriceTag.ts",
+   "src/templates/priceRow.hbs",
+   "src/components/StyledPrice.ts"
+  ],
+  "classes": {
+   "src/components/PriceTag.ts": "M5 css class",
+   "src/templates/priceRow.hbs": "M6 template",
+   "src/components/StyledPrice.ts": "M17 computed class"
+  }
+ },
+ "src/db/migration_004.sql": {
+  "why": "renames unit_price_cents",
+  "expect": [
+   "src/db/queries.ts"
+  ],
+  "classes": {
+   "src/db/queries.ts": "M11 raw SQL column"
+  }
+ },
+ "src/i18n/en.json": {
+  "why": "the cart.total key",
+  "expect": [
+   "src/components/Total.ts"
+  ],
+  "classes": {
+   "src/components/Total.ts": "M12 i18n key"
+  }
+ },
+ "openapi.yaml": {
+  "why": "the spec the client is generated from",
+  "expect": [
+   "src/generated/apiClient.ts"
+  ],
+  "classes": {
+   "src/generated/apiClient.ts": "M7 generated code"
+  }
+ },
+ "src/templates/priceRow.hbs": {
+  "why": "a partial included by another template",
+  "expect": [
+   "src/templates/invoice.hbs"
+  ],
+  "classes": {
+   "src/templates/invoice.hbs": "M6 template partial"
+  }
+ },
+ "src/services/flags.ts": {
+  "why": "the flag helper",
+  "expect": [
+   "src/pages/CartPage.ts",
+   "src/services/dynamicFlag.ts"
+  ],
+  "classes": {
+   "src/services/dynamicFlag.ts": "M16 runtime-built flag name"
+  }
+ }
+}

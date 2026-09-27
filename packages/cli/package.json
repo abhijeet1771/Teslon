@@ -1,0 +1,11 @@
+{
+  "name": "@teslon/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "teslon": "./dist/cli.js" },
+  "main": "dist/cli.js",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": { "@teslon/core": "0.1.0" },
+  "engines": { "node": ">=20" }
+}

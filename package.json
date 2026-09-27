@@ -1,0 +1,14 @@
+{
+  "name": "teslon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "tsc -b packages/core packages/cli",
+    "test": "node --test packages/*/test/*.test.mjs",
+    "typecheck": "tsc -b --noEmit packages/core packages/cli"
+  },
+  "devDependencies": { "@types/node": "^20.14.0", "typescript": "^5.5.0" }
+}

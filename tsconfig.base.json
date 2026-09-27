@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "Node16", "moduleResolution": "Node16",
+    "lib": ["ES2022"], "strict": true, "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true, "noImplicitOverride": true,
+    "declaration": true, "declarationMap": true, "sourceMap": true,
+    "composite": true, "incremental": true, "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
