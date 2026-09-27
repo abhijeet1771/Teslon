@@ -14,6 +14,9 @@ import {
   exportedSymbols,
   readCode,
   readAst,
+  readJava,
+  buildJavaGraph,
+  unresolvedSummary,
   semanticDiff,
   sortChanges,
   gitIn as gitRunner,
@@ -278,6 +281,53 @@ switch (command) {
     break;
   }
 
+  case 'java': {
+    // Java resolves by package, not by path, so it gets its own graph.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const files = listFiles(root).filter((f) => f.endsWith('.java'));
+    if (files.length === 0) {
+      console.error('no .java files found');
+      process.exitCode = 2;
+      break;
+    }
+    const readings = files.map((f) => readJava(root, f)).filter((r): r is NonNullable<typeof r> => r !== null);
+
+    for (const r of readings) {
+      console.log(`\n┌─ ${r.file}   [${r.shape}]   package ${r.packageName || '(default)'}`);
+      if (r.httpRoutes.length) console.log(`│ routes       ${r.httpRoutes.join('  ·  ')}`);
+      if (r.transactional) console.log('│ nature       TRANSACTIONAL — changes state');
+      if (r.auth) console.log(`│ auth         ${r.auth}`);
+      if (r.injected.length) console.log(`│ injected     ${r.injected.join(', ')}`);
+      if (r.methods.length) console.log(`│ methods      ${r.methods.join(', ')}`);
+      if (r.entityTables.length) console.log(`│ maps table   ${r.entityTables.join(', ')}`);
+      if (r.entityColumns.length) console.log(`│ columns      ${r.entityColumns.join(', ')}`);
+      for (const c of r.constraints) {
+        console.log(`│ validation   ${c.rules.join(' ')}  →  try ${c.boundaries.join(', ')}`);
+      }
+      if (r.throws.length) console.log(`│ throws       ${r.throws.join(' | ')}`);
+      if (r.claims.length) {
+        for (const c of r.claims) console.log(`│ verifies     ${c.name}`);
+      }
+      for (const n of r.notRead) console.log(`│ not read     ${n}`);
+      console.log('└─');
+    }
+
+    const graph = buildJavaGraph(readings);
+    console.log(`\n── dependencies (${graph.edges.length}) ──`);
+    for (const e of graph.edges) {
+      console.log(`   ${e.from.split('/').pop()}  →  ${e.to.split('/').pop()}   [${e.why.signal}] ${e.why.detail}`);
+    }
+
+    const outside = unresolvedSummary(graph);
+    if (outside.length > 0) {
+      console.log('\n── imports resolved outside this repository ──');
+      for (const o of outside.slice(0, 8)) console.log(`   ${o.prefix}.*  (${o.count})`);
+      console.log('   these are third-party, or modules Teslon was not pointed at — it cannot tell which');
+    }
+    console.log('');
+    break;
+  }
+
   case 'version':
     console.log(`teslon 0.1.0 (schema ${SCHEMA_VERSION})`);
     break;
@@ -297,6 +347,7 @@ teslon — what a change can actually break
   teslon paths <file> [sym]   proof paths from each exported symbol outward
   teslon cases <file...>      what a tester must cover, read from the code
   teslon changed [base]       what changed about behaviour, not about text
+  teslon java                 read a Java source tree: routes, injection, entities
   teslon version
 
 Teslon never narrows on a guess. When it cannot resolve something it widens

@@ -75,6 +75,10 @@ export interface AstReading {
   /** Declared types and their fields. */
   readonly types: readonly { readonly name: string; readonly fields: readonly string[] }[];
   readonly throws: readonly string[];
+  /** A declared route, when the file is an endpoint. */
+  readonly httpRoute?: string;
+  /** A declared authorisation rule, when there is one. */
+  readonly auth?: string;
   readonly notRead: readonly string[];
 }
 

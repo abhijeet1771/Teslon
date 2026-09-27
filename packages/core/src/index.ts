@@ -8,4 +8,5 @@ export * from './profile/capability.js';
 export * from './profile/reading.js';
 export * from './profile/ast.js';
 export * from './profile/semantic-diff.js';
+export * from './lang/java/index.js';
 export { listFiles } from './files.js';

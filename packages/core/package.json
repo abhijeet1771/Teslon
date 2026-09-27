@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "java-parser": "^3.0.1",
     "typescript": "^5.5.0"
   }
 }
