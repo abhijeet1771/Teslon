@@ -148,6 +148,67 @@ export function buildJavaGraph(readings: readonly JavaReading[]): JavaGraph {
     }
   }
 
+  // ---- dispatch: from the interface someone injects to the code that runs --
+  // A controller is written against `OrderService` and never names
+  // `OrderServiceImpl`; Spring wires the implementation in at startup. So a
+  // change to the implementation reaches every user of the interface, and an
+  // import graph sees none of them — which, on a Spring codebase, is most of
+  // the dependencies that matter.
+  //
+  // The edge runs implementation -> interface, so the walk continues from the
+  // interface to everything that imports or is injected with it, and each hop
+  // keeps its own reason.
+  const implementers = new Map<string, string[]>(); // interface file -> implementing files
+  const resolveType = (r: JavaReading, name: string): string | undefined => {
+    if (name.includes('.')) return declaredBy.get(name);
+    const explicit = r.imports.find((i) => i.endsWith(`.${name}`));
+    if (explicit) return declaredBy.get(explicit);
+    const local = declaredBy.get(r.packageName ? `${r.packageName}.${name}` : name);
+    if (local) return local;
+    for (const w of r.imports.filter((i) => i.endsWith('.*'))) {
+      const hit = declaredBy.get(`${w.slice(0, -2)}.${name}`);
+      if (hit) return hit;
+    }
+    return undefined; // a JDK or third-party supertype: nothing in the repo to reach
+  };
+  const dispatch: { impl: string; iface: string; name: string }[] = [];
+  for (const r of readings) {
+    for (const name of r.supertypes) {
+      const iface = resolveType(r, name);
+      if (!iface || iface === r.file) continue;
+      dispatch.push({ impl: r.file, iface, name: name.split('.').pop()! });
+      const list = implementers.get(iface) ?? [];
+      list.push(r.file);
+      implementers.set(iface, list);
+    }
+  }
+  for (const d of dispatch) {
+    const all = implementers.get(d.iface)!;
+    const implName = d.impl.split('/').pop()!.replace(/\.java$/, '');
+    if (all.length === 1) {
+      edges.push(
+        edge(
+          d.impl,
+          d.iface,
+          `${implName} is the only implementation of ${d.name}, so anything injected with ${d.name} runs this code`,
+          'import',
+        ),
+      );
+    } else {
+      // Which bean is wired is decided by @Primary, @Qualifier, profiles or
+      // configuration Teslon does not read. Picking one would be a guess, so
+      // every user of the interface is kept, and the band says why.
+      edges.push(
+        edge(
+          d.impl,
+          d.iface,
+          `${implName} is one of ${all.length} implementations of ${d.name}; which one is injected is decided by Spring configuration Teslon does not read, so every user of ${d.name} is kept`,
+          'widen',
+        ),
+      );
+    }
+  }
+
   return {
     edges: edges.sort(
       (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.why.detail.localeCompare(b.why.detail),

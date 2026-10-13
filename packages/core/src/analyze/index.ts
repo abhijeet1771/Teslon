@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CODE_RE, buildImportGraph, walkWithParents, type Alias, type Edge } from '../graph/imports.js';
+import { CODE_RE, buildImportGraph, resolveSpecifier, walkWithParents, type Alias, type Edge } from '../graph/imports.js';
 import { TEXT_RE, buildNameIndex, nameIndexLimitation } from '../graph/names.js';
 import { buildSymbolEdges, proofPaths, shortestPathPerDestination, type ProofPath } from '../graph/symbols.js';
 import {
@@ -14,10 +14,11 @@ import {
 } from '../graph/widening.js';
 import { buildJavaGraph, readJava, unresolvedSummary, type JavaReading } from '../lang/java/index.js';
 import { estimateEffort } from '../effort/index.js';
+import { discoverAliases } from '../resolve/index.js';
 import { bareImports, coChangeEdges, lockfileEdges, type Commit } from '../history/index.js';
 import { ownershipRollup, resolveOwnership, type Ownership } from '../owners/index.js';
 import { readAst, type AstReading } from '../profile/ast.js';
-import { dataCouplingEdges, minimumCases, profileFile } from '../profile/capability.js';
+import { dataCouplingEdges, minimumCases, profileFile, stripComments } from '../profile/capability.js';
 import { semanticDiff, sortChanges, type SemanticChange, type SemanticDiff } from '../profile/semantic-diff.js';
 import {
   SCHEMA_VERSION,
@@ -313,7 +314,11 @@ function prioritise(a: {
     else if (direct === 0) add('no direct test', 1, `${indirect} test${indirect === 1 ? '' : 's'} reach it only as a side effect`);
 
     const breaking = diffByFile.get(item.file)?.changes.filter((c) => c.severity === 'breaking') ?? [];
+    // A file still importing something this change deletes is broken by the
+    // change even though its own text did not move.
+    const dangling = item.hops > 0 ? item.why.find((w) => w.signal === 'contract') : undefined;
     if (breaking.length > 0) add('breaking change', 4, breaking[0]!.what);
+    else if (dangling) add('breaking change', 4, dangling.detail);
 
     if (a.newFiles.has(item.file)) add('new code', 2, 'this file did not exist at the merge base');
     const auth = a.readings.get(item.file)?.auth;
@@ -339,7 +344,7 @@ function prioritise(a: {
         tier = t;
       }
     };
-    if (breaking.length > 0) floor(1, 'a breaking change is never below Tier 1, whatever it scores');
+    if (breaking.length > 0 || dangling) floor(1, 'a breaking change is never below Tier 1, whatever it scores');
     const writes = (profile && profile.nature !== 'read-only') || java?.transactional === true;
     if (direct === 0 && writes) {
       floor(1, 'code that writes state with no test of its own is never below Tier 1');
@@ -452,8 +457,16 @@ function assessCompleteness(a: {
 
 export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   const { root, allFiles, change } = opts;
-  const aliases = opts.aliases ?? [];
   const limitations: Limitation[] = [...(opts.limitations ?? [])];
+  // The repository's own import spellings, read from its configs, unless the
+  // caller supplied them. Reading them is the default because the failure
+  // when they are missing is silent: an aliased import looks like a package.
+  let aliases = opts.aliases;
+  if (!aliases) {
+    const found = discoverAliases(root, allFiles);
+    aliases = found.aliases;
+    limitations.push(...found.limitations);
+  }
 
   const present = new Set(allFiles);
   // A changed path that is not in the tree is either a deleted file or a path
@@ -596,6 +609,101 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     }
   }
 
+  // ---- TypeScript dispatch: implementation -> the type it stands in for ----
+  // The same shape as Spring, in NestJS and Angular: a consumer is written
+  // against `PaymentGateway` (an abstract class or an injection token class)
+  // and a module wires `StripeGateway` in. The consumer never imports the
+  // implementation, so a change to it reaches them by no import at all.
+  const symbolEdgesForDispatch = buildSymbolEdges(root, allFiles, aliases);
+  const importedBy = new Map<string, Map<string, string>>(); // file -> local name -> source file
+  for (const e of symbolEdgesForDispatch) {
+    if (e.symbol === '*') continue;
+    const m = importedBy.get(e.to) ?? new Map<string, string>();
+    m.set(e.localName ?? e.symbol, e.from);
+    importedBy.set(e.to, m);
+  }
+  const tsDispatch: { impl: string; base: string; name: string }[] = [];
+  const HERITAGE = /\bclass\s+(\w+)(?:\s*<[^{]*?>)?\s+((?:extends|implements)[^{]+)\{/g;
+  for (const file of allFiles) {
+    if (!/\.(?:ts|tsx|mts|cts)$/.test(file) || file.endsWith('.d.ts')) continue;
+    const names = importedBy.get(file);
+    if (!names) continue;
+    let src: string;
+    try {
+      src = stripComments(readFileSync(join(root, file), 'utf8'));
+    } catch {
+      continue;
+    }
+    for (const m of src.matchAll(HERITAGE)) {
+      for (const raw of m[2]!.replace(/\b(?:extends|implements)\b/g, ',').split(',')) {
+        const name = raw.replace(/<[^>]*>/g, '').trim().split('.').pop();
+        if (!name) continue;
+        const base = names.get(name);
+        if (base && base !== file) tsDispatch.push({ impl: file, base, name });
+      }
+    }
+  }
+  const tsImplCount = new Map<string, number>();
+  for (const d of tsDispatch) tsImplCount.set(d.base, (tsImplCount.get(d.base) ?? 0) + 1);
+  const dispatchEdges: Edge[] = tsDispatch.map((d) => {
+    const n = tsImplCount.get(d.base)!;
+    const implName = d.impl.split('/').pop()!.replace(/\.[cm]?tsx?$/, '');
+    return n === 1
+      ? {
+          from: d.impl,
+          to: d.base,
+          why: {
+            signal: 'import' as const,
+            detail: `${implName} is the only class extending or implementing ${d.name}, so anything given a ${d.name} runs this code`,
+            via: d.impl,
+          },
+        }
+      : {
+          from: d.impl,
+          to: d.base,
+          why: {
+            signal: 'widen' as const,
+            detail: `${implName} is one of ${n} classes standing in for ${d.name}; which one a consumer receives is decided by wiring Teslon does not read, so every user of ${d.name} is kept`,
+            via: d.impl,
+          },
+        };
+  });
+
+  // ---- importers of a deleted file that were not updated ---------------
+  // A file this change deletes is not in the tree, so nothing points at it and
+  // its radius is empty — while every file still importing it is about to
+  // fail at build time or, through a dynamic import, at runtime. Those files
+  // are found by asking each unresolved import whether it would have resolved
+  // to the deleted path, and they are the most certain breakage this tool can
+  // report: not "may be affected", but "will not compile".
+  const danglingEdges: Edge[] = [];
+  for (const gone of absent) {
+    const only = new Set([gone]);
+    for (const [file, specs] of importGraph.unresolved) {
+      for (const spec of specs) {
+        if (resolveSpecifier(file, spec, only, aliases) === gone) {
+          danglingEdges.push({
+            from: gone,
+            to: file,
+            why: {
+              signal: 'contract',
+              detail: `still imports ${spec}, which this change deletes — this will fail to build or to load`,
+              via: file,
+            },
+          });
+        }
+      }
+    }
+  }
+  if (danglingEdges.length > 0) {
+    limitations.push({
+      what: `${danglingEdges.length} import${danglingEdges.length === 1 ? ' points' : 's point'} at a file this change deletes: ${danglingEdges.slice(0, 3).map((e) => `${e.to} → ${e.from}`).join(', ')}${danglingEdges.length > 3 ? ', …' : ''}.`,
+      mitigation:
+        'These are not inferred effects. The importing files will fail to build, or to load if the import is dynamic, unless they are changed in this pull request too.',
+      files: [...new Set(danglingEdges.map((e) => e.to))].sort(),
+    });
+  }
+
   const allEdges: Edge[] = [
     ...importGraph.edges,
     ...nameIndex.edges,
@@ -608,6 +716,8 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     ...clones.edges,
     ...dataCouplingEdges(couplingProfiles),
     ...javaGraph.edges,
+    ...dispatchEdges,
+    ...danglingEdges,
     ...(coChange?.edges ?? []),
     ...lockEdges,
   ];
@@ -885,7 +995,7 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
   }
 
   // ---- 7. proofs, shortest per destination ---------------------------
-  const symbolEdges = buildSymbolEdges(root, allFiles, aliases);
+  const symbolEdges = symbolEdgesForDispatch;
   const proofs: ProofPath[] = [];
   for (const file of changedCode.slice(0, 50)) {
     const reading = headReadings.get(file);
@@ -1053,6 +1163,7 @@ function buildBrief(a: {
     `${a.change.files.length} file${a.change.files.length === 1 ? '' : 's'} changed. ${downstream} more ${downstream === 1 ? 'is' : 'are'} downstream of them, so the blast radius is ${a.radius.length} file${a.radius.length === 1 ? '' : 's'} in total.`,
   );
 
+  if (a.change.readFrom) lines.push(a.change.readFrom);
   const tiers = [1, 2, 3, 4].map((t) => a.priority.filter((p) => p.tier === t).length);
   lines.push(
     `Testing order: ${tiers[0]} file${tiers[0] === 1 ? '' : 's'} first, ${tiers[1]} next, ${tiers[2]} on a smoke pass, ${tiers[3]} to keep an eye on. Tier 4 means Teslon could not rule ${tiers[3] === 1 ? 'it' : 'them'} out — it does not mean unaffected.`,

@@ -24,6 +24,11 @@ export interface Alias {
   readonly prefix: string;
   /** Repo-relative target, e.g. `src/` */
   readonly target: string;
+  /**
+   * Match the whole specifier, not a prefix of it. A workspace package name
+   * is exact: `@acme/utils` must not also claim `@acme/utils-extra`.
+   */
+  readonly exact?: boolean;
 }
 
 const CANDIDATE_SUFFIXES = [
@@ -55,9 +60,9 @@ export function resolveSpecifier(
   if (spec.startsWith('.')) {
     base = normalize(join(dirname(fromFile), spec));
   } else {
-    const alias = aliases.find((a) => spec.startsWith(a.prefix));
+    const alias = aliases.find((a) => (a.exact ? spec === a.prefix : spec.startsWith(a.prefix)));
     if (!alias) return null;
-    base = normalize(join(alias.target, spec.slice(alias.prefix.length)));
+    base = alias.exact ? alias.target : normalize(join(alias.target, spec.slice(alias.prefix.length)));
   }
 
   // A TypeScript source importing "./x.js" means "./x.ts" on disk.
@@ -124,8 +129,10 @@ export function buildImportGraph(
       const target = resolveSpecifier(file, spec, files, aliases);
       if (!target) {
         // Bare package specifiers are expected and not interesting on their
-        // own; relative ones that fail to resolve are worth widening on.
-        if (spec.startsWith('.')) {
+        // own; relative ones — and ones through the repository's own aliases —
+        // that fail to resolve are worth widening on, because they point at a
+        // file that should be here and is not.
+        if (spec.startsWith('.') || aliases.some((a) => (a.exact ? spec === a.prefix : spec.startsWith(a.prefix)))) {
           const list = unresolved.get(file) ?? [];
           list.push(spec);
           unresolved.set(file, list);

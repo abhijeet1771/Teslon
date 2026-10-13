@@ -135,6 +135,12 @@ export interface JavaReading extends AstReading {
   /** `@Column(name=…)` — the columns, which are not tables. */
   readonly entityColumns: readonly string[];
   readonly transactional: boolean;
+  /**
+   * Types this file's classes extend or implement, as written (`OrderService`
+   * or `com.acme.OrderService`). This is how Spring gets from an interface
+   * someone injects to the class whose code actually runs.
+   */
+  readonly supertypes: readonly string[];
 }
 
 export function readJava(root: string, file: string): JavaReading | null {
@@ -172,6 +178,7 @@ export function readJava(root: string, file: string): JavaReading | null {
   const httpRoutes: string[] = [];
   const types: { name: string; fields: string[] }[] = [];
   const notRead = new Set<string>();
+  const supertypes = new Set<string>();
 
   let classRouteBase: string | undefined;
   let isController = false;
@@ -203,6 +210,25 @@ export function readJava(root: string, file: string): JavaReading | null {
           declares.add(className);
           exportsFound.add(className);
           if (!currentClass) currentClass = className;
+        }
+        break;
+      }
+      case 'classExtends':
+      case 'classImplements':
+      case 'interfaceExtends': {
+        // Only the direct type of each entry, never a type argument inside it:
+        // `extends Base<Order>` is a subclass of Base, not of Order.
+        const direct: CstNode[] = [];
+        for (const ct of node.children?.classType ?? []) direct.push(ct);
+        for (const list of node.children?.interfaceTypeList ?? []) {
+          for (const it of list.children?.interfaceType ?? []) {
+            for (const ct of it.children?.classType ?? []) direct.push(ct);
+          }
+        }
+        for (const ct of direct) {
+          const ids = (ct.children?.Identifier ?? []) as unknown as { image: string }[];
+          const name = ids.map((t) => t.image).join('.');
+          if (name) supertypes.add(name);
         }
         break;
       }
@@ -396,6 +422,7 @@ export function readJava(root: string, file: string): JavaReading | null {
     entityTables: [...entityTables].sort(),
     entityColumns: [...entityColumns].sort(),
     transactional,
+    supertypes: [...supertypes].sort(),
     ...(auth !== undefined ? { auth } : {}),
   };
 }
@@ -408,6 +435,6 @@ function emptyReading(file: string): JavaReading {
     renders: [], conditionalRenders: [], methods: [], injected: [], actions: [],
     claims: [], types: [], throws: [], notRead: [],
     packageName: '', imports: [], declares: [], httpRoutes: [], entityTables: [], entityColumns: [],
-    transactional: false,
+    transactional: false, supertypes: [],
   };
 }

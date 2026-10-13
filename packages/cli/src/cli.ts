@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   listFiles,
@@ -23,6 +24,9 @@ import {
   gitIn as gitRunner,
   resolveChange,
   resolveMerged,
+  defaultBase,
+  isGitRepository,
+  prepareTree,
   casesFor,
   gitIn,
   NoMergeBaseError,
@@ -31,7 +35,42 @@ import {
   SCHEMA_VERSION,
 } from '@teslon/core';
 
-const [, , command = 'help', ...rest] = process.argv;
+const [, , command = 'help', ...argv] = process.argv;
+
+/**
+ * Flags that take a value. Everything else that starts with `--` is a switch.
+ *
+ * Every command used to read `rest[0]` as its first positional, so
+ * `teslon pr --json` asked git for the merge base of a branch called
+ * "--json", and `teslon analyze a.ts --junit out.xml` analysed a file called
+ * out.xml. One parser, used by every command, means a flag can go anywhere.
+ */
+const VALUED = new Set(['--junit', '--fail-on']);
+
+function parseArgs(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
+  const positional: string[] = [];
+  const flags = new Map<string, string | true>();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      if (eq > 0) flags.set(a.slice(0, eq), a.slice(eq + 1));
+      else if (VALUED.has(a)) {
+        const v = args[i + 1];
+        if (v !== undefined && !v.startsWith('--')) {
+          flags.set(a, v);
+          i++;
+        } else flags.set(a, true);
+      } else flags.set(a, true);
+    } else positional.push(a);
+  }
+  return { positional, flags };
+}
+
+const parsed = parseArgs(argv);
+/** Positional arguments only. Flags are read from `parsed.flags`. */
+const rest = parsed.positional;
+const flag = (name: string): boolean => parsed.flags.has(name);
 
 
 /**
@@ -236,6 +275,42 @@ const bar = (n: number, of: number, width = 18): string => {
 };
 
 /**
+ * Analyse a resolved change against a tree that really is its head.
+ *
+ * Shared by `pr` and `merged` so that both read the code from the commit they
+ * report on. The worktree is released in a `finally`, so a crash mid-analysis
+ * does not leave a checkout behind in the temp directory.
+ */
+function analyzeAt(
+  userRoot: string,
+  head: string,
+  change: Parameters<typeof analyze>[0]['change'],
+  limitations: Parameters<typeof analyze>[0]['limitations'],
+  json: boolean,
+): void {
+  const tree = prepareTree(gitIn(userRoot), userRoot, head, () => mkdtempSync(join(tmpdir(), 'teslon-head-')));
+  try {
+    if (tree.note && !json) console.log(`(${tree.note})`);
+    const root = tree.root;
+    const lock = lockfileDiff(root, { mergeBase: change.mergeBase, files: change.files });
+    const { result } = analyze({
+      root,
+      allFiles: listFiles(root),
+      repo: userRoot,
+      change: tree.note ? { ...change, readFrom: tree.note } : change,
+      limitations: [...(limitations ?? []), ...tree.limitations],
+      baseReadings: baseReadingsAt(root, change.mergeBase, change.files),
+      authors: authorsFor(root, change.files),
+      ...(flag('--no-history') ? {} : { commits: commitsFrom(root) }),
+      ...(lock ? { lockfile: lock } : {}),
+    });
+    finish(result, json);
+  } finally {
+    tree.release();
+  }
+}
+
+/**
  * Everything that happens after a result exists: render it, write the machine
  * formats, and apply the gates.
  *
@@ -243,14 +318,13 @@ const bar = (n: number, of: number, width = 18): string => {
  * had two impact code paths that could disagree, and the weaker one was the
  * only one anyone saw; one tail means one behaviour.
  */
-function finish(result: TeslonResult, argv: readonly string[], json: boolean): void {
+function finish(result: TeslonResult, json: boolean): void {
   if (json) console.log(JSON.stringify(result, null, 2));
   else printResult(result);
 
-  const junitAt = argv.indexOf('--junit');
-  if (junitAt >= 0) {
-    const path = argv[junitAt + 1];
-    if (!path || path.startsWith('--')) {
+  if (parsed.flags.has('--junit')) {
+    const path = parsed.flags.get('--junit');
+    if (typeof path !== 'string') {
       console.error('--junit needs a file path');
       process.exitCode = 1;
       return;
@@ -259,9 +333,9 @@ function finish(result: TeslonResult, argv: readonly string[], json: boolean): v
     if (!json) console.log(`JUnit written to ${path}\n`);
   }
 
-  const failAt = argv.indexOf('--fail-on');
-  if (failAt >= 0) {
-    const asked = (argv[failAt + 1] ?? '').split(',').filter(Boolean);
+  if (parsed.flags.has('--fail-on')) {
+    const value = parsed.flags.get('--fail-on');
+    const asked = (typeof value === 'string' ? value : '').split(',').filter(Boolean);
     const unknown = asked.filter((a) => !(a in GATES));
     if (asked.length === 0 || unknown.length > 0) {
       console.error(
@@ -380,8 +454,8 @@ function printResult(result: TeslonResult): void {
 switch (command) {
   case 'analyze': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
-    const json = rest.includes('--json');
-    const files = rest.filter((r) => !r.startsWith('--'));
+    const json = flag('--json');
+    const files = rest;
     if (files.length === 0) {
       console.error('usage: teslon analyze <file> [<file>...] [--json]');
       process.exitCode = 1;
@@ -403,19 +477,32 @@ switch (command) {
       change: { baseSha: '(working tree)', headSha: '(working tree)', mergeBase: '(none)', files },
       authors: authorsFor(root, files),
     });
-    finish(result, rest, json);
+    finish(result, json);
     break;
   }
 
   case 'pr': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
-    const base = rest[0] ?? 'origin/main';
     const head = rest[1] ?? 'HEAD';
+    let base = rest[0];
+    let baseNote: string | undefined;
+    if (!base) {
+      const found = isGitRepository(gitIn(root)) ? defaultBase(gitIn(root)) : null;
+      if (!found) {
+        console.error('\nNo base branch was given, and none of origin/HEAD, main, master, develop or trunk exists here.');
+        console.error('Name it: teslon pr <base> [head]\n');
+        process.exitCode = 2;
+        break;
+      }
+      base = found.ref;
+      baseNote = `base ${found.ref} — ${found.how}`;
+    }
     try {
       const { change, limitations } = resolveChange(gitIn(root), { base, head });
-      const json = rest.includes('--json');
+      const json = flag('--json');
       if (!json) {
         console.log(`\nmerge base: ${change.mergeBase.slice(0, 10)}   changed: ${change.files.length} file(s)`);
+        if (baseNote) console.log(`(${baseNote})`);
       }
       if (change.files.length === 0) {
         console.log('Nothing changed between those two refs.\n');
@@ -425,21 +512,7 @@ switch (command) {
       // The analysis reports that as a limitation; refusing to run, which is
       // what this command used to do, made Teslon unusable on any PR with a
       // deletion in it.
-      const { result } = analyze({
-        root,
-        allFiles: listFiles(root),
-        repo: root,
-        change,
-        limitations,
-        baseReadings: baseReadingsAt(root, change.mergeBase, change.files),
-        authors: authorsFor(root, change.files),
-        ...(rest.includes('--no-history') ? {} : { commits: commitsFrom(root) }),
-        ...((): { lockfile?: { file: string; before: string; after: string } } => {
-          const lock = lockfileDiff(root, { mergeBase: change.mergeBase, files: change.files });
-          return lock ? { lockfile: lock } : {};
-        })(),
-      });
-      finish(result, rest, json);
+      analyzeAt(root, head, change, limitations, json);
     } catch (err) {
       if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
         console.error(`\n${err.message}\n`);
@@ -459,8 +532,8 @@ switch (command) {
     // change after it landed — and the recovery for it has existed since the
     // first commit with no way to reach it.
     const root = process.env.TESLON_ROOT ?? process.cwd();
-    const json = rest.includes('--json');
-    const args = rest.filter((r) => !r.startsWith('--'));
+    const json = flag('--json');
+    const args = rest;
     const sha = args[0];
     if (!sha) {
       console.error('usage: teslon merged <sha> [<from>..<to>] [--json] [--junit f] [--fail-on ...]');
@@ -486,25 +559,10 @@ switch (command) {
         console.log('That commit changed nothing.\n');
         break;
       }
-      const { result } = analyze({
-        root,
-        allFiles: listFiles(root),
-        repo: root,
-        change,
-        limitations,
-        // The tree on disk is whatever is checked out now, which for a merged
-        // change is usually later than the change itself. Reading the files at
-        // the recovered base is what keeps the semantic diff about *this*
-        // change rather than about everything since.
-        baseReadings: baseReadingsAt(root, change.baseSha, change.files),
-        authors: authorsFor(root, change.files),
-        ...(rest.includes('--no-history') ? {} : { commits: commitsFrom(root) }),
-        ...((): { lockfile?: { file: string; before: string; after: string } } => {
-          const lock = lockfileDiff(root, { mergeBase: change.baseSha, files: change.files });
-          return lock ? { lockfile: lock } : {};
-        })(),
-      });
-      finish(result, rest, json);
+      // The tree on disk is whatever is checked out now, which for a merged
+      // change is usually later than the change itself, so the merge commit is
+      // checked out on its own and read from there.
+      analyzeAt(root, sha, change, limitations, json);
     } catch (err) {
       if (err instanceof NotAGitRepositoryError || err instanceof GitUnavailableError) {
         console.error(`\n${err.message}\n`);
@@ -629,8 +687,13 @@ switch (command) {
     // What is different about behaviour, not about text. This is what the
     // reading engine is for inside an impact analyser.
     const root = process.env.TESLON_ROOT ?? process.cwd();
-    const base = rest[0] ?? 'origin/main';
     const git = gitRunner(root);
+    const base = rest[0] ?? defaultBase(git)?.ref;
+    if (!base) {
+      console.error('\nNo base branch was given and none could be found. Name it: teslon changed <base>\n');
+      process.exitCode = 2;
+      break;
+    }
     let files: readonly string[];
     try {
       const resolved = resolveChange(git, { base, head: 'HEAD' });

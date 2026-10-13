@@ -4,7 +4,7 @@
  * shows must exist here first.
  */
 
-export const SCHEMA_VERSION = '1.5.0';
+export const SCHEMA_VERSION = '1.6.0';
 
 /**
  * How sure we are that an item is affected.
@@ -112,6 +112,12 @@ export interface ChangeSet {
   readonly files: readonly string[];
   /** merge / squash / rebase, when the PR is already on the base branch. */
   readonly recoveredFrom?: 'merge-commit' | 'squash-commit' | 'commit-range';
+  /**
+   * Set when the code was read from somewhere other than the working tree as
+   * it stood, and why. A reader comparing the result against their editor
+   * needs to know the two are deliberately not the same thing.
+   */
+  readonly readFrom?: string;
 }
 
 /**

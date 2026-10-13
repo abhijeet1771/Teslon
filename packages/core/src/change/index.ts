@@ -37,7 +37,12 @@ export class GitUnavailableError extends Error {
 export function gitIn(cwd: string): GitRunner {
   return (args) => {
     try {
-      return execFileSync('git', args as string[], {
+      // `core.quotepath=off` because git's default octal-quotes every path with
+      // a non-ASCII byte: `src/prïce.ts` comes back as "src/pr\303\257ce.ts",
+      // in quotes. That string matches no file on disk, so the changed file
+      // was reported as absent and its whole radius vanished — on any team
+      // that names a file in anything but ASCII.
+      return execFileSync('git', ['-c', 'core.quotepath=off', ...args], {
         cwd,
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
@@ -136,8 +141,10 @@ function stripRemote(ref: string, remote: string): string {
 }
 
 function changedFiles(git: GitRunner, from: string, to: string): string[] {
-  const out = git(['diff', '--name-only', '--no-renames', from, to]);
-  return out.length === 0 ? [] : out.split('\n').filter(Boolean);
+  // NUL-separated, so a path containing a newline or a quote survives intact.
+  // quotepath=off covers non-ASCII; -z covers everything else git would quote.
+  const out = git(['diff', '--name-only', '--no-renames', '-z', from, to]);
+  return out.length === 0 ? [] : out.split('\0').filter(Boolean);
 }
 
 /**
@@ -178,6 +185,150 @@ export function resolveChange(git: GitRunner, opts: ResolveOptions): Resolved {
       files: changedFiles(git, mergeBase, head),
     },
     limitations,
+  };
+}
+
+/**
+ * The branch a pull request is most likely aimed at, when nobody said.
+ *
+ * Hard-coding `origin/main` failed on every repository whose default is
+ * `master`, `develop` or `trunk`, and on every local clone with no remote — and
+ * it failed as "no merge base, are they related branches?", which sends the
+ * reader looking for a problem that is not there. The remote's own HEAD is the
+ * declaration; the common names are the fallback; and the answer always says
+ * which one it picked, because a silently chosen base is a silently chosen
+ * change set.
+ */
+export function defaultBase(git: GitRunner, remote = 'origin'): { ref: string; how: string } | null {
+  try {
+    const declared = git(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]);
+    if (declared) return { ref: declared, how: `${remote}/HEAD points at it` };
+  } catch {
+    // No remote HEAD recorded — common in fresh clones and CI. Fall through.
+  }
+  const candidates = [
+    `${remote}/main`, `${remote}/master`, `${remote}/develop`, `${remote}/trunk`,
+    'main', 'master', 'develop', 'trunk',
+  ];
+  for (const ref of candidates) {
+    try {
+      git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+      return { ref, how: `no default was declared, and ${ref} is the first conventional name that exists` };
+    } catch {
+      // not this one
+    }
+  }
+  return null;
+}
+
+/**
+ * A tree on disk that is exactly the commit being analysed.
+ *
+ * Every primitive reads files from disk, and git only says *which* files
+ * changed. So when the commit being analysed is not what is checked out, the
+ * change set came from one commit and the code was read from another — and
+ * the result looked fine. Two ways that happens, both of them ordinary:
+ *
+ *   a different commit   you are on `main` and ask about `feature-x`, which is
+ *                        precisely how a reviewer, a QA engineer or the local
+ *                        app works: keep one clone, point at any PR.
+ *   uncommitted edits    the working tree is the head commit plus whatever was
+ *                        typed since, and a half-written file is not the PR.
+ *
+ * Either way the head is checked out into a temporary, detached worktree that
+ * shares the repository's object store — no clone, no network, and nothing in
+ * the user's working tree is touched. When the working tree already *is* the
+ * head and is clean, it is used as it is.
+ */
+export interface PreparedTree {
+  /** Where to read files from. */
+  readonly root: string;
+  /** How the tree was obtained, in a sentence, or null when nothing was done. */
+  readonly note: string | null;
+  readonly limitations: readonly Limitation[];
+  /** Always call this, in a `finally`. Removing the worktree is idempotent. */
+  readonly release: () => void;
+}
+
+export function prepareTree(
+  git: GitRunner,
+  root: string,
+  head: string,
+  makeTempDir: () => string,
+): PreparedTree {
+  const nothing = (): void => {};
+  let headSha: string;
+  let current: string;
+  try {
+    headSha = git(['rev-parse', '--verify', `${head}^{commit}`]);
+    current = git(['rev-parse', 'HEAD']);
+  } catch {
+    return { root, note: null, limitations: [], release: nothing };
+  }
+
+  let dirty: string[] = [];
+  try {
+    // Untracked files count: a stray scratch file still lands in the file
+    // list and can still add edges. Ignored files do not, and porcelain
+    // already leaves them out.
+    dirty = git(['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+      .split('\0')
+      .filter(Boolean)
+      .map((l) => l.slice(3));
+  } catch {
+    dirty = [];
+  }
+
+  if (headSha === current && dirty.length === 0) {
+    return { root, note: null, limitations: [], release: nothing };
+  }
+
+  const why =
+    headSha !== current
+      ? `the working tree is on ${current.slice(0, 10)}, not on ${head} (${headSha.slice(0, 10)})`
+      : `the working tree has ${dirty.length} uncommitted change${dirty.length === 1 ? '' : 's'}`;
+
+  const dir = makeTempDir();
+  try {
+    git(['worktree', 'add', '--detach', '--force', dir, headSha]);
+  } catch (err) {
+    // Old git, a bare repository, or a filesystem that refuses. Analyse what
+    // is on disk, and say exactly how far it is from the truth.
+    return {
+      root,
+      note: null,
+      limitations: [
+        {
+          what: `The code was read from the working tree, but ${why}, and a clean checkout of ${head} could not be made (${(err as Error).message.split('\n')[0]}).`,
+          mitigation:
+            headSha !== current
+              ? `The changed-file list is right; the import graph and the file contents are not this pull request's. Check out ${head} and run again before trusting the radius.`
+              : `Uncommitted edits are included in what was read: ${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''}. Commit or stash them and run again before trusting the radius.`,
+          files: dirty.slice(0, 50),
+        },
+      ],
+      release: nothing,
+    };
+  }
+
+  let released = false;
+  return {
+    root: dir,
+    note: `Read from a clean checkout of ${head} at ${headSha.slice(0, 10)}, because ${why}. Your working tree was not touched.`,
+    limitations: [],
+    release: () => {
+      if (released) return;
+      released = true;
+      try {
+        git(['worktree', 'remove', '--force', dir]);
+      } catch {
+        try {
+          git(['worktree', 'prune']);
+        } catch {
+          // Leaving a temp directory behind is untidy, never incorrect.
+        }
+      }
+    },
   };
 }
 

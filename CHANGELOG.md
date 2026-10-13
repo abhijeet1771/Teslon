@@ -91,6 +91,41 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   asserting it.
 
 ### Fixed
+- An enterprise edge-case suite — 21 real git repositories driven through the
+  real CLI — failed 8 cases on its first run, every one of them silently: the
+  analysis ran, printed a confident radius, and the radius was wrong.
+  - **tsconfig `paths`** (`@/lib/money`, the default in every Next.js and Vite
+    app) were never read, so an aliased import looked like a package and the
+    changed file had no dependents. Paths are now discovered from every
+    tsconfig/jsconfig, JSONC comments and `extends` chains included.
+  - **Workspace packages** (`@acme/utils` in a monorepo) were treated as
+    third-party — the one graph a monorepo exists to share. Package names now
+    resolve to their source entry, and deep imports into the package directory.
+  - **Non-ASCII paths** came back from git octal-quoted (`"src/pr\303\257ce.ts"`),
+    matched nothing on disk, and the changed file's radius vanished. git now
+    runs with `core.quotepath=off` and the diff is NUL-separated.
+  - **The head was read from whatever was checked out.** Asking about a branch
+    while on `main` took the changed-file list from the branch and the code
+    from `main`; uncommitted edits leaked into a pull request's result. The head
+    is now checked out into a temporary detached worktree that shares the
+    object store, used, and always removed — the user's working tree is never
+    touched. This is what makes "keep one clone, point at any PR" true.
+  - **`origin/main` was hard-coded**, failing as "no merge base, are they
+    related branches?" on every `master`/`develop` repository and every clone
+    without a remote. The base is now the remote's declared HEAD, then the
+    conventional names, and the run says which it chose.
+  - **Flags were read as positional arguments**: `teslon pr --json` asked git
+    for a branch called `--json`, and `--junit out.xml` was analysed as a file.
+  - **Spring dispatch**: a controller is written against `OrderService`, Spring
+    wires `OrderServiceImpl` in, and a change to the implementation reached
+    nobody. Implementation → interface edges now carry it — `likely` when there
+    is exactly one implementation, `unknown` when there are several, because
+    which bean is injected is decided by configuration Teslon does not read and
+    picking one would be a guess. The same for NestJS/Angular abstract classes.
+  - **Importers of a deleted file** were invisible: the deleted file is not in
+    the tree, so nothing pointed at it. Unresolved imports are now checked
+    against deleted paths, and a file still importing one is a breaking change
+    floored at Tier 1 — not "may be affected", but "will not compile".
 - Two of the three surfaces `teslon` fabricated when run on its own source are
   fixed at the source rather than suppressed at the report. Every profiler
   pattern read raw source text including comments and strings, so a line of

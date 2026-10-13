@@ -12,5 +12,6 @@ export * from './analyze/index.js';
 export * from './owners/index.js';
 export * from './effort/index.js';
 export * from './history/index.js';
+export * from './resolve/index.js';
 export * from './lang/java/index.js';
 export { listFiles } from './files.js';
