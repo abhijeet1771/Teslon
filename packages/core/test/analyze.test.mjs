@@ -12,6 +12,7 @@ import {
   readAst,
   profileFile,
   stripComments,
+  blankStrings,
   coChangeEdges,
   lockfileVersions,
   TIER_LABEL,
@@ -489,4 +490,27 @@ test('stripComments keeps the strings a route lives in', () => {
   // An escaped quote does not close the string, so the whole thing — comment
   // text included — is inside it and stripComments must leave it alone.
   assert.equal(stripComments("const s = '\\'; // real'"), "const s = '\\'; // real'");
+});
+
+/**
+ * The recursive case. The assertion above quotes `"@Get('/x')"` as a string
+ * literal, and once comments were stripped (strings kept, because a route
+ * lives in one) the decorator pattern matched inside this very file and the
+ * fabricated endpoint came back — reported against the test that forbids it.
+ * A declaration is code; a sentence quoting one is a string.
+ */
+test('a decorator quoted inside a string is not a route', () => {
+  const p = profileFile(REPO, 'packages/core/test/analyze.test.mjs');
+  assert.equal(p.http, undefined, `fabricated ${JSON.stringify(p.http)} from a string literal`);
+  const real = profileFile(join(REPO, 'fixtures', 'api'), 'api/cancelOrder.ts');
+  assert.deepEqual(real.http, { method: 'POST', path: '/api/orders/:orderId/cancel' }, 'the real route must survive');
+  assert.ok(real.sideEffects.includes('sends email'), 'the real effects must survive');
+});
+
+test('blankStrings keeps offsets and quotes, blanks only string contents', () => {
+  const src = `x("@Get('/x')"); @Get('/y') f()`;
+  const b = blankStrings(src);
+  assert.equal(b.length, src.length);
+  assert.equal(b.indexOf('@'), src.lastIndexOf('@'), 'only the decorator outside the string survives');
+  assert.equal(blankStrings('`a\\`b` c'), '`    ` c');
 });

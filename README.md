@@ -153,6 +153,7 @@ No model is involved.
 |---|---|
 | `teslon pr [base] [head]` | Analyse a branch against its merge base |
 | `teslon merged <sha> [from..to]` | Recover an already-merged pull request and analyse it |
+| `teslon ui [head] [base]` | The local app, in your browser. Loopback only |
 | `teslon analyze <file…>` | Blast radius for specific files |
 | `teslon profile <file…>` | What a file does: endpoint, reads, writes, effects, auth, flags |
 
@@ -161,6 +162,34 @@ No model is involved.
 | `--json` | The whole `TeslonResult`, which is the contract every other surface renders |
 | `--junit <file>` | Gaps and untested surfaces as JUnit failures; limitations as *skipped* |
 | `--fail-on a,b` | Gate the build. `tier1-untested`, `breaking`, `untested-surface`, `undeclared-owner`. Exit 5 means the analysis worked and the policy said no |
+
+## The local app
+
+`teslon ui` opens the report in a browser for anyone who would rather not read
+a terminal: keep one clone, type a branch name, and read the answer. The branch
+does not need to be checked out — it is read from a temporary worktree and your
+working tree is never touched.
+
+It is built to the same rules as the engine:
+
+- **Loopback only.** There is no host option to widen it, because the page can
+  start analyses that read your code.
+- **Nothing leaves the machine.** No CDN, no web fonts from anywhere, no
+  analytics. The display face (Barlow Condensed, SIL OFL) is served by the
+  local server, and a strict CSP holds the page to that server even if escaping
+  ever failed. Every repository string is set with `textContent`.
+- **Refs are hostile until checked.** A "branch" of `--upload-pack=…` is an
+  argument to git, not a ref; it is refused before git sees it.
+- **The honesty footer cannot be dismissed.** "At least these, never only
+  these" stays on screen on every view.
+
+The design follows Nike's digital language because the report's heroes are a
+handful of numbers. One colour, Volt, means exactly one thing — *you can act
+here* — and is never used for "safe": Tier 4 means "could not be ruled out",
+and a yellow-green Tier 4 would say the opposite. Motion explains causality or
+does not happen: a score assembles from its reasons in the order they were
+counted, and a proof route draws hop by hop because impact travels hop by hop.
+`prefers-reduced-motion` gets the final frame at once.
 
 ## What a lead and a manager get
 

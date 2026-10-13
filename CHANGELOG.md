@@ -5,6 +5,13 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 ## Unreleased
 
 ### Added
+- `teslon ui`: the local app. Six views — overview, what to test, prove it,
+  coverage, who & how much, trust — over the same `TeslonResult` the CLI
+  prints. Loopback only, no network requests of any kind, strict CSP, and a
+  bundled OFL display face so the page looks the same on every machine without
+  fetching a font. Proof chains that share a road are drawn once as a fan: on
+  Teslon's own history, 312 chains read as 5 routes. "Copy test list" produces a
+  Markdown checklist a lead can paste into a ticket.
 - `teslon merged <sha>`: the pull request is already on the base branch and the
   branch may be gone, which the change-resolution layer has handled since the
   first commit — recovering the base from a merge commit's first parent, a
@@ -91,6 +98,17 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   asserting it.
 
 ### Fixed
+- The fabricated `GET /x` came back a third time, from the test written to
+  prevent it: the assertion quotes `"@Get('/x')"` as a string literal, and since
+  comment stripping keeps strings (a route lives in one), the decorator pattern
+  matched inside it. Route, registration and side-effect patterns now only
+  count a match that *starts in code*; the route string inside the parentheses
+  is still read.
+- Tests that import build output (`../dist/index.js`) resolved to nothing,
+  because `dist/` is not in the tree, so every module they exercised reported
+  "no test reaches it" — a false claim a lead would act on. An unresolved
+  import into `dist/`, `build/`, `out/` or `lib/` now falls back to the source
+  it is built from, and only after the real path fails.
 - An enterprise edge-case suite — 21 real git repositories driven through the
   real CLI — failed 8 cases on its first run, every one of them silently: the
   analysis ran, printed a confident radius, and the radius was wrong.

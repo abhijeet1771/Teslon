@@ -132,6 +132,55 @@ export function stripComments(src: string): string {
   return out;
 }
 
+/**
+ * The same source with the *contents* of every string blanked to spaces,
+ * quotes and offsets kept. Used to ask "is this match in code?" — a route
+ * lives inside a string, but the `@Get(` that declares it never does.
+ *
+ * Comment stripping alone was not enough, and the case that proved it is
+ * recursive: the test written to stop the fabricated `GET /x` contains the
+ * text `"@Get('/x')"` as a string literal, so the decorator pattern matched
+ * inside the very assertion guarding against it.
+ */
+export function blankStrings(src: string): string {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i]!;
+    if (c === '"' || c === "'" || c === '`') {
+      out += c;
+      i++;
+      while (i < src.length && src[i] !== c) {
+        if (src[i] === '\\' && i + 1 < src.length) {
+          out += '  ';
+          i += 2;
+          continue;
+        }
+        out += src[i] === '\n' ? '\n' : ' ';
+        i++;
+      }
+      if (i < src.length) {
+        out += c;
+        i++;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** First match of `re` whose start is in code rather than inside a string. */
+function execInCode(re: RegExp, src: string, code: string): RegExpExecArray | null {
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+  for (let m = g.exec(src); m; m = g.exec(src)) {
+    if (code[m.index] === src[m.index] && code[m.index] !== ' ') return m;
+    if (m[0].length === 0) g.lastIndex++;
+  }
+  return null;
+}
+
 export function profileFile(root: string, file: string): CapabilityProfile | null {
   let src: string;
   try {
@@ -147,8 +196,10 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
     /export\s+(?:async\s+)?function\s+(\w+)/.exec(src)?.[1] ??
     /export\s+(?:default\s+)?class\s+(\w+)/.exec(src)?.[1];
 
-  const dec = HTTP_DECORATOR_RE.exec(src);
-  const call = HTTP_CALL_RE.exec(src);
+  // Declarations and calls are code; a sentence quoting one is a string.
+  const code = blankStrings(src);
+  const dec = execInCode(HTTP_DECORATOR_RE, src, code);
+  const call = execInCode(HTTP_CALL_RE, src, code);
   const http = dec
     ? { method: dec[1]!.toUpperCase(), path: dec[2]! }
     : call
@@ -176,7 +227,9 @@ export function profileFile(root: string, file: string): CapabilityProfile | nul
 
   const sideEffects: string[] = [];
   for (const [re, label] of SIDE_EFFECTS) {
-    const m = re.exec(src);
+    // An effect is a call, and a call is code: `sendEmail(` inside a test's
+    // description string is a sentence about sending email, not a send.
+    const m = execInCode(re, src, code);
     if (!m) continue;
     sideEffects.push(m[1] ? `${label} ${m[1]}` : label);
   }

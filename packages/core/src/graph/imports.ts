@@ -66,15 +66,28 @@ export function resolveSpecifier(
   }
 
   // A TypeScript source importing "./x.js" means "./x.ts" on disk.
-  const rewritten = base.endsWith('.js') ? base.slice(0, -3) : null;
-
-  for (const stem of rewritten ? [base, rewritten] : [base]) {
-    for (const suffix of CANDIDATE_SUFFIXES) {
-      const candidate = stem + suffix;
-      if (files.has(candidate)) return candidate;
+  const stems = (b: string): string[] => (b.endsWith('.js') ? [b, b.slice(0, -3)] : [b]);
+  const tryBase = (b: string): string | null => {
+    for (const stem of stems(b)) {
+      for (const suffix of CANDIDATE_SUFFIXES) {
+        const candidate = stem + suffix;
+        if (files.has(candidate)) return candidate;
+      }
     }
-  }
-  return null;
+    return null;
+  };
+
+  const direct = tryBase(base);
+  if (direct) return direct;
+
+  // A test importing `../dist/index.js` is testing the source that dist is
+  // built from — but build output is not in the tree, so the import resolved
+  // to nothing and every module it exercised reported "no test reaches it".
+  // Measured on Teslon's own repository, whose tests do exactly this. Only
+  // tried after the real path failed, so it can never shadow a file that is
+  // actually there.
+  const fromBuild = base.replace(/(^|\/)(?:dist|build|out|lib)(\/|$)/, '$1src$2');
+  return fromBuild !== base ? tryBase(fromBuild) : null;
 }
 
 /**

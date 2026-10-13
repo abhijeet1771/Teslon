@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Teslon</title>
+<meta name="description" content="What a change can actually break — read on this machine, never sent anywhere.">
+<link rel="preload" href="/fonts/BarlowCondensed-Black.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%230b0b0b%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%226%22 fill=%22%23d7ff3b%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <button class="wordmark" id="home" type="button" aria-label="Teslon — start a new analysis">Teslon<i aria-hidden="true"></i></button>
+    <div class="where" id="where"></div>
+    <div class="actions" id="actions"></div>
+  </div>
+  <nav class="subnav" id="subnav" aria-label="Report sections" hidden></nav>
+</header>
+<main class="page" id="main" aria-live="polite"></main>
+<footer class="footer" id="footer" hidden><div class="footer-inner" id="footer-inner"></div></footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

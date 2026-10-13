@@ -1,0 +1,17 @@
+{
+  "name": "@teslon/ui",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "files": ["dist", "public"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": { "@teslon/core": "0.1.0" },
+  "engines": { "node": ">=20" }
+}

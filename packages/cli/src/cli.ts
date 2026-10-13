@@ -45,7 +45,7 @@ const [, , command = 'help', ...argv] = process.argv;
  * "--json", and `teslon analyze a.ts --junit out.xml` analysed a file called
  * out.xml. One parser, used by every command, means a flag can go anywhere.
  */
-const VALUED = new Set(['--junit', '--fail-on']);
+const VALUED = new Set(['--junit', '--fail-on', '--port']);
 
 function parseArgs(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
@@ -523,6 +523,52 @@ switch (command) {
         process.exitCode = 3;
       } else throw err;
     }
+    break;
+  }
+
+  case 'ui': {
+    // The local app. Loopback only, by construction: the server takes no host
+    // option that could widen it, because the page can start analyses that
+    // read your code.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const portFlag = parsed.flags.get('--port');
+    const port = typeof portFlag === 'string' ? Number(portFlag) : 4747;
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      console.error('--port takes a number between 0 and 65535');
+      process.exitCode = 1;
+      break;
+    }
+    const { startUi } = await import('@teslon/ui');
+    let started;
+    try {
+      started = await startUi({ root, port });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      console.error(e.code === 'EADDRINUSE' ? `\nPort ${port} is taken. Try: teslon ui --port 0\n` : `\n${e.message}\n`);
+      process.exitCode = 1;
+      break;
+    }
+    const query = rest[0] ? `?head=${encodeURIComponent(rest[0])}${rest[1] ? `&base=${encodeURIComponent(rest[1])}` : ''}` : '';
+    const url = `${started.url}${query}`;
+    console.log(`\n  Teslon is running at ${url}`);
+    console.log('  Loopback only — nothing here is reachable from another machine. Ctrl+C to stop.\n');
+    if (!flag('--no-open') && process.stdout.isTTY) {
+      const { spawn } = await import('node:child_process');
+      const [cmd, args] =
+        process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+      try {
+        spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+      } catch {
+        // No browser to open is not an error; the URL is printed above.
+      }
+    }
+    await new Promise<void>((resolve) => {
+      const stop = (): void => {
+        void started.close().then(resolve);
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+    });
     break;
   }
 
