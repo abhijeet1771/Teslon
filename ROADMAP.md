@@ -74,19 +74,43 @@ Five problems, in order of risk:
 5. **The word "100%".** Promised unconditionally, it fails the first time it
    matters. The promise is *no silent miss* plus *measured recall*.
 
-### The next six weeks, with gates
+### What replaces the pilot
 
-| Weeks | Only this | Gate to pass |
-|---|---|---|
-| 1–2 | **Corpus and scorer:** 30 real merged PRs from 4 open Spring + JS SPA repos, impact labelled from linked bug issues, SZZ and by hand; recall, over-selection and silent misses per channel; baseline for product and prototype | Numbers published in the repo |
-| 2–5 | **Port, don't extend:** prototype rules into `packages/core` on real parsers (java-parser, Vue/TS compilers); surface-first output; history and name signals may add to the *look* band but never raise a tier; a changed construct is never below Tier 2 | Product ≥ prototype on the corpus; no silent misses; over-selection down by half from baseline |
-| 5–6 | **Pilot:** 10 merged tickets on the team's own repository; QA reads the brief before testing | ≥ 1 real impact QA was not told about, per 3 tickets; QA reads it in under 5 minutes; every false positive logged and traced to a rule |
+There is no team repository. Instead there is a proving ground:
+[`research/PROVING-GROUND.md`](research/PROVING-GROUND.md). It has 23 real
+repositories chosen by measured channel coverage, and three sources of truth
+that are not Teslon: real escapes from product histories, a published fault
+benchmark, and a differential runtime oracle that runs the app before and
+after an injected change.
 
-**Not now:** new stacks, connectors other than the config repository,
-polishing the ticket view, UI motion, more channels on paper.
+## Implementation order
 
-**Rethink if:** recall on modelled channels stays under 80% after the port,
-or the pilot finds no untold impact in 10 tickets.
+Six principles decide the order:
+
+1. Truth before rules, so nothing is tuned to one PR.
+2. An oracle independent of the engine, so grading is never circular.
+3. The model before the rules, so precision and never-silent are structural.
+4. Rules in the order the scorer says they are missed, not by taste.
+5. A rule passes only if it works on all three frontends of the same twin.
+6. Outputs and polish last.
+
+| Stage | Build | Why here | Gate |
+|---|---|---|---|
+| **0. Truth** | Case format, scorer and runner (`packages/bench`); seed with #559, the 22 TrainTicket faults and 10 historical escapes; baseline the product and the prototypes | Every later choice is made by measured misses | Baseline numbers in the repo |
+| **1. Differential oracle** | Build and run the twins at any ref (H2, no Docker), crawl every route per role with Playwright, record DOM, fields, calls and statuses; 6 of the 18 mutation codemods first (rule tightening, JSON rename, enum value, route rename, role change, config key rename) | The only unlimited source of hard cases, and the riskiest assumption — so it is tested first | ≥ 30 auto-labelled cases across ≥ 3 twins. **Spike passed:** 1 case, 6-page truth in 96 s, 0 noise, product 0/6 (`research/oracle`) |
+| **2. Engine model** | Construct, Delta, Edge (rule, evidence, strength), Surface (kind, parent, conditions), Claim (affected / not affected with reason / unknown with resolver, K-class); evidence verifier; channel inventory feeding NOT MODELLED; surface-first report; file-graph signals demoted to *look* | Fixes the 127-files failure by construction; every rule plugs into it | #559 reproduces the prototype's result inside `packages/core` |
+| **3. Delta extraction** | Java (java-parser CST), TS/Vue/Angular templates (TypeScript, Vue and Angular compilers), YAML/properties keys, Liquibase/Flyway changesets, manifest versions → typed deltas | Precision comes from the kind of change | Every mutation in the catalogue yields the right delta kind |
+| **4. Rule packs**, each with real positive and negative fixtures | 4.1 Spring web + contracts (2, 5) → 4.2 UI: routers, sections, fields, client guards, journeys, shared components (13) → 4.3 Data (8) → 4.4 Security and roles as conditions (14) → 4.5 Config and the external config repo (10) → 4.6 Async, resilience, caches (6, 7, 9) → 4.7 Observability, deps, deploy (15, 11, 12) | Starts where field escapes cluster and most repos have the channel; re-ordered weekly by the scorer | After 4.3: K1 recall ≥ 90% on L1 + L2, **0 silent misses**, over-selection ≤ 1.5× the truth, 100% valid evidence, no K3 claimed as proven |
+| **5. Runtime confirmer** | The stage 1 crawler as an optional *proven* band in the product | Built once, used twice | Opt-in, never required |
+| **6. QA outputs** | Brief per change: page → section → field → test → expected result; not affected with reasons; K2/K3 lists; PR comment; UI v2 | Polish only on top of measured accuracy | A tester can work from the brief alone on 10 L1 cases |
+| **7. Across repos** | Contracts across repositories (petclinic-rest ↔ angular/react, fineract ↔ web-app, the mall trio), then the config repo | The second-commonest blind spot in the atlas | L3 cross-repo cases pass |
+| **8. More stacks** | GraphQL + Python (saleor), Next.js (cal.com), .NET (eShop), gRPC (microservices-demo) | Already measured; they bring feature flags and analytics | Their cases pass |
+
+**Recall on real history** (L3) is the last gate of each stage after 4: ≥ 80%
+on modelled channels, and every miss traced to a channel becomes the next rule.
+
+**Not now:** new stacks before stage 8, connectors before stage 7, UI work
+before stage 6, more channels on paper.
 
 ## Non-negotiables
 
@@ -159,12 +183,6 @@ outputs           test brief per PR and per build · not-affected-and-why ·
 
 ## Phases
 
-| Phase | What | Done when |
-|---|---|---|
-| **A. Corpus and harness** | Labelled real cases seeded from the ten patterns and from SZZ (bug-introducing change → where the bug showed up), at least three per atlas channel; a scorer for recall, precision, evidence correctness and silent failures; a baseline for today's engine | Baseline numbers per pattern are published in the repo |
-| **B. Spring + JS SPA slice** | The prototype's rules move into `packages/core` on compiler-grade parsing, plus a channel inventory per repo, journeys, field granularity with client-side guards, expected results from the delta, and fallbacks that mask failures. Patterns first: contracts (1), schema vs running code (2), dependencies (4), shared UI (7) | No misses on those patterns' corpus cases; evidence self-verified; zero silent failures |
-| **C. QA outputs** | **Ticket gap report** (told vs true, linked by issue key in commits, branch and PR, with a stated fallback when the key is missing); test brief per PR and per build, not-affected-and-why, data checks, deploy notes, overlap, reverse lookup, owners; PR comment, Jira, local app | A release on the test bed can be run from Teslon's output alone |
-| **D. The harder patterns** | Config and generated data (3), flags and dead code (5), deploy order (6), observable behaviour (8), unexercised paths (10) | No misses on those patterns' corpus cases |
-| **D2. Outside the repo** | Connectors that turn "unchecked" into proven: other repos and the config repo first, then flag service, schema registry, OpenTelemetry traces, read-only production replica. Conditions (roles, flags, locale) and N vs N−1 compatibility (rollout, in-flight messages, old clients) | Every K2 item in a run names the connector that would resolve it |
-| **E. More stacks** | Next.js, React, Node/Nest, GraphQL; consumers outside the repo through a contract registry | Corpus cases from those stacks pass |
-| **F. Runtime proof (optional)** | Coverage for a *proven* band beside the *reachable* one | Opt-in, never required |
+Superseded by [Implementation order](#implementation-order). The earlier
+A–F phases folded into its stages: A → 0, B → 2–4.3, C → 6, D → 4.4–4.7,
+D2 → 7, E → 8, F → 5.

@@ -1,0 +1,41 @@
+VOLATILE (differ between two crawls of the same build, excluded): /admin/metrics
+
+CHANGED  /bank-account
+   - text  1	frantically priesthood corporation	5211.44
+   - text  2	modulo	15243.61
+   - text  3	quirkily	423.48
+   - text  4	conceal	21642.4
+   + text  1		5211.44
+   + text  2		15243.61
+   + text  3		423.48
+   + text  4		21642.4
+     … 52 more text differences
+CHANGED  /bank-account/{id}/edit
+   - field  Name: input=frantically priesthood corporation
+   - field  button: Save
+   - field  save unchanged: GET /api/account → 200
+   - field  save unchanged: GET /api/bank-accounts/{id} → 200
+   + field  Name: input=
+   + field  button: Save [disabled]
+   + field  save unchanged: submit not possible: no enabled submit button
+     … 1 more field differences
+CHANGED  /bank-account/{id}/view
+   - text  frantically priesthood corporation
+CHANGED  /operation
+   - text  frantically priesthood corporation
+   - text  modulo
+   - text  quirkily
+   - text  conceal
+     … 1 more text differences
+CHANGED  /operation/{id}/edit
+   - text  frantically priesthood corporation
+   - text  modulo
+   - text  quirkily
+   - text  conceal
+     … 26 more text differences
+   - field  Bank Account: select= | frantically priesthood corporation | modulo | quirkily | conceal | barring strident ca
+   + field  Bank Account: select= |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+CHANGED  /operation/{id}/view
+   - text  frantically priesthood corporation
+
+6 of 24 stable pages differ (1 volatile excluded)
