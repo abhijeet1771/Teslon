@@ -363,6 +363,23 @@ export function resolveMerged(
   sha: string,
   fallbackRange?: { readonly from: string; readonly to: string },
 ): Resolved {
+  // A range the caller supplied wins. It used to be consulted only when the
+  // commit had no parent at all, which never happens for a rebase merge — so
+  // `merged <last> <from>..<to>` silently analysed the last commit alone, and
+  // on a real PR that was the test-only one.
+  if (fallbackRange) {
+    return {
+      change: {
+        baseSha: fallbackRange.from,
+        headSha: fallbackRange.to,
+        mergeBase: fallbackRange.from,
+        files: changedFiles(git, fallbackRange.from, fallbackRange.to),
+        recoveredFrom: 'commit-range',
+      },
+      limitations: [],
+    };
+  }
+
   const parents = git(['rev-list', '--parents', '-n', '1', sha]).split(/\s+/).slice(1);
 
   if (parents.length >= 2) {
@@ -396,19 +413,6 @@ export function resolveMerged(
             'If the pull request was rebased, several commits landed separately and this is only one of them — supply the commit range for the full change set.',
         },
       ],
-    };
-  }
-
-  if (fallbackRange) {
-    return {
-      change: {
-        baseSha: fallbackRange.from,
-        headSha: fallbackRange.to,
-        mergeBase: fallbackRange.from,
-        files: changedFiles(git, fallbackRange.from, fallbackRange.to),
-        recoveredFrom: 'commit-range',
-      },
-      limitations: [],
     };
   }
 

@@ -579,7 +579,10 @@ switch (command) {
     // first commit with no way to reach it.
     const root = process.env.TESLON_ROOT ?? process.cwd();
     const json = flag('--json');
-    const args = rest;
+    // `teslon merged <from>..<to>` is what people type for a rebase merge. It
+    // used to be read as a commit and handed to git, which answered with its
+    // usage text. A lone range means: analyse at its far end.
+    const args = rest[0]?.includes('..') && !rest[1] ? [rest[0].split('..')[1]!, rest[0]] : rest;
     const sha = args[0];
     if (!sha) {
       console.error('usage: teslon merged <sha> [<from>..<to>] [--json] [--junit f] [--fail-on ...]');

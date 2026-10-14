@@ -37,6 +37,57 @@ The channels a change can travel through, and the honest boundary of
 "100%", are in [`research/IMPACT-ATLAS.md`](research/IMPACT-ATLAS.md). Every
 phase below is measured against it.
 
+## Co-owner review, 2026-10-14: right destination, wrong order
+
+**The destination holds.** No one gives QA the scope of a change as pages,
+fields, data and dashboards with evidence. Test-selection tools (Launchable,
+SeaLights, Datadog TIA) pick automated tests. Code-graph tools (Kythe, Glean,
+Nx) list files. Our rules-not-guesses, evidence and never-silent discipline
+is the moat, and it has caught three of our own wrong claims so far.
+
+**The order is wrong.** The same real PR (spring-petclinic #559), shipped
+product vs research prototype:
+
+| | `packages/core` (what users run) | `research/` prototypes |
+|---|---|---|
+| Size | 7,060 lines, 120 tests, a UI | 844 lines of regex scripts |
+| Radius | 127 files, 34 surfaces including vets and visits | 2 pages, 1 global widget, 2 fields, 1 reader page, 3 dashboard panels, 2 SQL probes |
+| Tier 1 | **none**. The pet form is Tier 4, one of 95 | n/a. Each item carries a test and an expected result |
+| AI chat path | not in the radius | found, with a 7-hop chain |
+
+The review also found two product bugs on the way. `merged <from>..<to>`
+crashed into git's usage text. Worse, a supplied range was **silently
+ignored** for rebase merges, so the first run analysed only the last,
+test-only commit. Both are fixed, with test E22.
+
+Five problems, in order of risk:
+
+1. **n = 1.** Everything is tuned on one PR in one repository. Phase A, the
+   corpus, has been "first" since the roadmap was written and has not
+   started.
+2. **Two products.** Accuracy lives in research scripts. The product QA would
+   run is noise on a real PR. Every week of research widens the gap.
+3. **Scope ahead of proof.** Fifteen channels, a ticket view, connectors and
+   motion design, before one stack works end to end.
+4. **No user has used it.** We do not know whether field-level detail, SQL
+   and dashboards are read, or skipped as too long.
+5. **The word "100%".** Promised unconditionally, it fails the first time it
+   matters. The promise is *no silent miss* plus *measured recall*.
+
+### The next six weeks, with gates
+
+| Weeks | Only this | Gate to pass |
+|---|---|---|
+| 1–2 | **Corpus and scorer:** 30 real merged PRs from 4 open Spring + JS SPA repos, impact labelled from linked bug issues, SZZ and by hand; recall, over-selection and silent misses per channel; baseline for product and prototype | Numbers published in the repo |
+| 2–5 | **Port, don't extend:** prototype rules into `packages/core` on real parsers (java-parser, Vue/TS compilers); surface-first output; history and name signals may add to the *look* band but never raise a tier; a changed construct is never below Tier 2 | Product ≥ prototype on the corpus; no silent misses; over-selection down by half from baseline |
+| 5–6 | **Pilot:** 10 merged tickets on the team's own repository; QA reads the brief before testing | ≥ 1 real impact QA was not told about, per 3 tickets; QA reads it in under 5 minutes; every false positive logged and traced to a rule |
+
+**Not now:** new stacks, connectors other than the config repository,
+polishing the ticket view, UI motion, more channels on paper.
+
+**Rethink if:** recall on modelled channels stays under 80% after the port,
+or the pilot finds no untold impact in 10 tickets.
+
 ## Non-negotiables
 
 1. **Rules, not guesses.** Every hop names the rule that made it — compiler,

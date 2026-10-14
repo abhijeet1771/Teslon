@@ -180,6 +180,15 @@ check('E21', 'the temp worktree is always cleaned up', () => {
   teslon(d, 'pr', 'main', 'f');
   const wts = g(d, 'worktree', 'list').split('\n').length; return [wts === 1, `worktrees=${wts}`];
 });
+check('E22', '`merged <from>..<to>` alone is read as a range, not as a commit', () => {
+  const d = repo({ 'src/a.ts': 'export const a=1;\n', 'src/b.ts': "import { a } from './a';\nexport const b=a;\n" });
+  const from = g(d, 'rev-parse', 'HEAD');
+  put(d, { 'src/a.ts': 'export const a=2;\n' }); g(d, 'commit', '-qam', 'one');
+  put(d, { 'src/a.ts': 'export const a=3;\n' }); g(d, 'commit', '-qam', 'two');
+  const to = g(d, 'rev-parse', 'HEAD');
+  const { code, r, raw } = teslon(d, 'merged', `${from.slice(0, 7)}..${to.slice(0, 7)}`);
+  return [code === 0 && inR(r, 'src/b.ts') && r.change.recoveredFrom === 'commit-range', `code=${code} ${raw.slice(0, 120)}`];
+});
 
 for (const x of results) {
   test(`${x.id} · ${x.name}`, () => assert.ok(x.ok, x.note));
