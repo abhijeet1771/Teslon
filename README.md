@@ -230,10 +230,12 @@ npm run build && npm test
 
 ## What is coming
 
-The local app (`teslon ui`) for people who do not run CI: keep a clone of
-main, paste a pull request link, get a brief in plain words. Then the CI
-check, then the coverage oracle that grades Teslon's own accuracy on every
-build.
+See [ROADMAP.md](ROADMAP.md). In short: the evidence from a real repository and
+from public postmortems says QA needs pages, features, APIs, data and deploy
+order — not files — so the engine is moving to a typed impact graph built on
+framework rules, with every claim verified against git and accuracy earned per
+failure pattern on a labelled corpus of real cases
+([research/](research/)).
 
 ## Honest limits
 
