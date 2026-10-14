@@ -1,6 +1,6 @@
 # Teslon roadmap
 
-Settled after four pieces of evidence, not before them:
+Settled after five pieces of evidence, not before them:
 
 1. **A real repository.** On real commits from a Spring microservices app,
    today's engine found none of the six things a real PR affected; a prototype
@@ -15,21 +15,27 @@ Settled after four pieces of evidence, not before them:
    the 11 things the merge changes. The 4 missed include a behaviour change on
    the create endpoint and an AI chat on every page that calls it
    (`research/ticket-gap`).
+5. **A review of the plan itself.** Fifteen channels a change can travel
+   through, five of them shown on the same repository with no rule in the
+   plan, one draft claim disproved in a real browser before it was kept
+   (`research/IMPACT-ATLAS.md`).
 
 ## The goal, in one sentence
 
-When a ticket is done and its PR is merged, QA is told "test X, Y, Z" by
-someone who wrote the change from memory. Teslon closes the gap between
-**what QA was told and what the merge actually reaches**: confirmed, missed
-(with evidence), told-but-not-merged (a missing PR), and not affected (with
-the reason).
+For any pull request, merged commit or range, tell QA **where the change
+lands and why**: pages down to the field, APIs, jobs, data, dashboards and
+deployments, each with the conditions under which it shows and the result to
+expect, and which it does not reach, with a reason. Every claim carries
+evidence that checks itself, and everything Teslon could not see is said out
+loud.
 
-The ticket is the primary unit; a PR before merge and a build-to-build range
-are the same analysis over a different set of commits. Underneath, for any of
-them, tell QA which
-**pages, features, APIs, data and deployments** it affects — and which it does
-not — with every claim backed by evidence that checks itself, and everything
-Teslon could not see said out loud.
+Views over the same analysis: a PR before merge, a merged ticket (what QA was
+told vs what the merge reaches, `research/ticket-gap`), and a build-to-build
+range.
+
+The channels a change can travel through, and the honest boundary of
+"100%", are in [`research/IMPACT-ATLAS.md`](research/IMPACT-ATLAS.md). Every
+phase below is measured against it.
 
 ## Non-negotiables
 
@@ -104,9 +110,10 @@ outputs           test brief per PR and per build · not-affected-and-why ·
 
 | Phase | What | Done when |
 |---|---|---|
-| **A. Corpus and harness** | Labelled real cases seeded from the ten patterns; a scorer for recall, precision, evidence correctness and silent failures; a baseline for today's engine | Baseline numbers per pattern are published in the repo |
-| **B. Spring + JS SPA slice** | The prototype's rules move into `packages/core` on compiler-grade parsing. Patterns first: contracts (1), schema vs running code (2), dependencies (4), shared UI (7) | No misses on those patterns' corpus cases; evidence self-verified; zero silent failures |
+| **A. Corpus and harness** | Labelled real cases seeded from the ten patterns and from SZZ (bug-introducing change → where the bug showed up), at least three per atlas channel; a scorer for recall, precision, evidence correctness and silent failures; a baseline for today's engine | Baseline numbers per pattern are published in the repo |
+| **B. Spring + JS SPA slice** | The prototype's rules move into `packages/core` on compiler-grade parsing, plus a channel inventory per repo, journeys, field granularity with client-side guards, expected results from the delta, and fallbacks that mask failures. Patterns first: contracts (1), schema vs running code (2), dependencies (4), shared UI (7) | No misses on those patterns' corpus cases; evidence self-verified; zero silent failures |
 | **C. QA outputs** | **Ticket gap report** (told vs true, linked by issue key in commits, branch and PR, with a stated fallback when the key is missing); test brief per PR and per build, not-affected-and-why, data checks, deploy notes, overlap, reverse lookup, owners; PR comment, Jira, local app | A release on the test bed can be run from Teslon's output alone |
 | **D. The harder patterns** | Config and generated data (3), flags and dead code (5), deploy order (6), observable behaviour (8), unexercised paths (10) | No misses on those patterns' corpus cases |
+| **D2. Outside the repo** | Connectors that turn "unchecked" into proven: other repos and the config repo first, then flag service, schema registry, OpenTelemetry traces, read-only production replica. Conditions (roles, flags, locale) and N vs N−1 compatibility (rollout, in-flight messages, old clients) | Every K2 item in a run names the connector that would resolve it |
 | **E. More stacks** | Next.js, React, Node/Nest, GraphQL; consumers outside the repo through a contract registry | Corpus cases from those stacks pass |
 | **F. Runtime proof (optional)** | Coverage for a *proven* band beside the *reachable* one | Opt-in, never required |

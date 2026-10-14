@@ -1,0 +1,17 @@
+<!doctype html><html><body><div id="app"></div>
+<script src="vue.js"></script>
+<script>
+// Same bindings as PetFormPage.js:89,99,105,119
+Vue.createApp({
+  setup() {
+    const pet = Vue.reactive({ name: '', birthDate: '' });
+    window.sent = [];
+    function submit(event) { if (!event.target.reportValidity()) return; window.sent.push(pet.name.trim()); }
+    return { pet, submit };
+  },
+  template: `<form @submit.prevent="submit">
+    <input id="pet-name" v-model.trim="pet.name" required type="text">
+    <input id="pet-birth-date" v-model="pet.birthDate" required type="date">
+    <button id="go" type="submit">Submit</button></form>`
+}).mount('#app');
+</script></body></html>
