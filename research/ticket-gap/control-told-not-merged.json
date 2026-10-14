@@ -1,0 +1,19 @@
+{
+  "repo": "spring-petclinic/spring-petclinic-microservices",
+  "ticket": "#558",
+  "pr": "#559",
+  "merged": {
+    "base": "dc9ca15",
+    "head": "1d76b00",
+    "how": "rebase-merge"
+  },
+  "note": "Control: same merge, but the told scope also names an owner endpoint this merge never touches. The report must flag it, not absorb it.",
+  "told": [
+    "Ticket #558: Backend accepts pet birth dates in the future.",
+    "Steps: send POST /owners/{ownerId}/pets or PUT /owners/{ownerId}/pets/{petId} with birthDate 2030-01-01. Expected 400 Bad Request; today it is saved, through the API and through the UI pet form.",
+    "Also: processUpdateForm had no @Valid, so @Size on name was not enforced on update.",
+    "PR #559 testing: unit tests for POST and PUT return 400 for a future birth date.",
+    "Known gap: the frontend shows no validation error when the save fails, tracked in #557.",
+    "Also check PUT /owners/{ownerId} still saves the owner."
+  ]
+}

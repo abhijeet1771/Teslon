@@ -1,6 +1,12 @@
 import { at, services, providers, dtoConstraints, gateway, frontend, javaConsumers, upstream, concretes } from './mech.mjs';
 
-const [repo, baseRef, headRef] = process.argv.slice(2);
+/**
+ * Structured impact of base..head. Every item carries the chain of rules that
+ * put it there, so a reader can check each hop instead of trusting the list.
+ */
+export function impact(repo, baseRef, headRef, say = console.log) {
+const items = [];
+const hit = (kind, id, evidence, extra = {}) => items.push({ kind, id, evidence: [...evidence], ...extra });
 const B = at(repo, baseRef), H = at(repo, headRef);
 const svcH = services(H), svcB = services(B);
 const epsH = providers(H, svcH), epsB = providers(B, svcB);
@@ -38,36 +44,48 @@ function frontendCallersOf(ep) {
   return hits;
 }
 
-console.log(`\n=== ${headRef} vs ${baseRef} ===`);
+say(`\n=== ${headRef} vs ${baseRef} ===`);
 const found = [];
 for (const t of tightened) {
   const e = t.ep;
-  console.log(`\n■ REQUEST CONTRACT TIGHTENED  ${e.service}  ${e.verb} ${e.path}   [${e.handler}, ${e.file.split('/').pop()}:${e.line}]`);
-  console.log(`    newly enforced: ${t.added.join(' · ')}${!t.wasValid ? '   ← @Valid was added here, so EVERY rule on the body is new, not only the one in the diff' : ''}`);
+  say(`\n■ REQUEST CONTRACT TIGHTENED  ${e.service}  ${e.verb} ${e.path}   [${e.handler}, ${e.file.split('/').pop()}:${e.line}]`);
+  say(`    newly enforced: ${t.added.join(' · ')}${!t.wasValid ? '   ← @Valid was added here, so EVERY rule on the body is new, not only the one in the diff' : ''}`);
   const x = ext(e.service, e.path);
-  if (x) console.log(`    [gateway rule] exposed as ${e.verb} ${x.path}   (Path=${x.route.prefix}/** StripPrefix=${x.route.strip}, ${x.route.file.split('/').slice(-1)}:${x.route.line})`);
+  hit('endpoint', `${e.verb} ${x ? x.path : e.path}`, [`${e.handler} (${e.file.split('/').pop()}:${e.line})`, ...(x ? [`gateway Path=${x.route.prefix}/** StripPrefix=${x.route.strip} (${x.route.file.split('/').pop()}:${x.route.line})`] : [])], { endpoint: key(e), internal: e.path, rules: t.added, validAdded: !t.wasValid, file: e.file });
+  if (x) say(`    [gateway rule] exposed as ${e.verb} ${x.path}   (Path=${x.route.prefix}/** StripPrefix=${x.route.strip}, ${x.route.file.split('/').slice(-1)}:${x.route.line})`);
 
   // direction rule: a request-body rule only reaches code that SENDS that body
   for (const h of frontendCallersOf(e)) {
     const tag = h.writes ? 'AFFECTED' : 'excluded';
     const surf = surfacesOf(h.call.file);
-    console.log(`    ${tag.padEnd(8)} [contract match] ${h.call.file.split('/').slice(-2).join('/')}:${h.call.line}  ${h.call.verbs.join('/')} ${h.call.tpl}`);
-    if (!h.writes) { console.log(`             └ reads only: a request-body rule cannot change what this ${h.call.verbs.join('/')} returns`); continue; }
-    for (const s of surf) { console.log(`             └ [router rule] ${s.kind.toUpperCase()} ${s.id}`); found.push(s.id); }
+    say(`    ${tag.padEnd(8)} [contract match] ${h.call.file.split('/').slice(-2).join('/')}:${h.call.line}  ${h.call.verbs.join('/')} ${h.call.tpl}`);
+    const head = `${e.verb} ${e.path} (${e.file.split('/').pop()}:${e.line}) is called by ${h.call.file.split('/').slice(-2).join('/')}:${h.call.line} ${h.call.verbs.join('/')} ${h.call.tpl}`;
+    if (!h.writes) {
+      say(`             └ reads only: a request-body rule cannot change what this ${h.call.verbs.join('/')} returns`);
+      for (const s of surf) hit('not-affected', s.id, [head, `only reads (${h.call.verbs.join('/')}); a request-body rule cannot change a response`], { endpoint: key(e) });
+      continue;
+    }
+    for (const s of surf) { say(`             └ [router rule] ${s.kind.toUpperCase()} ${s.id}`); found.push(s.id); hit('page', s.id, [head, `router maps ${s.id} → ${h.call.file.split('/').pop()}`], { endpoint: key(e), rules: t.added, caller: h.call }); }
     found.push(h.call.file.split('/').pop());
   }
   for (const c of jc.filter((c) => c.service === e.service && c.verb === e.verb && concretes(c.tpl).some((p) => new RegExp('^' + e.path.split('/').map((s) => (s === '*' || /^\{.*\}$/.test(s) ? '[^/]+' : s)).join('/') + '$').test(p)))) {
-    console.log(`    AFFECTED [contract match] ${c.svc}: ${c.cls}.${c.method}()  ${c.verb} ${c.tpl}   (${c.how}, ${c.file.split('/').pop()}:${c.line})`);
+    say(`    AFFECTED [contract match] ${c.svc}: ${c.cls}.${c.method}()  ${c.verb} ${c.tpl}   (${c.how}, ${c.file.split('/').pop()}:${c.line})`);
     found.push(c.file.split('/').pop());
     for (const chain of upstream(H, svcH, epsH, { ...c })) {
       const end = chain.at(-1).ep;
-      for (const s of chain.slice(1, -1)) console.log(`             └ [${s.kind === 'tool' ? 'Spring AI rule: @Tool' : s.kind === 'wiring' ? 'Spring AI rule' : 'compiler-level call'}] ${s.cls}${s.method ? '.' + s.method + '()' : ''} ${s.detail ?? ''} (${s.file.split('/').pop()}${s.line ? ':' + s.line : ''})`);
+      for (const s of chain.slice(1, -1)) say(`             └ [${s.kind === 'tool' ? 'Spring AI rule: @Tool' : s.kind === 'wiring' ? 'Spring AI rule' : 'compiler-level call'}] ${s.cls}${s.method ? '.' + s.method + '()' : ''} ${s.detail ?? ''} (${s.file.split('/').pop()}${s.line ? ':' + s.line : ''})`);
       if (chain.some((s) => s.kind === 'tool')) found.push('PetclinicTools.java');
       const xe = ext(end.service, end.path);
-      console.log(`             └ [Spring rule] ${end.service} ${end.verb} ${end.path}${xe ? `  → [gateway rule] ${end.verb} ${xe.path}` : ''}`);
+      say(`             └ [Spring rule] ${end.service} ${end.verb} ${end.path}${xe ? `  → [gateway rule] ${end.verb} ${xe.path}` : ''}`);
       if (xe) for (const h of frontendCallersOf(end)) for (const s of surfacesOf(h.call.file)) {
-        console.log(`             └ [contract match] ${h.call.file.split('/').slice(-2).join('/')}:${h.call.line} → [${s.kind === 'global' ? 'Vue rule: registered component rendered beside <router-view>' : 'router rule'}] ${s.kind.toUpperCase()} ${s.id}`);
+        say(`             └ [contract match] ${h.call.file.split('/').slice(-2).join('/')}:${h.call.line} → [${s.kind === 'global' ? 'Vue rule: registered component rendered beside <router-view>' : 'router rule'}] ${s.kind.toUpperCase()} ${s.id}`);
         found.push(h.call.file.split('/').pop(), s.id);
+        hit(s.kind === 'global' ? 'global' : 'page', s.id, [
+          `${e.verb} ${e.path} is called by ${c.svc}: ${c.cls}.${c.method}() (${c.how}, ${c.file.split('/').pop()}:${c.line})`,
+          ...chain.slice(1, -1).map((x) => `${x.cls}${x.method ? '.' + x.method + '()' : ''} ${x.detail ?? ''} (${x.file.split('/').pop()}${x.line ? ':' + x.line : ''})`.replace(/\s+/g, ' ')),
+          `${end.service} ${end.verb} ${end.path}${xe ? ` exposed as ${end.verb} ${xe.path}` : ''}`,
+          `${h.call.file.split('/').slice(-2).join('/')}:${h.call.line} calls it; ${s.kind === 'global' ? 'component is rendered beside <router-view>, so it is on every page' : 'router maps ' + s.id}`,
+        ], { endpoint: key(e), rules: t.added, caller: c, via: 'ai-tool', handles4xx: handles4xx(H, c) });
       }
     }
   }
@@ -81,9 +99,24 @@ for (const t of tightened) {
       const col = new RegExp(`@Column\\s*\\(\\s*name\\s*=\\s*"(\\w+)"\\s*\\)[^;]*\\b${c.field}\\s*;`).exec(src)?.[1];
       if (!table || !col) continue;
       const where = /PastOrPresent|Past\b/.test(c.rule) ? `${col} > CURRENT_DATE` : /Size\(min\s*=\s*(\d+)/.test(c.rule) ? `${col} IS NULL OR CHAR_LENGTH(${col}) < ${/min\s*=\s*(\d+)/.exec(c.rule)[1]}` : null;
-      if (where) { console.log(`    DATA RISK [entity rule] rows already breaking "${c.field} ${c.rule}" can no longer be edited through ${e.verb}:  SELECT id FROM ${table} WHERE ${where};`); found.push(`data:${c.field}`); }
+      if (where) { hit('data', `${table}.${col}`, [`${e.verb} ${e.path} now enforces "${c.field} ${c.rule}"`, `${entity}.${c.field} → @Table "${table}" @Column "${col}" (${ent.split('/').pop()})`], { endpoint: key(e), sql: `SELECT id FROM ${table} WHERE ${where};`, rule: `${c.field} ${c.rule}` }); say(`    DATA RISK [entity rule] rows already breaking "${c.field} ${c.rule}" can no longer be edited through ${e.verb}:  SELECT id FROM ${table} WHERE ${where};`); found.push(`data:${c.field}`); }
     }
   }
 }
-export const result = found;
-console.log(`\nfound: ${[...new Set(found)].join(', ')}`);
+say(`\nfound: ${[...new Set(found)].join(', ')}`);
+return { items, found: [...new Set(found)], tightened, frontend: fe, endpoints: epsH, gateway: gw };
+}
+
+/**
+ * Does this Java caller survive a 4xx? Spring's RestClient/RestTemplate throw on
+ * 4xx unless an onStatus handler or a surrounding catch says otherwise, so a
+ * newly-rejected input turns into an exception at the caller.
+ */
+function handles4xx(snap, c) {
+  const src = snap.read(c.file);
+  const lines = src.split('\n');
+  const from = Math.max(0, c.line - 1), body = lines.slice(from, from + 12).join('\n');
+  return /onStatus\s*\(|catch\s*\(|exchange\s*\(/.test(body) || /@ExceptionHandler|ErrorHandler/.test(src) ? 'handled' : 'throws';
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) impact(...process.argv.slice(2, 5));

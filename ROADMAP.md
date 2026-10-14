@@ -1,6 +1,6 @@
 # Teslon roadmap
 
-Settled after three pieces of evidence, not before them:
+Settled after four pieces of evidence, not before them:
 
 1. **A real repository.** On real commits from a Spring microservices app,
    today's engine found none of the six things a real PR affected; a prototype
@@ -11,10 +11,22 @@ Settled after three pieces of evidence, not before them:
    practitioner communities (`research/FIELD-EVIDENCE.md`).
 3. **The QA desk.** Twelve things a tester needs to finish a release without
    reading code (same file).
+4. **A real ticket.** On a real bug ticket and its merged PR, QA was told 7 of
+   the 11 things the merge changes. The 4 missed include a behaviour change on
+   the create endpoint and an AI chat on every page that calls it
+   (`research/ticket-gap`).
 
 ## The goal, in one sentence
 
-For any pull request, merged change or build-to-build range, tell QA which
+When a ticket is done and its PR is merged, QA is told "test X, Y, Z" by
+someone who wrote the change from memory. Teslon closes the gap between
+**what QA was told and what the merge actually reaches**: confirmed, missed
+(with evidence), told-but-not-merged (a missing PR), and not affected (with
+the reason).
+
+The ticket is the primary unit; a PR before merge and a build-to-build range
+are the same analysis over a different set of commits. Underneath, for any of
+them, tell QA which
 **pages, features, APIs, data and deployments** it affects — and which it does
 not — with every claim backed by evidence that checks itself, and everything
 Teslon could not see said out loud.
@@ -94,7 +106,7 @@ outputs           test brief per PR and per build · not-affected-and-why ·
 |---|---|---|
 | **A. Corpus and harness** | Labelled real cases seeded from the ten patterns; a scorer for recall, precision, evidence correctness and silent failures; a baseline for today's engine | Baseline numbers per pattern are published in the repo |
 | **B. Spring + JS SPA slice** | The prototype's rules move into `packages/core` on compiler-grade parsing. Patterns first: contracts (1), schema vs running code (2), dependencies (4), shared UI (7) | No misses on those patterns' corpus cases; evidence self-verified; zero silent failures |
-| **C. QA outputs** | Test brief per PR and per build, not-affected-and-why, data checks, deploy notes, overlap, reverse lookup, owners; PR comment, Jira, local app | A release on the test bed can be run from Teslon's output alone |
+| **C. QA outputs** | **Ticket gap report** (told vs true, linked by issue key in commits, branch and PR, with a stated fallback when the key is missing); test brief per PR and per build, not-affected-and-why, data checks, deploy notes, overlap, reverse lookup, owners; PR comment, Jira, local app | A release on the test bed can be run from Teslon's output alone |
 | **D. The harder patterns** | Config and generated data (3), flags and dead code (5), deploy order (6), observable behaviour (8), unexercised paths (10) | No misses on those patterns' corpus cases |
 | **E. More stacks** | Next.js, React, Node/Nest, GraphQL; consumers outside the repo through a contract registry | Corpus cases from those stacks pass |
 | **F. Runtime proof (optional)** | Coverage for a *proven* band beside the *reachable* one | Opt-in, never required |

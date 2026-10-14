@@ -1,0 +1,14 @@
+{
+  "repo": "spring-petclinic/spring-petclinic-microservices",
+  "ticket": "#558",
+  "pr": "#559",
+  "merged": { "base": "dc9ca15", "head": "1d76b00", "how": "rebase-merge" },
+  "note": "The told scope below is what a QA engineer is handed: the ticket and the PR's testing notes, restated in our own words (summarised, not quoted). Nothing else from the conversation around the ticket is used.",
+  "told": [
+    "Ticket #558: Backend accepts pet birth dates in the future.",
+    "Steps: send POST /owners/{ownerId}/pets or PUT /owners/{ownerId}/pets/{petId} with birthDate 2030-01-01. Expected 400 Bad Request; today it is saved, through the API and through the UI pet form.",
+    "Also: processUpdateForm had no @Valid, so @Size on name was not enforced on update.",
+    "PR #559 testing: unit tests for POST and PUT return 400 for a future birth date.",
+    "Known gap: the frontend shows no validation error when the save fails, tracked in #557."
+  ]
+}

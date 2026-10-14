@@ -1,0 +1,44 @@
+TICKET GAP  #558 → #559  (spring-petclinic/spring-petclinic-microservices, dc9ca15..1d76b00)
+linked: 0/3 commits carry #558 (rebase-merge); the rest are linked through #559 as given — a merge without the key in it is the commonest way a ticket loses code
+
+TOLD AND CONFIRMED BY CODE (7)
+  ✓ rule     POST /api/customer/owners/{ownerId}/pets  birthDate @PastOrPresent   ← told as path POST /owners/{ownerId}/pets
+  ✓ rule     PUT /api/customer/owners/*/pets/{petId}  birthDate @PastOrPresent   ← told as path PUT /owners/{ownerId}/pets/{petId}
+  ✓ rule     PUT /api/customer/owners/*/pets/{petId}  name @Size(min = 1)   ← told as handler processUpdateForm()
+  ✓ endpoint POST /api/customer/owners/{ownerId}/pets   ← told as path POST /owners/{ownerId}/pets
+  ✓ endpoint PUT /api/customer/owners/*/pets/{petId}   ← told as path PUT /owners/{ownerId}/pets/{petId}
+  ✓ page     /owners/:ownerId/new-pet   ← told as "pet form" names PetFormPage.js
+  ✓ page     /owners/:ownerId/pets/:petId   ← told as "pet form" names PetFormPage.js
+
+MISSED — the merge reaches these, nobody told QA (4)
+  ✗ RULE     POST /api/customer/owners/{ownerId}/pets  name @Size(min = 1)
+      · PetResource.processCreationForm (PetResource.java:55)
+      · gateway Path=/api/customer/** StripPrefix=2 (application.yml:36)
+      · @Valid added in this merge, so every rule on the body is newly enforced — not just the one the ticket is about
+  ✗ GLOBAL   <chat-box> on every page
+      · POST /owners/{ownerId}/pets is called by genai-service: AIDataProvider.addPetToOwner() (getCustomerServiceUri() → DiscoveryClient.getInstances("customers-service"), AIDataProvider.java:73)
+      · PetclinicTools.addPetToOwner() (PetclinicTools.java:71)
+      · PetclinicChatClient .defaultTools(petclinicTools) (PetclinicChatClient.java)
+      · genai-service POST /chatclient exposed as POST /api/genai/chatclient
+      · components/ChatBox.js:47 calls it; component is rendered beside <router-view>, so it is on every page
+      → verify: AIDataProvider.addPetToOwner() uses .retrieve() with no onStatus/catch: a 400 now becomes an exception inside the chat — ask it to add a pet born next year and check the reply is a sentence, not an error
+  ✗ DATA     pets.birth_date
+      · PUT /owners/*/pets/{petId} now enforces "birthDate @PastOrPresent"
+      · Pet.birthDate → @Table "pets" @Column "birth_date" (Pet.java)
+      → verify: rows already breaking "birthDate @PastOrPresent" can no longer be saved from Edit Pet. Run on a prod copy: SELECT id FROM pets WHERE birth_date > CURRENT_DATE;
+  ✗ DATA     pets.name
+      · PUT /owners/*/pets/{petId} now enforces "name @Size(min = 1)"
+      · Pet.name → @Table "pets" @Column "name" (Pet.java)
+      → verify: rows already breaking "name @Size(min = 1)" can no longer be saved from Edit Pet. Run on a prod copy: SELECT id FROM pets WHERE name IS NULL OR CHAR_LENGTH(name) < 1;
+
+TOLD BUT NOT IN THIS MERGE (1)  ← red flag: a PR or repo is missing from the ticket
+  ? PUT /owners/{ownerId} — told, but no endpoint changed by this merge serves it
+
+KNOWN GAPS NAMED IN THE TICKET
+  ! #557: Known gap: the frontend shows no validation error when the save fails, tracked in #557.
+      the pages above now receive 400s and hand them to reportError(); what the user actually sees is #557's territory — record it, don't fail this ticket on it
+
+NO PATH FOUND (7 pages)  — no changed contract reaches them; reads of a pet are excluded because a request rule cannot change a response
+  /   /vets   /owners   /owners/new   /owners/:ownerId/edit   /owners/details/:ownerId   /owners/:ownerId/pets/:petId/visits
+
+verdict: QA was told 7/11 of what this merge changes. At least these, never only these.
