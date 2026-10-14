@@ -1,0 +1,74 @@
+FIELD-LEVEL IMPACT  dc9ca15..1d76b00
+
+   changed  spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetRequest.java  — claimed: request rule changed (below)
+   changed  spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java  — claimed: request rule changed (below)
+   changed  spring-petclinic-customers-service/src/test/java/org/springframework/samples/petclinic/customers/web/PetResourceTest.java  — test code — no runtime surface
+
+━━ birthDate @PastOrPresent  — newly enforced on POST /owners/{ownerId}/pets and PUT /owners/*/pets/{petId}
+   API      POST /api/customer/owners/{ownerId}/pets  → PetResource.processCreationForm  PetResource.java:55   (@Valid added in this change)
+   API      PUT /api/customer/owners/*/pets/{petId}  → PetResource.processUpdateForm  PetResource.java:69   (@Valid added in this change)
+   DTO      PetRequest.birthDate  JSON key "birthDate"  PetRequest.java:29  rule PetRequest.java:29
+   DATA     pets.birth_date  ← pet.setBirthDate(petRequest.birthDate());  PetResource.java:80 → Pet.birthDate Pet.java:46 @Column Pet.java:44
+   ENTRY POINTS — where a person can send birthDate
+     PAGE     /owners/:ownerId/new-pet  router.js:36   sends POST (petId ? 'PUT' : 'POST' PetFormPage.js:61)
+       SECTION  "Pet"  PetFormPage.js:88
+       FIELD    "Birth date"  <date required>  PetFormPage.js:105 → payload birthDate: pet.birthDate,  PetFormPage.js:52 → request PetFormPage.js:61
+       REACH    YES — type="date" with no max — a date after today can be picked
+       TEST     pick a date after today, save → expect rejection (before this change: saved)
+       JOURNEY  on success → /owners/details/:ownerId  PetFormPage.js:62; a rejected save never gets there
+     PAGE     /owners/:ownerId/pets/:petId  router.js:39   sends PUT (petId ? 'PUT' : 'POST' PetFormPage.js:61)
+       SECTION  "Pet"  PetFormPage.js:88
+       FIELD    "Birth date"  <date required>  PetFormPage.js:105 → payload birthDate: pet.birthDate,  PetFormPage.js:52 → request PetFormPage.js:61
+       REACH    YES — type="date" with no max — a date after today can be picked
+       TEST     pick a date after today, save → expect rejection (before this change: saved)
+       JOURNEY  on success → /owners/details/:ownerId  PetFormPage.js:62; a rejected save never gets there
+     GLOBAL   <chat-box> on every page  → AIDataProvider.addPetToOwner()  AIDataProvider.java:73
+       FIELD    PetRequest.birthDate PetRequest.java:29  (sent by .body(petRequest) AIDataProvider.java:74; filled in by the model from the conversation)
+       REACH    YES — no client guard between the model and the API
+       TEST     ask the chat to add a pet born next year → expect a refusal sentence, not an error: addPetToOwner() has no 4xx handling
+   READERS — pages that show birthDate from rows already stored
+     PAGE     /owners/details/:ownerId  router.js:30
+       SECTION  "Pets and Visits"  OwnerDetailsPage.js:53   FIELD "Birth Date"  OwnerDetailsPage.js:66  ← GET /api/gateway/owners/{*}  OwnerDetailsPage.js:13  (join on pet.birthDate: name-level, type proof is Phase B)
+       DATA     rows breaking the rule still display here, but cannot be saved again. Count them: SELECT id FROM pets WHERE birth_date > CURRENT_DATE;
+       JOURNEY  "Add New Pet" OwnerDetailsPage.js:46 → /owners/:ownerId/new-pet, the form above
+       JOURNEY  "{{ pet.name }}" OwnerDetailsPage.js:61 → /owners/:ownerId/pets/:petId, the form above
+       JOURNEY  "Edit Pet" OwnerDetailsPage.js:83 → /owners/:ownerId/pets/:petId, the form above
+
+━━ name @Size(min = 1)  — newly enforced on POST /owners/{ownerId}/pets and PUT /owners/*/pets/{petId}
+   API      POST /api/customer/owners/{ownerId}/pets  → PetResource.processCreationForm  PetResource.java:55   (@Valid added in this change)
+   API      PUT /api/customer/owners/*/pets/{petId}  → PetResource.processUpdateForm  PetResource.java:69   (@Valid added in this change)
+   DTO      PetRequest.name  JSON key "name"  PetRequest.java:31  rule PetRequest.java:30
+   DATA     pets.name  ← pet.setName(petRequest.name());  PetResource.java:79 → Pet.name Pet.java:42 @Column Pet.java:41
+   ENTRY POINTS — where a person can send name
+     PAGE     /owners/:ownerId/new-pet  router.js:36   sends POST (petId ? 'PUT' : 'POST' PetFormPage.js:61)
+       SECTION  "Pet"  PetFormPage.js:88
+       FIELD    "Name"  <text required .trim>  PetFormPage.js:99 → payload name: pet.name.trim(),  PetFormPage.js:51 → request PetFormPage.js:61
+       REACH    NO — required + v-model.trim — the field is rewritten to "" on change and the browser blocks submit (research/form-guard)
+       TEST     none on this field — the browser stops the value before the rule can matter
+       JOURNEY  on success → /owners/details/:ownerId  PetFormPage.js:62; a rejected save never gets there
+     PAGE     /owners/:ownerId/pets/:petId  router.js:39   sends PUT (petId ? 'PUT' : 'POST' PetFormPage.js:61)
+       SECTION  "Pet"  PetFormPage.js:88
+       FIELD    "Name"  <text required .trim>  PetFormPage.js:99 → payload name: pet.name.trim(),  PetFormPage.js:51 → request PetFormPage.js:61
+       REACH    NO — required + v-model.trim — the field is rewritten to "" on change and the browser blocks submit (research/form-guard)
+       TEST     none on this field — the browser stops the value before the rule can matter
+       JOURNEY  on success → /owners/details/:ownerId  PetFormPage.js:62; a rejected save never gets there
+     GLOBAL   <chat-box> on every page  → AIDataProvider.addPetToOwner()  AIDataProvider.java:73
+       FIELD    PetRequest.name PetRequest.java:30  (sent by .body(petRequest) AIDataProvider.java:74; filled in by the model from the conversation)
+       REACH    YES — no client guard between the model and the API
+       TEST     ask the chat to add a pet with no name → expect a refusal sentence, not an error: addPetToOwner() has no 4xx handling
+   READERS — pages that show name from rows already stored
+     PAGE     /owners/details/:ownerId  router.js:30
+       SECTION  "Pets and Visits"  OwnerDetailsPage.js:53   FIELD "Name"  OwnerDetailsPage.js:62  ← GET /api/gateway/owners/{*}  OwnerDetailsPage.js:13  (join on pet.name: name-level, type proof is Phase B)
+       DATA     rows breaking the rule still display here, but cannot be saved again. Count them: SELECT id FROM pets WHERE name IS NULL OR CHAR_LENGTH(name) < 1;
+       JOURNEY  "Add New Pet" OwnerDetailsPage.js:46 → /owners/:ownerId/new-pet, the form above
+       JOURNEY  "{{ pet.name }}" OwnerDetailsPage.js:61 → /owners/:ownerId/pets/:petId, the form above
+       JOURNEY  "Edit Pet" OwnerDetailsPage.js:83 → /owners/:ownerId/pets/:petId, the form above
+
+━━ across every field above
+   JOBS     none on this path — inventory: @EventListener VectorStoreController.java:49; none of them mentions Pet, pets or PetRequest
+   DASHBOARD CHANGES   "HTTP Request Latency"  grafana-petclinic-dashboard.json:85  sum(rate(http_server_requests_seconds_sum{status!~"5.."}[1m]))/sum(rate(http_server_requests_seconds_count{ status!~"5.."}[1m]))  — counts the new 400s on POST /owners/{ownerId}/pets and PUT /owners/*/pets/{petId} (Spring records every request in http.server.requests)
+   DASHBOARD CHANGES   "HTTP Request Latency"  grafana-petclinic-dashboard.json:92  max(http_server_requests_seconds_max{status!~"5.."})  — counts the new 400s on POST /owners/{ownerId}/pets and PUT /owners/*/pets/{petId} (Spring records every request in http.server.requests)
+   DASHBOARD CHANGES   "HTTP Request Activity"  grafana-petclinic-dashboard.json:173  sum(rate(http_server_requests_seconds_count[1m]))  — counts the new 400s on POST /owners/{ownerId}/pets and PUT /owners/*/pets/{petId} (Spring records every request in http.server.requests)
+   DASHBOARD unchanged "HTTP Request Activity"  grafana-petclinic-dashboard.json:181  — its filter excludes status 400
+   DASHBOARD unchanged "Pets Created"  grafana-petclinic-dashboard.json:449  — @Timed("petclinic.pet") PetResource.java:37 via TimedAspect MetricConfig.java:20 times processCreationForm() only when it runs; @Valid rejects before it runs. Name-coupled: renaming processCreationForm() empties this panel
+   DASHBOARD unchanged "SPC Business Histogram"  grafana-petclinic-dashboard.json:601  — @Timed("petclinic.pet") PetResource.java:37 via TimedAspect MetricConfig.java:20 times processCreationForm() only when it runs; @Valid rejects before it runs. Name-coupled: renaming processCreationForm() empties this panel
