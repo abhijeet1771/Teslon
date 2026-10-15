@@ -230,7 +230,7 @@ npm run build && npm test
 
 ## What is coming
 
-See [ROADMAP.md](ROADMAP.md). In short: the evidence from a real repository and
+See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the pipeline from a PR link to the report, and [ROADMAP.md](ROADMAP.md). In short: the evidence from a real repository and
 from public postmortems says QA needs pages, features, APIs, data and deploy
 order — not files — so the engine is moving to a typed impact graph built on
 framework rules, with every claim verified against git and accuracy earned per
