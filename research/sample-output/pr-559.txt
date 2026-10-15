@@ -17,6 +17,11 @@ WHAT CHANGED IN BEHAVIOUR
     Section "Pet" › Field "Birth date"
     DO       pick a date after today, press Submit
     EXPECT   rejected (400). Before this PR: saved.
+             The page shows a red "Bad Request" banner (RootApp.js:15) and marks no field:
+             the error body has no field details (verified on the service; see COULD NOT SEE → now seen)
+    EDGE     "today" is judged in UTC, not in the user's time zone (verified: UTC today 201, UTC tomorrow 400)
+             India, 00:00–05:30 IST: picking today is REJECTED.  US evening: picking tomorrow is ACCEPTED.
+             @JsonFormat(pattern = "yyyy-MM-dd") PetRequest.java:28 parses to 00:00 UTC; @PastOrPresent compares to now
     WHY      field  PetFormPage.js:105  <input type="date" required>, no max → a future date can be picked
              sent   PetFormPage.js:52   birthDate: pet.birthDate → POST (petId ? 'PUT' : 'POST', :61)
              route  router.js:36 → PetFormPage
@@ -33,16 +38,27 @@ WHAT CHANGED IN BEHAVIOUR
 
 [3] AI chat — on every page  <chat-box>
     DO       ask: "add a cat called Tom born next year to owner 1"
-             ask: "add a pet with no name to owner 1"
     EXPECT   a sentence saying it could not be added — not an error
     RISK     AIDataProvider.addPetToOwner() calls .retrieve() with no 4xx handling (AIDataProvider.java:75):
              the new 400 becomes an exception inside the chat
+    DO       ask: "add a pet with no name to owner 1"
+    EXPECT   depends on what the model sends — see RULE HOLES: if it leaves the name out, the pet IS saved
     WHY      ChatBox.js:47 POST /api/genai/chatclient
              → PetclinicChatClient .defaultTools(petclinicTools)   PetclinicChatClient.java:53
              → @Tool PetclinicTools.addPetToOwner()   PetclinicTools.java:71
              → AIDataProvider.addPetToOwner()          AIDataProvider.java:70  .body(petRequest) with birthDate and name
              → DiscoveryClient "customers-service" → POST /owners/{ownerId}/pets
              <chat-box> is rendered beside <router-view> (RootApp.js:23), so it is on every page
+
+━━ RULE HOLES — what the new rules still let through ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[R] Verified against the running customers-service at 1d76b00 (POST /owners/1/pets):
+      name ""            → 400        name "   "   → 201 saved      name missing → 201 saved (name null)
+      birthDate missing  → 201 saved (birthDate null)
+    WHY   @Size(min = 1) and @PastOrPresent both accept null, and @Size counts spaces (PetRequest.java:29-30)
+    SO    "pet name must not be empty" holds only for "". Through the API or the AI chat a pet can still be
+          saved with no name or a blank one. The form cannot send these (required + .trim, PetFormPage.js:99).
+    ASK   the developer whether @NotBlank / @NotNull was intended
 
 ━━ TEST NEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -74,16 +90,19 @@ WHAT CHANGED IN BEHAVIOUR
         no changed API is called from these pages
     Loading a pet on the edit form (GET /api/customer/owners/*/pets/{petId}, PetFormPage.js:28)
         it only reads; a rule on the request body cannot change a response
+    JMeter load test (src/test/jmeter/petclinic_test_plan.jmx:249, :300, :343) still passes
+        it sends birthDate 2018-12-31T23:00:00.000Z and a name; verified accepted (201) by the service
+    Seed data: 0 of 13 pets break the new rules (customers-service db/hsqldb/data.sql, db/mysql/data.sql)
     Jobs: none on this path
         the repo has one listener (@EventListener VectorStoreController.java:49), and it loads vets only
 
-━━ COULD NOT SEE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ COULD NOT SEE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    What message the form shows on the new 400
-        the page passes it to reportError() (PetFormPage.js:66), but the error body depends on
-        server.error.* settings that are not in this repo. Runtime config comes from another repo:
-        spring-petclinic-microservices-config (config-server application.yml:7). Not read.
-        The PR text links #557: "frontend shows no validation error".
+    Nothing left. The one gap (what the form shows on a 400) was closed by reading the config repo:
+        spring-petclinic-microservices-config @323993c sets no server.error.* → Spring Boot defaults →
+        body {timestamp, status, error: "Bad Request", path}, no field list (also seen on the running service)
+        → client.js:82 → reportError() errors.js → RootApp.js:15-17 red banner "Bad Request".
+        This is the PR's linked issue #557 ("frontend shows no validation error").
 
 ━━ WHO TO ASK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -94,5 +113,6 @@ WHAT CHANGED IN BEHAVIOUR
 
     3 of 3 changed files explained · 0 unexplained · 1 test file (no runtime surface)
     Every file:line above was re-read from 1d76b00 when this report was built.
-    1 thing could not be seen (config repo). At least these, never only these.
-    5 test cases to run by hand.
+    Repos read: this one + its config repo. Behaviour claims marked "verified" were run on the service.
+    At least these, never only these.
+    8 test cases to run by hand.

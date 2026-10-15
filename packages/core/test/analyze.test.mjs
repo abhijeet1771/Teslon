@@ -383,6 +383,24 @@ test('co-change links files that move together and refuses to link sweeps', () =
 });
 
 /**
+ * History names files as they were. On spring-petclinic #559, 32 of the 127
+ * files in the radius had been deleted or renamed years earlier and came back
+ * through co-change alone, sending QA to test things that do not exist.
+ */
+test('co-change never puts a file into the radius that is not in the tree', () => {
+  const d = mkdtempSync(join(tmpdir(), 'tb-ghost-'));
+  writeFileSync(join(d, 'client.ts'), 'export const c = 1;\n');
+  writeFileSync(join(d, 'mock.ts'), 'export const m = 2;\n');
+  const commits = [0, 1, 2].flatMap(() => [['client.ts', 'mock.ts'], ['client.ts', 'old/gone.ts']]);
+  const { result } = run(d, ['client.ts'], { commits });
+  rmSync(d, { recursive: true, force: true });
+  const files = result.radius.map((x) => x.file);
+  assert.ok(files.includes('mock.ts'), files.join(', '));
+  assert.ok(!files.includes('old/gone.ts'), 'a deleted file must not be in the radius');
+  assert.ok(result.limitations.some((l) => /no longer exist/.test(l.what)), 'and dropping it is said out loud');
+});
+
+/**
  * A commit that moves 200 files is a rename or a reformat. Reading it as
  * coupling links every pair in it — 19,900 false edges from one commit — and
  * the files must still count toward how often each one changes, or the

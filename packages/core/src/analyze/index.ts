@@ -574,8 +574,23 @@ export function analyze(opts: AnalyzeOptions): AnalyzeResult {
     }
   }
 
-  const coChange = opts.commits ? coChangeEdges(opts.commits) : null;
-  if (coChange) limitations.push(...coChange.limitations);
+  const coChangeAll = opts.commits ? coChangeEdges(opts.commits) : null;
+  if (coChangeAll) limitations.push(...coChangeAll.limitations);
+  // History names files as they were. A file deleted or renamed since then is
+  // not in this tree, and putting it in the radius sends QA to test something
+  // that does not exist: on a real PR, 32 of 127 files were such ghosts.
+  const coChange = coChangeAll && {
+    ...coChangeAll,
+    edges: coChangeAll.edges.filter((e) => present.has(e.from) && present.has(e.to)),
+  };
+  const ghosts = coChangeAll ? coChangeAll.edges.length - coChange!.edges.length : 0;
+  if (ghosts > 0) {
+    limitations.push({
+      what: `${ghosts} co-change edge${ghosts === 1 ? '' : 's'} from git history pointed at files that no longer exist in this tree (deleted or renamed since).`,
+      mitigation:
+        'They were dropped rather than reported, since a file that is not there cannot be tested. Renames are not followed yet, so a renamed file loses its history link and keeps only its other signals.',
+    });
+  }
 
   let lockEdges: readonly Edge[] = [];
   if (opts.lockfile) {
