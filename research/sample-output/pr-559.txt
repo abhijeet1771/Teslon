@@ -1,0 +1,98 @@
+TESLON · PR impact
+spring-petclinic-microservices · PR #559 "Validate pet birthday" (fixes #558)
+dc9ca15..1d76b00 · 3 commits, rebase-merged · 3 files changed
+
+WHAT CHANGED IN BEHAVIOUR
+  1  Pet birth date can no longer be in the future            PetRequest.java:29  +@PastOrPresent
+  2  Create pet now validates its body                          PetResource.java:58 +@Valid
+  3  Update pet now validates its body                          PetResource.java:71 +@Valid
+     → 2 and 3 also switch on a rule that was never enforced before:
+       pet name must not be empty                               PetRequest.java:30  @Size(min = 1)
+  Both APIs: POST /api/customer/owners/{ownerId}/pets  ·  PUT /api/customer/owners/*/pets/{petId}
+             (gateway application.yml:36  Path=/api/customer/**  StripPrefix=2)
+
+━━ TEST FIRST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1] Add Pet  /owners/:ownerId/new-pet
+    Section "Pet" › Field "Birth date"
+    DO       pick a date after today, press Submit
+    EXPECT   rejected (400). Before this PR: saved.
+    WHY      field  PetFormPage.js:105  <input type="date" required>, no max → a future date can be picked
+             sent   PetFormPage.js:52   birthDate: pet.birthDate → POST (petId ? 'PUT' : 'POST', :61)
+             route  router.js:36 → PetFormPage
+             rule   PetRequest.java:29 @PastOrPresent, enforced by @Valid PetResource.java:58
+    ALSO     after a successful save the page goes to /owners/details/:ownerId (PetFormPage.js:62);
+             a rejected save stays on the form
+
+[2] Edit Pet  /owners/:ownerId/pets/:petId
+    Section "Pet" › Field "Birth date"
+    DO       change the date to after today, press Update Pet
+    EXPECT   rejected (400). Before this PR: saved.
+    WHY      same field and payload as [1]; this route has :petId, so the page sends PUT (:61)
+             rule   PetRequest.java:29, enforced by @Valid PetResource.java:71
+
+[3] AI chat — on every page  <chat-box>
+    DO       ask: "add a cat called Tom born next year to owner 1"
+             ask: "add a pet with no name to owner 1"
+    EXPECT   a sentence saying it could not be added — not an error
+    RISK     AIDataProvider.addPetToOwner() calls .retrieve() with no 4xx handling (AIDataProvider.java:75):
+             the new 400 becomes an exception inside the chat
+    WHY      ChatBox.js:47 POST /api/genai/chatclient
+             → PetclinicChatClient .defaultTools(petclinicTools)   PetclinicChatClient.java:53
+             → @Tool PetclinicTools.addPetToOwner()   PetclinicTools.java:71
+             → AIDataProvider.addPetToOwner()          AIDataProvider.java:70  .body(petRequest) with birthDate and name
+             → DiscoveryClient "customers-service" → POST /owners/{ownerId}/pets
+             <chat-box> is rendered beside <router-view> (RootApp.js:23), so it is on every page
+
+━━ TEST NEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[4] Owner details  /owners/details/:ownerId
+    Section "Pets and Visits" › "Birth Date" (OwnerDetailsPage.js:66), Name (:62)
+    DO       open an owner whose pet already has a future birth date or an empty name,
+             press Edit Pet (:83), save without changing anything
+    EXPECT   rejected — these pets can no longer be saved until the date or name is fixed
+    DATA     count them first, on a copy of production:
+               SELECT id FROM pets WHERE birth_date > CURRENT_DATE;
+               SELECT id FROM pets WHERE name IS NULL OR CHAR_LENGTH(name) < 1;
+             (Pet.java:44 @Column "birth_date", Pet.java:41 @Column "name", @Table "pets")
+
+━━ WATCH AFTER DEPLOY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[5] Grafana "Spring Petclinic Metrics"  (docker/grafana/dashboards/grafana-petclinic-dashboard.json)
+    CHANGES     HTTP Request Latency   :85, :92   status!~"5.." keeps the new 400s in the average
+                HTTP Request Activity  :173       counts the new 400s
+    UNCHANGED   HTTP Request Activity  :181       its filter is status=~"5.."
+                Pets Created           :449       @Timed only records when processCreationForm() runs,
+                                                  and @Valid rejects before it runs
+
+━━ DO NOT TEST — and why ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Empty pet name on the Add/Edit Pet form
+        the browser blocks it before the server sees it: required + v-model.trim (PetFormPage.js:99)
+        (checked in a real browser; test it through the chat, [3])
+    /  /vets  /owners  /owners/new  /owners/:ownerId/edit  /owners/:ownerId/pets/:petId/visits
+        no changed API is called from these pages
+    Loading a pet on the edit form (GET /api/customer/owners/*/pets/{petId}, PetFormPage.js:28)
+        it only reads; a rule on the request body cannot change a response
+    Jobs: none on this path
+        the repo has one listener (@EventListener VectorStoreController.java:49), and it loads vets only
+
+━━ COULD NOT SEE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    What message the form shows on the new 400
+        the page passes it to reportError() (PetFormPage.js:66), but the error body depends on
+        server.error.* settings that are not in this repo. Runtime config comes from another repo:
+        spring-petclinic-microservices-config (config-server application.yml:7). Not read.
+        The PR text links #557: "frontend shows no validation error".
+
+━━ WHO TO ASK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    customers-service  Divya Balagopal   (git history; no CODEOWNERS file)
+    gateway UI, genai  Antoine Rey       (git history)
+
+━━ TRUST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    3 of 3 changed files explained · 0 unexplained · 1 test file (no runtime surface)
+    Every file:line above was re-read from 1d76b00 when this report was built.
+    1 thing could not be seen (config repo). At least these, never only these.
+    5 test cases to run by hand.
