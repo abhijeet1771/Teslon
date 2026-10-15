@@ -83,86 +83,36 @@ that are not Teslon: real escapes from product histories, a published fault
 benchmark, and a differential runtime oracle that runs the app before and
 after an injected change.
 
-## Co-owner review 2, 2026-10-15: static proposes, runtime proves
+## Correction, 2026-10-15
 
-**What we want, in one line:** after a merge, QA gets the pages, sections and
-fields to verify, with proof, and nothing that matters left out.
+Review 2 proposed turning the runtime oracle into a product mode that needs a
+staging environment. That made Teslon a different product, and it was
+withdrawn the same day. **Teslon is a PR impact analyser:** a PR goes in, and
+what it affects comes out, with evidence, from the code. The oracle stays
+what it was built to be: a measuring instrument in the proving ground that
+grades Teslon. It is never something a user has to run.
 
-**The data a QA team really has.** The plan was built as if only the
-repository exists. A team that tests merged tickets has more:
+What we kept from that review: nobody else connects a **backend** change to
+the pages it reaches. That is the gap to own, and it is owned statically.
 
-| Data | Who has it | What it can prove |
+**Not a restart from scratch: a new brain in the same body.** What failed on
+real PRs (127 files, 0 of 6 pages) is the propagation and prioritisation
+core. The plumbing around it is what took twenty-two real-git edge cases to
+get right, and starting over would bring those bugs back.
+
+| Keep (about 3,500 lines, tested) | Rewrite (about 2,100 lines) | Add |
 |---|---|---|
-| The repository | always | why a page is reached; non-UI impact (jobs, data, dashboards); works before merge |
-| Ticket and PR text | usually | what QA was told (the gap view) |
-| **A running environment before and after the deploy** (staging, QA, preview) | **every team that tests merged tickets — that is where QA tests** | what actually changed on each page, against the real backend |
-| Test accounts per role | QA | the same, under each role |
+| PR and merge resolution, worktrees, ranges (`change/`) · aliases and workspaces (`resolve/`) · Java and TS/AST reading (`lang/java/read.ts`, `profile/ast.ts`, `reading.ts`, `semantic-diff.ts`) · CODEOWNERS (`owners/`) · CLI plumbing and gates · the loopback UI server and its security | `analyze/index.ts` (the orchestration that produced 127 files) · heuristic widening and name graphs, which become weak *look* hints only · result schema, which becomes surface-first | The rules proven in `research/page-impact` and `research/field-chain`: contracts, direction, gateway, UI routes, fields, data, journeys, dashboards |
 
-**Where the market already is** (checked, not assumed):
-
-| Tool | What it does | What it cannot do |
-|---|---|---|
-| [Meticulous](https://meticulous.ai/how-it-works) | Replays recorded sessions on each PR and diffs screenshots and behaviour | By default it answers requests **from recordings**: the backend is mocked. A backend-only change such as #559 or the JSON rename does not reach the replay, unless its schema patching happens to track that API's shape |
-| [Chromatic TurboSnap](https://www.chromatic.com/docs/turbosnap/setup) | Re-tests only Storybook stories whose files the bundler graph says changed | Components in isolation; no backend, no pages, no data |
-| LLM "affected areas" reports ([example](https://www.index.dev/blog/ai-qa-pull-request-impact-analysis)) | Reads the diff and guesses routes | No evidence, no measured accuracy |
-| Launchable, SeaLights, Datadog TIA | Pick automated tests | Not pages, not manual QA |
-
-**The better option.** Our oracle diffs the app against the **real backend**,
-before and after. That is the one thing none of them do, and it is exactly the
-case where QA gets burned: a backend change that shows up on a page. It
-should not stay a test harness. It should become the product's second mode:
-
-| | **Explain** (static) | **Verify** (runtime) |
-|---|---|---|
-| When | Before merge, or no environment | Around the staging deploy — QA's real moment |
-| Answers | Which pages, why, through which rules; jobs, data, dashboards, K2/K3 | Which pages actually changed, shown as before/after |
-| Evidence | file:line chains | DOM, field, call and status diffs, screenshots |
-| Weak at | Precision on the long tail of frameworks | Pages it did not reach; data that is not there; roles not logged in; anything not on a page |
-
-**Together they cover each other's gaps.** Explain proposes the candidate
-pages, the roles, the data to seed and the inputs to try. The inputs come
-from the delta: a future date for `@PastOrPresent`, three spaces for
-`@Size(min = 1)`. Verify proves or rejects each candidate on the real app.
-Anything Verify cannot observe stays in the report as "unverified", with the
-reason.
-
-This changes three things:
-
-1. Static precision on pages stops being the bottleneck: over-selection is
-   pruned by observation. Static **recall** becomes the thing to protect,
-   because a page Explain never proposes is a page Verify is never directed
-   to.
-2. Rule packs are judged by what they make observable, not only by what they
-   claim, so they can be built cheaper and in a different order.
-3. The 18-mutation catalogue becomes product input generation, not only test
-   data.
-
-**What it costs, said up front:**
-
-- An environment and role accounts: QA has these.
-- A snapshot taken before the deploy: one hook, or QA presses a button.
-- Write probes are never run on shared staging. Save-unchanged writes, so it
-  runs only on an ephemeral or sandbox environment, and is read-only
-  everywhere else.
-- Crawl time on big apps: directed by Explain, plus a sampled sweep for
-  safety.
-
-**What does not change:** the goal, the non-negotiables, no silent misses,
-and stage 0. Verify needs a scorer too. It is scored against an *exhaustive*
-crawl (every role, rich seed, every route), never against itself.
-
-**On LLMs:** never for claims. They are allowed for things that can be
-checked or that are only wording: mapping ticket text to surfaces (confirmed
-by the person), wording the brief, and drafting new rule packs offline that
-then have to pass the oracle. Code leaves the machine only with a local model
-or explicit opt-in.
+The new engine is built next to the old one (`packages/core/src/engine/`). The
+CLI switches to it when it beats the old one on the proving ground, never
+before.
 
 ## Implementation order
 
 Six principles decide the order:
 
 1. Truth before rules, so nothing is tuned to one PR.
-   Two modes, one truth: Explain proposes, Verify proves (review 2).
 2. An oracle independent of the engine, so grading is never circular.
 3. The model before the rules, so precision and never-silent are structural.
 4. Rules in the order the scorer says they are missed, not by taste.
@@ -172,11 +122,11 @@ Six principles decide the order:
 | Stage | Build | Why here | Gate |
 |---|---|---|---|
 | **0. Truth** | Case format, scorer and runner (`packages/bench`); seed with #559, the 22 TrainTicket faults and 10 historical escapes; baseline the product and the prototypes | Every later choice is made by measured misses | Baseline numbers in the repo |
-| **1. Oracle → Verify mode** | Build and run the twins at any ref (H2, no Docker), crawl every route per role with Playwright, record DOM, fields, calls, statuses and screenshots; 6 of the 18 mutation codemods first (rule tightening, JSON rename, enum value, route rename, role change, config key rename). The same crawler, pointed at two URLs (staging before and after a deploy), is the product's **Verify** mode: read-only by default, write probes only in a sandbox | The only unlimited source of hard cases, the riskiest assumption, and the one capability no tool on the market has (real backend, before and after) | ≥ 30 auto-labelled cases across ≥ 3 twins. **Spike passed:** 1 case, 6-page truth in 96 s, 0 noise, product 0/6 (`research/oracle`) |
+| **1. Differential oracle** (test bench only, never shipped) | Build and run the twins at any ref (H2, no Docker), crawl every route per role with Playwright, record DOM, fields, calls and statuses; 6 of the 18 mutation codemods first (rule tightening, JSON rename, enum value, route rename, role change, config key rename) | The only unlimited source of hard cases to grade the analyser against | ≥ 30 auto-labelled cases across ≥ 3 twins. **Spike passed:** 1 case, 6-page truth in 96 s, 0 noise, product 0/6 (`research/oracle`) |
 | **2. Engine model** | Construct, Delta, Edge (rule, evidence, strength), Surface (kind, parent, conditions), Claim (affected / not affected with reason / unknown with resolver, K-class); evidence verifier; channel inventory feeding NOT MODELLED; surface-first report; file-graph signals demoted to *look* | Fixes the 127-files failure by construction; every rule plugs into it | #559 reproduces the prototype's result inside `packages/core` |
 | **3. Delta extraction** | Java (java-parser CST), TS/Vue/Angular templates (TypeScript, Vue and Angular compilers), YAML/properties keys, Liquibase/Flyway changesets, manifest versions → typed deltas | Precision comes from the kind of change | Every mutation in the catalogue yields the right delta kind |
-| **4. Rule packs** (Explain, and the proposer for Verify), each with real positive and negative fixtures; judged by recall first, because a page never proposed is never verified | 4.1 Spring web + contracts (2, 5) → 4.2 UI: routers, sections, fields, client guards, journeys, shared components (13) → 4.3 Data (8) → 4.4 Security and roles as conditions (14) → 4.5 Config and the external config repo (10) → 4.6 Async, resilience, caches (6, 7, 9) → 4.7 Observability, deps, deploy (15, 11, 12) | Starts where field escapes cluster and most repos have the channel; re-ordered weekly by the scorer | After 4.3: K1 recall ≥ 90% on L1 + L2, **0 silent misses**, over-selection ≤ 1.5× the truth, 100% valid evidence, no K3 claimed as proven |
-| **5. Directed verification** | Explain drives Verify: candidate pages, roles, seed data and delta-derived inputs (future date for `@PastOrPresent`, spaces for `@Size(min = 1)`); everything not observable stays *unverified* with the reason | Joins the two modes | On L1: Verify(directed) finds ≥ 95% of what an exhaustive crawl finds, in ≤ 20% of its time |
+| **4. Rule packs**, each with real positive and negative fixtures | 4.1 Spring web + contracts (2, 5) → 4.2 UI: routers, sections, fields, client guards, journeys, shared components (13) → 4.3 Data (8) → 4.4 Security and roles as conditions (14) → 4.5 Config and the external config repo (10) → 4.6 Async, resilience, caches (6, 7, 9) → 4.7 Observability, deps, deploy (15, 11, 12) | Starts where field escapes cluster and most repos have the channel; re-ordered weekly by the scorer | After 4.3: K1 recall ≥ 90% on L1 + L2, **0 silent misses**, over-selection ≤ 1.5× the truth, 100% valid evidence, no K3 claimed as proven |
+| **5. Test inputs from the delta** | Each claimed field gets the input that exercises the change (a future date for `@PastOrPresent`, spaces for `@Size(min = 1)`) and the expected result | QA needs a test, not just a page | Inputs reproduce the oracle's difference on L1 cases |
 | **6. QA outputs** | Brief per change: page → section → field → test → expected result; not affected with reasons; K2/K3 lists; PR comment; UI v2 | Polish only on top of measured accuracy | A tester can work from the brief alone on 10 L1 cases |
 | **7. Across repos** | Contracts across repositories (petclinic-rest ↔ angular/react, fineract ↔ web-app, the mall trio), then the config repo | The second-commonest blind spot in the atlas | L3 cross-repo cases pass |
 | **8. More stacks** | GraphQL + Python (saleor), Next.js (cal.com), .NET (eShop), gRPC (microservices-demo) | Already measured; they bring feature flags and analytics | Their cases pass |
