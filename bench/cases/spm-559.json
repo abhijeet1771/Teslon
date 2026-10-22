@@ -1,0 +1,146 @@
+{
+  "id": "spm-559",
+  "title": "spring-petclinic-microservices PR #559: validate pet birthday",
+  "repo": {
+    "name": "spm",
+    "url": "https://github.com/spring-petclinic/spring-petclinic-microservices.git"
+  },
+  "base": "dc9ca15a71189bc4be6c02518d7180232c0555b7",
+  "head": "1d76b00d683e86b62867a6bf59530f8ab301244f",
+  "today": "2026-10-22",
+  "truthSource": "research/sample-output/pr-559.txt, built by hand before the engine existed. Runtime-checked: the form guard in a real browser (research/form-guard), the 400s, rule holes and the UTC boundary with curl against the running customers-service at 1d76b00, the JMeter body accepted (201).",
+  "truthCorrections": [
+    "The hand report also asked to re-save a stored pet with an empty name from Owner details. That step cannot change: the edit form has required + v-model.trim (PetFormPage.js:99), so it blocked an empty name before this PR too. Removed from truth."
+  ],
+  "cause": [
+    "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetRequest.java",
+    "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java"
+  ],
+  "test": [
+    {
+      "id": "screen:/owners/:ownerId/new-pet",
+      "field": "Birth date",
+      "files": [
+        "spring-petclinic-api-gateway/src/main/resources/static/scripts/pages/PetFormPage.js"
+      ]
+    },
+    {
+      "id": "screen:/owners/:ownerId/pets/:petId",
+      "field": "Birth date",
+      "files": [
+        "spring-petclinic-api-gateway/src/main/resources/static/scripts/pages/PetFormPage.js"
+      ]
+    },
+    {
+      "id": "widget:chat-box",
+      "field": "birthDate",
+      "files": [
+        "spring-petclinic-api-gateway/src/main/resources/static/scripts/components/ChatBox.js"
+      ]
+    },
+    {
+      "id": "widget:chat-box",
+      "field": "name",
+      "hole": true,
+      "files": [
+        "spring-petclinic-api-gateway/src/main/resources/static/scripts/components/ChatBox.js"
+      ]
+    },
+    {
+      "id": "api:POST /api/customer/owners/{ownerId}/pets",
+      "field": "birthDate",
+      "files": [
+        "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java"
+      ]
+    },
+    {
+      "id": "api:POST /api/customer/owners/{ownerId}/pets",
+      "field": "name",
+      "hole": true,
+      "files": [
+        "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java"
+      ]
+    },
+    {
+      "id": "api:PUT /api/customer/owners/*/pets/{petId}",
+      "field": "birthDate",
+      "files": [
+        "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java"
+      ]
+    },
+    {
+      "id": "api:PUT /api/customer/owners/*/pets/{petId}",
+      "field": "name",
+      "files": [
+        "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java"
+      ]
+    },
+    {
+      "id": "screen:/owners/details/:ownerId",
+      "field": "Birth Date",
+      "files": [
+        "spring-petclinic-api-gateway/src/main/resources/static/scripts/pages/OwnerDetailsPage.js"
+      ]
+    },
+    {
+      "id": "data:pets",
+      "field": "birth_date",
+      "files": [
+        "spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/model/Pet.java"
+      ]
+    },
+    {
+      "id": "dashboard:docker/grafana/dashboards/grafana-petclinic-dashboard.json",
+      "field": "HTTP Request Latency",
+      "files": [
+        "docker/grafana/dashboards/grafana-petclinic-dashboard.json"
+      ]
+    },
+    {
+      "id": "dashboard:docker/grafana/dashboards/grafana-petclinic-dashboard.json",
+      "field": "HTTP Request Activity",
+      "files": [
+        "docker/grafana/dashboards/grafana-petclinic-dashboard.json"
+      ]
+    }
+  ],
+  "skip": [
+    {
+      "id": "screen:/"
+    },
+    {
+      "id": "screen:/vets"
+    },
+    {
+      "id": "screen:/owners"
+    },
+    {
+      "id": "screen:/owners/new"
+    },
+    {
+      "id": "screen:/owners/:ownerId/edit"
+    },
+    {
+      "id": "screen:/owners/:ownerId/pets/:petId/visits"
+    },
+    {
+      "id": "screen:/owners/:ownerId/new-pet",
+      "field": "Name"
+    },
+    {
+      "id": "screen:/owners/:ownerId/pets/:petId",
+      "field": "Name"
+    },
+    {
+      "id": "screen:/owners/details/:ownerId",
+      "field": "Name"
+    },
+    {
+      "id": "dashboard:docker/grafana/dashboards/grafana-petclinic-dashboard.json",
+      "field": "Pets Created"
+    },
+    {
+      "id": "plan:spring-petclinic-api-gateway/src/test/jmeter/petclinic_test_plan.jmx"
+    }
+  ]
+}

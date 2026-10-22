@@ -106,6 +106,21 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const readsOnly = new Map<string, Hop>();
   /** Per delta and field: can a value that breaks the rule leave any screen? */
   const reachable = new Map<string, Set<'yes' | 'no' | 'unknown'>>();
+  /** Everything a screen runs: its component and, transitively, what it imports. */
+  const closures = new Map<string, Set<string>>();
+  const closure = (file: string): Set<string> => {
+    if (closures.has(file)) return closures.get(file)!;
+    const seen = new Set<string>();
+    const walk = (f: string, depth: number): void => {
+      if (seen.has(f) || depth > 8) return;
+      seen.add(f);
+      for (const d of ui.components.get(f)?.deps ?? []) walk(d, depth + 1);
+    };
+    walk(file, 0);
+    closures.set(file, seen);
+    return seen;
+  };
+  const screensUsing = (file: string) => ui.routes.filter((r) => closure(r.component).has(file));
   const addCase = (c: Case): void => {
     if (cases.some((x) => x.surface === c.surface && x.do === c.do)) return;
     cases.push(c);
@@ -166,10 +181,10 @@ export function impact(opts: ImpactOptions): ImpactReport {
       const internal = route ? '/' + c.tpl.split('/').filter(Boolean).slice(route.strip).join('/') : c.tpl;
       if (!templateHits(internal, e.path)) continue;
       const comp = ui.components.get(c.file);
-      const routes = ui.routes.filter((r) => r.component === c.file);
+      const routes = screensUsing(c.file);
       if (!c.verbs.includes(e.verb)) {
         // direction: a rule on the request body cannot change what a read returns
-        for (const r of routes) if (!readsOnly.has(r.path)) readsOnly.set(r.path, { label: 'Reads only', file: c.file, line: c.line, quote: 'request', rule: `${c.verbs.join('/')} ${c.tpl}: a rule on what is sent cannot change what is read back` });
+        for (const r of routes) if (!readsOnly.has(r.path)) readsOnly.set(r.path, { label: 'Reads only', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}: a rule on what is sent cannot change what is read back` });
         continue;
       }
       for (const r of routes) {
@@ -189,7 +204,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
           if (!reachable.has(rk)) reachable.set(rk, new Set());
           reachable.get(rk)!.add(g.reach);
           const hops: Hop[] = [...d.causes];
-          hops.push({ label: 'The page sends it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: c.verbChoice ? `${c.verbChoice.param} ? '${c.verbChoice.ifTrue}' : '${c.verbChoice.ifFalse}': this route ${new RegExp(`:${c.verbChoice.param}\\b`).test(r.path) ? 'has' : 'has no'} :${c.verbChoice.param}, so it sends ${verb}` : `${verb} ${c.tpl}` });
+          hops.push({ label: 'The page sends it', file: c.file, line: c.line, quote: callText(c), rule: c.verbChoice ? `${c.verbChoice.param} ? '${c.verbChoice.ifTrue}' : '${c.verbChoice.ifFalse}': this route ${new RegExp(`:${c.verbChoice.param}\\b`).test(r.path) ? 'has' : 'has no'} :${c.verbChoice.param}, so it sends ${verb}` : `${verb} ${c.tpl}` });
           if (prop) hops.push({ label: 'Which field', file: c.file, line: prop.line, quote: rule.json, rule: `payload key ${rule.json} ← ${prop.value}` });
           else if (c.payload?.whole && c.payload.line) hops.push({ label: 'Which field', file: c.file, line: c.payload.line, quote: c.payload.whole.split('.')[0]!, rule: `the whole ${c.payload.whole} is sent, so ${rule.json} is ${c.payload.whole}.${rule.json}` });
           if (el) hops.push({ label: 'The field', file: c.file, line: el.line, quote: model ?? '', rule: g.why });
@@ -234,7 +249,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
                   { label: 'Exposed to an AI model', file: tool.file, line: tool.line, quote: 'Tool', rule: `${tool.cls}.${tool.method}() is a tool the model can call` },
                   ...ch.hops,
                   { label: 'Wired into the chat', file: w.file, line: w.line, quote: w.expr.split('(')[0]!.replace('.', ''), rule: `${w.holder}${w.expr}` },
-                  { label: 'The chat calls it', file: fc.file, line: fc.line, quote: 'request', rule: `${fc.verbs.join('/')} ${fc.tpl}` }];
+                  { label: 'The chat calls it', file: fc.file, line: fc.line, quote: callText(fc), rule: `${fc.verbs.join('/')} ${fc.tpl}` }];
                 if (g) {
                   hops.push({ label: 'On every screen', file: g.root, line: g.line, quote: `<${g.tag}`, rule: `<${g.tag}> is drawn beside <router-view>` });
                   const sid = `widget:${g.tag}`;
@@ -416,7 +431,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   }
 
   /* ---------- 2f. jobs and listeners ---------- */
-  for (const l of fh.listeners) {
+  for (const l of deltas.length ? fh.listeners : []) {
     const types = new Set<string>();
     for (const d of deltas) {
       const e = fh.endpoints.find((x) => `${d.kind === 'request-rules-enforced' ? 'enf' : 'rel'}:${x.verb} ${x.path}` === d.id);
@@ -428,22 +443,29 @@ export function impact(opts: ImpactOptions): ImpactReport {
     else unseen.push({ what: `${l.cls}.${l.method}() (${fileName(l.file)}:${l.line})`, why: `a ${l.kind} job uses ${used.join(', ')} without going through the API, so @Valid does not check what it saves; whether it saves values the new rules refuse is not modelled`, resolve: 'read this job by hand' });
   }
 
-  /* ---------- 3. every screen not reached is a skip, with what it calls ---------- */
-  for (const r of ui.routes) {
+  /* ---------- 3. screens not reached: a skip only when all of their code was read ---------- */
+  const notRuledOut: string[] = [];
+  for (const r of deltas.length ? ui.routes : []) {
     const id = `screen:${r.path}`;
     if (surfaces.has(id)) continue;
     const comp = ui.components.get(r.component);
-    const own = ui.calls.filter((c) => c.file === r.component);
+    const files = closure(r.component);
+    const own = ui.calls.filter((c) => files.has(c.file));
+    const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
+    if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); continue; }
     const ro = readsOnly.get(r.path);
     const vc = own.find((c) => c.verbChoice)?.verbChoice;
     const verb = vc ? (new RegExp(`:${vc.param}\\b`).test(r.path) ? vc.ifTrue : vc.ifFalse) : undefined;
     if (ro) { surfaces.set(id, { id, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'skip', reason: 'only reads the changed API', evidence: [ro] }); continue; }
+    const read = files.size > 1 ? ` (read ${files.size} files: the screen and what it imports)` : '';
     surfaces.set(id, {
       id, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'skip',
-      reason: own.length ? `calls no changed API: ${own.map((c) => `${c.verbs.join('/')} ${c.tpl}`).join(', ')}` : 'calls no API',
-      evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: 'request', rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `${r.path} → ${fileName(r.component)}` }],
+      reason: own.length ? `calls no changed API: ${own.map((c) => `${c.verbs.join('/')} ${c.tpl}`).join(', ')}${read}` : `calls no API${read}`,
+      evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `${r.path} → ${fileName(r.component)}` }],
     });
   }
+  if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'their data goes through code this build does not follow (stores, injected services, URLs built elsewhere)', resolve: 'check these screens by hand' });
+  for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue only, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand` });
 
   /* ---------- 4. what could not be seen ---------- */
   if (deltas.length) unseen.push({ what: `callers outside this repository of ${[...new Set(deltas.map((d) => d.endpoint))].join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });
@@ -494,6 +516,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
     cases, unseen, ledger, verification: { hops: count, failed }, notModelled, ms: Date.now() - t0,
   };
 }
+
+/** The start of the line a call is on: always on that line, whatever the call is named. */
+const callText = (c: { code: string }): string => c.code.slice(0, 24).trim();
 
 function screenName(comp: Component | undefined, route: string, verb?: string): string {
   const h = comp?.elements.find((e) => /^h[1-3]$/.test(e.tag) && e.text && !e.text.includes('{{'));

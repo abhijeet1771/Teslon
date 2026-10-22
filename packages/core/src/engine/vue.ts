@@ -48,6 +48,10 @@ export interface Component {
   readonly pushes: readonly { readonly target: string; readonly line: number }[];
   /** <router-link :to> targets, with the link text. */
   readonly links: readonly { readonly target: string; readonly line: number; readonly text: string }[];
+  /** Local modules it imports: child components, services, stores. */
+  readonly deps: readonly string[];
+  /** Ways data reaches it that this reader does not follow; a screen with any of these is never ruled out. */
+  readonly opaque: readonly { readonly what: string; readonly line: number }[];
 }
 
 export interface Global { readonly tag: string; readonly file: string; readonly root: string; readonly line: number }
@@ -58,7 +62,30 @@ export interface FrontendFacts {
   readonly components: ReadonlyMap<string, Component>;
   readonly globals: readonly Global[];
   readonly files: readonly string[];
+  /** Front-end code in a framework this reader does not read, by framework. */
+  readonly unread: readonly { readonly framework: string; readonly files: number; readonly example: string }[];
 }
+
+const HTTP_CALL = /^(fetch|axios(\.(get|post|put|patch|delete|request))?|http\.(get|post|put|patch|delete)|\$http\.(get|post|put|patch|delete)|api\.(get|post|put|patch|delete))$/;
+
+const isFn = (n: ts.Node): n is ts.FunctionLikeDeclaration => ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isMethodDeclaration(n);
+
+/** The function a node sits in, its name, and whether the expression uses that function's parameters. */
+function enclosing(n: ts.Node, e: ts.Expression): { name: string | null; usesParam: boolean } | null {
+  let f: ts.Node | undefined = n.parent;
+  while (f && !isFn(f)) f = f.parent;
+  if (!f || !isFn(f)) return null;
+  const params = new Set(f.parameters.flatMap((p) => (ts.isIdentifier(p.name) ? [p.name.text] : [])));
+  let usesParam = false;
+  const look = (x: ts.Node): void => { if (ts.isIdentifier(x) && params.has(x.text)) usesParam = true; ts.forEachChild(x, look); };
+  look(e);
+  const name = f.name && ts.isIdentifier(f.name) ? f.name.text
+    : f.parent && ts.isVariableDeclaration(f.parent) && ts.isIdentifier(f.parent.name) ? f.parent.name.text : null;
+  return { name, usesParam };
+}
+
+/** Calls that move data through code this reader does not follow. */
+const OPAQUE_CALL = /^(?:(?:this\.)?\$?store\.(?:dispatch|commit)|dispatch|commit|useStore|use[A-Z]\w*Store|inject|mapActions|mapState|mapGetters|\$\.(?:ajax|get|post|getJSON)|useFetch|useAsyncData|\$fetch|ofetch|ky(?:\.\w+)?|useQuery|useMutation)$/;
 
 const lineAt = (text: string, i: number): number => text.slice(0, i).split('\n').length;
 
@@ -129,10 +156,31 @@ export function readVue(snap: Snapshot): FrontendFacts {
   const components = new Map<string, Component>();
   const registered: { tag: string; file: string }[] = [];
   const roots: { file: string; template: string; line: number }[] = [];
+  const foreign = new Map<string, string[]>();
+  let vueSeen = files.some((f) => f.endsWith('.vue'));
+  const wrappers = new Set<string>();
+  for (const f of files) {
+    if (f.endsWith('.vue')) continue;
+    const raw = snap.read(f);
+    if (!raw || !/\b(fetch|axios|http)\b/.test(raw)) continue;
+    const sf0 = ts.createSourceFile(f, raw, ts.ScriptTarget.Latest, true, f.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    const visit0 = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && n.arguments[0] && HTTP_CALL.test(n.expression.getText(sf0).replace(/^this\./, ''))) {
+        const enc = enclosing(n, n.arguments[0]);
+        if (enc?.usesParam && enc.name) wrappers.add(enc.name);
+      }
+      ts.forEachChild(n, visit0);
+    };
+    visit0(sf0);
+  }
 
   for (const f of files) {
     const raw = snap.read(f);
     if (raw === null) continue;
+    // a file of another framework is not read as Vue: its routes and calls work differently
+    const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : null;
+    if (other) { if (!foreign.has(other)) foreign.set(other, []); foreign.get(other)!.push(f); continue; }
+    if (/from\s+['"]vue['"]|\bVue\.createApp\b|\bnew\s+Vue\(/.test(raw)) vueSeen = true;
     let text = raw;
     let scriptStart = 0;
     let templateRange: [number, number] | null = null;
@@ -152,6 +200,7 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const routeParams = new Map<string, string>();
     const pushes: { target: string; line: number }[] = [];
     const localCalls: ApiCall[] = [];
+    const opaque: { what: string; line: number }[] = [];
     // absolute offsets into the file, whichever way the template is written
     let template: { start: number; end: number } | null = templateRange ? { start: templateRange[0], end: templateRange[1] } : null;
 
@@ -187,8 +236,10 @@ export function readVue(snap: Snapshot): FrontendFacts {
         }
         if (path && comp) routes.push({ path: path.text, component: comp.text, file: f, line: lineOfNode(path) });
       }
+      if (ts.isNewExpression(n) && /^(XMLHttpRequest|WebSocket|EventSource)$/.test(n.expression.getText(sf))) opaque.push({ what: `new ${n.expression.getText(sf)}()`, line: lineOfNode(n) });
       if (ts.isCallExpression(n)) {
-        const callee = n.expression.getText(sf);
+        const callee = n.expression.getText(sf).replace(/^this\./, '');
+        if (OPAQUE_CALL.test(callee)) opaque.push({ what: `${callee}()`, line: lineOfNode(n) });
         // app.component('chat-box', ChatBox)
         if (/\.component$/.test(callee) && n.arguments.length === 2 && ts.isStringLiteral(n.arguments[0]!) && ts.isIdentifier(n.arguments[1]!)) {
           registered.push({ tag: (n.arguments[0] as ts.StringLiteral).text, file: `${f}#${(n.arguments[1] as ts.Identifier).text}` });
@@ -197,9 +248,12 @@ export function readVue(snap: Snapshot): FrontendFacts {
           const tp = urlTemplate(n.arguments[0], consts);
           if (tp) pushes.push({ target: tp, line: lineOfNode(n) });
         }
-        const isApi = /^(request|fetch|axios(\.(get|post|put|patch|delete))?|http\.(get|post|put|patch|delete)|\$http\.(get|post|put|patch|delete)|api\.(get|post|put|patch|delete))$/.test(callee);
-        if (isApi && n.arguments[0]) {
+        const isApi = HTTP_CALL.test(callee) || wrappers.has(callee);
+        // inside a wrapper, the URL is the wrapper's parameter: its callers are the calls
+        const insideWrapper = isApi && n.arguments[0] ? enclosing(n, n.arguments[0])?.usesParam === true : false;
+        if (isApi && n.arguments[0] && !insideWrapper) {
           const tpl = urlTemplate(n.arguments[0], consts);
+          if (!tpl || !tpl.startsWith('/')) opaque.push({ what: `${callee}() to a URL this reader cannot resolve`, line: lineOfNode(n) });
           if (tpl && tpl.startsWith('/')) {
             let verbs = ['GET'];
             const fromCallee = /\.(get|post|put|patch|delete)$/.exec(callee)?.[1];
@@ -258,7 +312,7 @@ export function readVue(snap: Snapshot): FrontendFacts {
     for (const c of localCalls) calls.push(c);
     const tr = template as { start: number; end: number } | null;
     const tplInfo = tr ? readTemplate(text, tr.start, tr.end) : { elements: [], shows: [], links: [] };
-    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links });
+    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set(imports.values())], opaque });
     if (tr) {
       const tt = text.slice(tr.start, tr.end);
       if (/<router-view/.test(tt)) roots.push({ file: f, template: tt, line: lineAt(text, tr.start) });
@@ -276,7 +330,9 @@ export function readVue(snap: Snapshot): FrontendFacts {
       if (at >= 0) globals.push({ tag: g.tag, file: g.file, root: r.file, line: r.line + r.template.slice(0, at).split('\n').length - 1 });
     }
   }
-  return { routes: routes.filter((r) => fileSet.has(r.component)), calls, components, globals, files };
+  // without a Vue app, objects shaped like { path, component } are not screens
+  const unread = [...foreign].map(([framework, fs]) => ({ framework, files: fs.length, example: fs[0]! }));
+  return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component)) : [], calls, components, globals, files, unread };
 }
 
 /** Does a link or push target land on this route path? */

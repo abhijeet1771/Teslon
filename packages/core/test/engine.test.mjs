@@ -93,12 +93,16 @@ public class Reminders {
 import PetEdit from './views/PetEdit.vue';
 import PetNew from './views/PetNew.vue';
 import About from './views/About.vue';
+import Stats from './views/Stats.vue';
+import Help from './views/Help.vue';
 
 export const routes = [
   { path: '/pets', component: PetList },
   { path: '/pets/:id/edit', component: PetEdit },
   { path: '/pets/new', component: PetNew },
   { path: '/about', component: About },
+  { path: '/stats', component: Stats },
+  { path: '/help', component: Help },
 ];
 `,
   'frontend/src/views/PetEdit.vue': `<template>
@@ -165,6 +169,13 @@ export default {
 </script>
 `,
   'frontend/src/views/About.vue': '<template><div><h2>About</h2></div></template>\n<script>\nexport default {};\n</script>\n',
+  // data through a store: the reader cannot see which API it ends up calling
+  'frontend/src/views/Stats.vue': "<template><div><h2>Stats</h2></div></template>\n<script>\nexport default {\n  mounted() { this.$store.dispatch('loadStats'); },\n};\n</script>\n",
+  // through a home-made wrapper: the wrapper passes its parameter to fetch, so its callers are the calls
+  'frontend/src/client.js': 'export async function request(url, options = {}) {\n  const res = await fetch(url, options);\n  return res.json();\n}\n',
+  'frontend/src/views/Help.vue': "<template><div><h2>Help</h2></div></template>\n<script>\nimport { request } from '../client.js';\nexport default {\n  async mounted() { this.items = await request('/api/help'); },\n};\n</script>\n",
+  // another framework in the same repo is not read as Vue
+  'frontend/src/legacy/app.routes.ts': "import { Routes } from '@angular/router';\nimport { LegacyComponent } from './legacy.component';\n\nexport const routes: Routes = [{ path: 'legacy', component: LegacyComponent }];\n",
   'ops/dashboards/app.json': JSON.stringify({
     title: 'Shop',
     panels: [
@@ -182,13 +193,16 @@ const HEAD = {
   'src/test/java/com/acme/pets/PetControllerTest.java': 'package com.acme.pets;\n\nclass PetControllerTest {}\n',
 };
 
-let dir, report;
+let dir, report, quiet;
 test('setup', () => {
   dir = mkdtempSync(join(tmpdir(), 'teslon-engine-'));
   g(dir, 'init', '-q', '-b', 'main'); g(dir, 'config', 'user.email', 't@t'); g(dir, 'config', 'user.name', 'T');
   put(dir, BASE); g(dir, 'add', '-A'); g(dir, 'commit', '-qm', 'base');
   put(dir, HEAD); g(dir, 'add', '-A'); g(dir, 'commit', '-qm', 'validate pets');
-  report = impact({ repo: dir, base: 'HEAD~1', head: 'HEAD', today: '2026-10-22' });
+  // a later change with nothing the engine models
+  put(dir, { [`${J}/PriceService.java`]: BASE[`${J}/PriceService.java`].replace('0.9', '0.7') }); g(dir, 'add', '-A'); g(dir, 'commit', '-qm', 'price');
+  report = impact({ repo: dir, base: 'HEAD~2', head: 'HEAD~1', today: '2026-10-22' });
+  quiet = impact({ repo: dir, base: 'HEAD~1', head: 'HEAD', today: '2026-10-22' });
 });
 
 const surface = (id) => report.surfaces.find((s) => s.id === id);
@@ -247,6 +261,27 @@ test('outside the code path: the saved request now fails, the 4xx panel moves, t
   const dash = cases('dashboard:ops/dashboards/app.json');
   assert.equal(dash.find((c) => c.field === 'Client errors').tier, 'watch');
   assert.ok(!dash.some((c) => c.field === 'Server errors' && c.tier !== 'skip'));
+});
+
+test('a screen is ruled out only when all of its code was read', () => {
+  // the wrapper's callers are seen, so Help can be ruled out with what it calls
+  const help = surface('screen:/help');
+  assert.equal(help.tier, 'skip');
+  assert.match(help.reason, /GET \/api\/help/);
+  // a store hides which API is called, so Stats is not ruled out: it is listed as not visible
+  assert.equal(surface('screen:/stats'), undefined);
+  assert.ok(report.unseen.some((u) => /could not be ruled out: .*\/stats .*dispatch/.test(u.what)));
+});
+
+test('another framework in the repo is named as unread, never listed as screens', () => {
+  assert.equal(surface('screen:legacy'), undefined);
+  assert.ok(report.unseen.some((u) => /Angular front end \(1 file,/.test(u.what)));
+});
+
+test('with nothing modelled, nothing is ruled out: no skips, and the ledger says what was not followed', () => {
+  assert.equal(quiet.deltas.length, 0);
+  assert.equal(quiet.surfaces.length, 0);
+  assert.equal(quiet.ledger[0].status, 'not-modelled');
 });
 
 test('jobs: one that uses the entity is listed as not visible, one that does not is a skip', () => {

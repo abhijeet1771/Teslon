@@ -1,0 +1,18 @@
+{
+  "id": "jhipster-json-rename",
+  "title": "JHipster sample (Angular): @JsonProperty(\"title\") on BankAccount.name",
+  "repo": { "name": "jhipster-sample-app", "url": "https://github.com/jhipster/jhipster-sample-app.git" },
+  "base": "6b000b5d",
+  "mutation": "research/oracle/cases/json-rename/mutation.diff",
+  "truthSource": "research/oracle/cases/json-rename/truth.txt: the app built before and after, every reachable page crawled with seeded data, Save pressed on every edit page, the two crawls diffed with a third crawl to remove noise. A lower bound: pages the crawl did not reach are not in it.",
+  "cause": ["src/main/java/io/github/jhipster/sample/domain/BankAccount.java"],
+  "test": [
+    { "id": "screen:/bank-account", "files": ["src/main/webapp/app/entities/bank-account/list/bank-account.html", "src/main/webapp/app/entities/bank-account/list/bank-account.ts"] },
+    { "id": "screen:/bank-account/:id/view", "files": ["src/main/webapp/app/entities/bank-account/detail/bank-account-detail.html", "src/main/webapp/app/entities/bank-account/detail/bank-account-detail.ts"] },
+    { "id": "screen:/bank-account/:id/edit", "files": ["src/main/webapp/app/entities/bank-account/update/bank-account-update.html", "src/main/webapp/app/entities/bank-account/update/bank-account-update.ts", "src/main/webapp/app/entities/bank-account/update/bank-account-form.service.ts"] },
+    { "id": "screen:/operation", "files": ["src/main/webapp/app/entities/operation/list/operation.html", "src/main/webapp/app/entities/operation/list/operation.ts"] },
+    { "id": "screen:/operation/:id/view", "files": ["src/main/webapp/app/entities/operation/detail/operation-detail.html", "src/main/webapp/app/entities/operation/detail/operation-detail.ts"] },
+    { "id": "screen:/operation/:id/edit", "files": ["src/main/webapp/app/entities/operation/update/operation-update.html", "src/main/webapp/app/entities/operation/update/operation-update.ts"] }
+  ],
+  "skip": []
+}

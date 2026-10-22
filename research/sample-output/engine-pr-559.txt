@@ -89,11 +89,11 @@ SKIP (checked, not affected)
  – VectorStoreController.loadVetDataToVectorStoreOnStartup(): @EventListener: uses none of PetRequest, Pet  ✓ VectorStoreController.java:49
  – petclinic_test_plan.jmx: sends values the new rules accept  ✓ petclinic_test_plan.jmx:249
  – Welcome to Petclinic  (/): calls no API  ✓ router.js:15
- – Owners  (/owners): calls no changed API: GET /api/customer/owners  ✓ OwnersPage.js:12
- – Owner  (/owners/:ownerId/edit): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
- – Visits  (/owners/:ownerId/pets/:petId/visits): calls no changed API: GET /api/visit/owners/{*}/pets/{*}/visits, POST /api/visit/owners/{*}/pets/{*}/visits  ✓ VisitsPage.js:23 ✓ VisitsPage.js:35
- – Add Owner  (/owners/new): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
- – Veterinarians  (/vets): calls no changed API: GET /api/vet/vets  ✓ VetsPage.js:10
+ – Owners  (/owners): calls no changed API: GET /api/customer/owners (read 4 files: the screen and what it imports)  ✓ OwnersPage.js:12
+ – Owner  (/owners/:ownerId/edit): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners (read 5 files: the screen and what it imports)  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
+ – Visits  (/owners/:ownerId/pets/:petId/visits): calls no changed API: GET /api/visit/owners/{*}/pets/{*}/visits, POST /api/visit/owners/{*}/pets/{*}/visits (read 6 files: the screen and what it imports)  ✓ VisitsPage.js:23 ✓ VisitsPage.js:35
+ – Add Owner  (/owners/new): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners (read 5 files: the screen and what it imports)  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
+ – Veterinarians  (/vets): calls no changed API: GET /api/vet/vets (read 3 files: the screen and what it imports)  ✓ VetsPage.js:10
 
 NOT VISIBLE TO TESLON
  ? callers outside this repository of POST /api/customer/owners/{ownerId}/pets, PUT /api/customer/owners/*/pets/{petId}
