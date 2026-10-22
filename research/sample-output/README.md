@@ -41,3 +41,23 @@ building on the last), Harry Beck's tube map (topology over geography), Bret
 Victor's explorable explanations (guided, but the reader explores), and the
 scrollytelling guidance to use a stepper when states are discrete. Teslon's own
 motion rule applies: motion only where it explains cause.
+
+## The cockpit, for large PRs
+
+[`report-cockpit.html`](report-cockpit.html) replaces the scrolling report with
+one screen. Real PRs written with AI help carry dozens of behaviour changes,
+and a page you scroll through does not survive that.
+
+- **Top:** the verdict: test, watch, skip, conflicts, unseen.
+- **Left:** every change, sorted by risk, with how far each one reaches.
+- **Middle:** the whole app grouped by module (*App map*); change × surface
+  (*Matrix*, where a column several changes meet on shows where they can
+  interact); or a checklist (*Test plan*, ticks kept per viewer).
+- **Right:** the selected screen's cases as before/after, and the evidence
+  for each.
+- **New:** *conflicts between changes in the same PR*. In the example, a new
+  rule only allows birth dates up to today, while a new shared date picker only
+  allows today onwards, so today is the only date a person can pick.
+
+It switches between an **example** large PR (16 changes, 42 surfaces,
+invented, labelled as such) and the **real** PR #559 (verified data).

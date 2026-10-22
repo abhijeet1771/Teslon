@@ -1,0 +1,592 @@
+<title>Teslon Impact Cockpit</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&display=swap">
+<style>
+/* Layout: one screen, no page scroll. Verdict across the top; changes on the
+   left; the whole app in the middle (map, matrix, or test plan); the selected
+   thing and its evidence on the right. Built for PRs with dozens of changes.
+   Teslon's system: dark first, Volt = "act here", red/orange = tiers,
+   grey = ruled out, violet = could not see. */
+:root {
+  --bg: #0b0b0b; --panel: #141414; --panel-2: #1d1d1d; --panel-3: #262626;
+  --line: rgba(255,255,255,.12); --line-2: rgba(255,255,255,.28);
+  --ink: #ffffff; --ink-2: #c6c6c6; --ink-3: #8a8a8a; --ink-4: #5a5a5a;
+  --volt: #d7ff3b; --on-volt: #0b0b0b;
+  --t1: #ff3b30; --t2: #ff7a1a; --w: #e9e9e9; --skip: #555555; --unk: #b893ff; --conf: #ff3bd7;
+  --display: 'Barlow Condensed', 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  --sans: 'Helvetica Neue', Helvetica, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #ffffff; --panel: #f4f4f4; --panel-2: #eaeaea; --panel-3: #dedede;
+    --line: rgba(0,0,0,.11); --line-2: rgba(0,0,0,.3);
+    --ink: #111111; --ink-2: #444444; --ink-3: #6e6e6e; --ink-4: #a0a0a0;
+    --t1: #d30005; --t2: #c24400; --w: #333333; --skip: #bdbdbd; --unk: #6b3fd4; --conf: #b0009a;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f4f4; --panel-2: #eaeaea; --panel-3: #dedede;
+  --line: rgba(0,0,0,.11); --line-2: rgba(0,0,0,.3);
+  --ink: #111111; --ink-2: #444444; --ink-3: #6e6e6e; --ink-4: #a0a0a0;
+  --t1: #d30005; --t2: #c24400; --w: #333333; --skip: #bdbdbd; --unk: #6b3fd4; --conf: #b0009a;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0b0b0b; --panel: #141414; --panel-2: #1d1d1d; --panel-3: #262626;
+  --line: rgba(255,255,255,.12); --line-2: rgba(255,255,255,.28);
+  --ink: #ffffff; --ink-2: #c6c6c6; --ink-3: #8a8a8a; --ink-4: #5a5a5a;
+  --t1: #ff3b30; --t2: #ff7a1a; --w: #e9e9e9; --skip: #555555; --unk: #b893ff; --conf: #ff3bd7;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 13.5px; line-height: 1.45; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+:focus-visible { outline: 2px solid var(--volt); outline-offset: 2px; }
+.app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 0; }
+.app > * { min-width: 0; }
+
+/* top */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding-block: 10px; border-bottom: 1px solid var(--line); }
+.top .meta { flex: 1 1 200px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.top .meta span { flex: none; }
+.brand { font-family: var(--display); font-weight: 800; font-size: 22px; letter-spacing: .06em; }
+.prs { display: flex; gap: 0; border: 1px solid var(--line-2); border-radius: 999px; padding: 3px; }
+.prs button { padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--ink-3); }
+.prs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.meta { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0; }
+.badge { font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; }
+.badge.real { background: var(--ink); color: var(--bg); }
+.badge.example { border: 1px dashed var(--unk); color: var(--unk); }
+.top .spacer { flex: 1; }
+.copy { border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 13px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.copy:hover { border-color: var(--ink); }
+
+/* verdict */
+.verdict { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(5, minmax(0, 1fr)); align-items: stretch; border-bottom: 1px solid var(--line); }
+.v-say { padding: 12px 18px 12px 0; display: grid; align-content: center; gap: 2px; min-width: 0; }
+.v-say h1 { font-family: var(--display); font-weight: 800; font-size: clamp(20px, 1.7vw, 26px); line-height: 1; text-transform: uppercase; margin: 0; text-wrap: balance; }
+.v-say p { margin: 0; color: var(--ink-3); font-size: 12px; }
+.v-n { padding: 10px 14px; border-left: 1px solid var(--line); display: grid; align-content: center; gap: 0; text-align: left; min-width: 0; }
+.v-n b { font-family: var(--display); font-weight: 800; font-size: clamp(36px, 3.6vw, 52px); line-height: .9; font-variant-numeric: tabular-nums; }
+.v-n span { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
+.v-n small { font-size: 11px; color: var(--ink-3); }
+.v-n.t b, .v-n.t span { color: var(--t1); }
+.v-n.s b, .v-n.s span { color: var(--ink-3); }
+.v-n.u b, .v-n.u span { color: var(--unk); }
+.v-n.c b, .v-n.c span { color: var(--conf); }
+.v-n:hover { background: var(--panel); }
+.v-n[aria-pressed="true"] { background: var(--panel-2); }
+
+/* panes */
+.panes { display: grid; grid-template-columns: 290px minmax(0, 1fr) 380px; gap: 0; min-height: 0; }
+.pane { min-height: 0; overflow: auto; padding: 12px 14px 20px; }
+.pane + .pane { border-left: 1px solid var(--line); }
+.left { padding-left: 0; }
+.right { padding-right: 0; }
+.ph { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ph h2 { font-family: var(--display); font-weight: 800; font-size: 17px; letter-spacing: .06em; text-transform: uppercase; margin: 0; }
+.ph span { font-size: 11px; color: var(--ink-3); }
+.eyebrow { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
+
+/* left: changes */
+.search { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--ink); font: inherit; margin-bottom: 10px; }
+.alert { display: grid; gap: 4px; padding: 9px 10px; border-radius: 6px; margin-bottom: 8px; width: 100%; }
+.alert.conf { border: 1px solid var(--conf); }
+.alert.unk { border: 1px dashed var(--unk); }
+.alert b { font-size: 12.5px; }
+.alert .k { font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.alert.conf .k { color: var(--conf); } .alert.unk .k { color: var(--unk); }
+.alert p { margin: 0; font-size: 12px; color: var(--ink-2); }
+.chg { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 4px 9px; padding: 9px 8px; border-radius: 6px; width: 100%; }
+.chg + .chg { margin-top: 2px; }
+.chg:hover { background: var(--panel); }
+.chg[aria-pressed="true"] { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--volt); }
+.chg .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; }
+.chg b { font-size: 13px; font-weight: 600; line-height: 1.3; }
+.chg .sub { grid-column: 2; display: flex; flex-wrap: wrap; gap: 3px 8px; font-size: 11px; color: var(--ink-3); }
+.chg .kind { text-transform: uppercase; letter-spacing: .08em; font-weight: 700; font-size: 9.5px; color: var(--ink-2); }
+.chg .file { font-family: var(--mono); font-size: 10.5px; }
+.reach { grid-column: 2; display: flex; gap: 2px; height: 5px; margin-top: 2px; }
+.reach i { display: block; height: 5px; border-radius: 1px; }
+.all { font-weight: 700; }
+
+/* center */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.tabs button { padding: 6px 12px 8px; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.focus-note { font-size: 12px; color: var(--ink-2); margin-bottom: 10px; min-height: 18px; }
+.focus-note b { color: var(--ink); }
+.focus-note button { text-decoration: underline; color: var(--ink-3); margin-left: 6px; }
+
+.map { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 10px; }
+.mod { background: var(--panel); border-radius: 8px; padding: 9px; display: grid; gap: 4px; align-content: start; }
+.mod.wide { grid-column: 1 / -1; }
+.mod-h { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 0 2px 4px; }
+.mod-h b { font-family: var(--display); font-weight: 800; font-size: 14px; letter-spacing: .06em; text-transform: uppercase; }
+.mod-h span { font-size: 10.5px; color: var(--ink-3); }
+.mod.wide .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 4px; }
+.tiles { display: grid; gap: 4px; }
+.tile { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; gap: 0 8px; align-items: center; background: var(--bg); border-radius: 5px; padding: 6px 8px 6px 0; width: 100%; min-height: 38px; position: relative; overflow: hidden; }
+.tile .bar { align-self: stretch; border-radius: 5px 0 0 5px; }
+.tile .nm { min-width: 0; display: grid; }
+.tile .nm b { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .nm span { font-size: 10px; color: var(--ink-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .n { font-family: var(--display); font-weight: 800; font-size: 18px; line-height: 1; font-variant-numeric: tabular-nums; }
+.tile.skip { opacity: .5; }
+.tile.skip .n { font-size: 10px; letter-spacing: .1em; font-family: var(--sans); font-weight: 800; color: var(--ink-3); }
+.tile.dim { opacity: .16; }
+.tile[aria-pressed="true"] { outline: 2px solid var(--volt); outline-offset: -2px; }
+.tile .kindtag { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-family: var(--sans); }
+.tile.conflict::after { content: ""; position: absolute; right: 3px; top: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--conf); }
+.ping { animation: ping .7s var(--ease) both; }
+@keyframes ping { 0% { box-shadow: inset 0 0 0 40px color-mix(in srgb, var(--ink) 18%, transparent); } 100% { box-shadow: inset 0 0 0 0 transparent; } }
+
+/* matrix */
+.mx-wrap { overflow: auto; }
+.mx { border-collapse: separate; border-spacing: 2px; font-size: 11px; }
+.mx th { font-weight: 600; color: var(--ink-3); }
+.mx thead th { height: 120px; vertical-align: bottom; padding: 0; }
+.mx thead th div { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; font-size: 10.5px; padding-bottom: 4px; max-height: 118px; overflow: hidden; text-overflow: ellipsis; }
+.mx tbody th { text-align: left; white-space: nowrap; max-width: 230px; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; color: var(--ink-2); font-size: 11.5px; }
+.mx td { width: 15px; height: 17px; border-radius: 2px; background: var(--panel); padding: 0; }
+.mx td button { display: block; width: 100%; height: 100%; border-radius: 2px; }
+.mx tr.hl th { color: var(--ink); }
+.mx .gsep { background: transparent; width: 6px; }
+
+/* plan */
+.plan { display: grid; gap: 6px; }
+.plan-g { font-family: var(--display); font-weight: 800; font-size: 14px; letter-spacing: .08em; text-transform: uppercase; margin: 10px 0 2px; display: flex; gap: 8px; align-items: center; }
+.case { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; padding: 9px 10px; background: var(--panel); border-radius: 6px; }
+.case input { margin-top: 3px; accent-color: var(--volt); width: 16px; height: 16px; }
+.case .c-h { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.case .c-h b { font-size: 13px; }
+.case .c-h span { font-size: 11px; color: var(--ink-3); }
+.case p { margin: 3px 0 0; font-size: 12.5px; color: var(--ink-2); }
+.case.done { opacity: .5; }
+
+/* right: detail */
+.d-h { display: grid; gap: 4px; margin-bottom: 10px; }
+.d-h h3 { font-family: var(--display); font-weight: 800; font-size: 26px; text-transform: uppercase; line-height: .95; margin: 0; text-wrap: balance; }
+.d-h .route { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.chip { display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; padding: 2px 7px; border-radius: 3px; vertical-align: 1px; }
+.chip.t1 { background: var(--t1); color: #fff; } .chip.t2 { background: var(--t2); color: #fff; }
+.chip.w { background: var(--w); color: var(--bg); } .chip.s { background: var(--panel-3); color: var(--ink-3); }
+.chip.do { background: var(--volt); color: var(--on-volt); }
+.chip.hole { border: 1px dashed var(--t1); color: var(--t1); }
+.chip.conf { border: 1px solid var(--conf); color: var(--conf); }
+.chip.unk { border: 1px dashed var(--unk); color: var(--unk); }
+.chip.v { background: var(--ink); color: var(--bg); } .chip.dv { border: 1px solid var(--line-2); color: var(--ink-3); }
+.card { background: var(--panel); border-radius: 8px; padding: 11px 12px; display: grid; gap: 7px; margin-bottom: 8px; }
+.card .because { font-size: 11.5px; color: var(--ink-3); }
+.card .because b { color: var(--ink-2); font-weight: 600; }
+.card .do { font-size: 13px; }
+.dl { font-family: var(--mono); font-size: 11.5px; display: grid; gap: 2px; }
+.dl div { padding: 4px 8px; border-radius: 3px; display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 5px; }
+.dl .b { background: color-mix(in srgb, var(--ink-3) 13%, transparent); color: var(--ink-3); }
+.dl .a { background: color-mix(in srgb, var(--t1) 13%, transparent); }
+.dl .a2 { background: color-mix(in srgb, var(--t2) 14%, transparent); }
+.dl .aw { background: color-mix(in srgb, var(--w) 10%, transparent); }
+.dl .h { border: 1px dashed var(--t1); }
+.ev-t { font-size: 11px; color: var(--ink-3); text-decoration: underline; justify-self: start; }
+.hops { list-style: none; margin: 2px 0 0; padding: 0; position: relative; display: grid; gap: 8px; }
+.hops::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 2px; background: var(--ink); }
+.hops li { position: relative; padding-left: 20px; display: grid; gap: 1px; }
+.hops li::before { content: ""; position: absolute; left: 0; top: 3px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); background: var(--bg); box-sizing: border-box; }
+.hops li:last-child::before { background: var(--ink); }
+.hops .hb { font-size: 12px; font-weight: 600; }
+.hops .hf { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+.hops .hr { font-size: 11.5px; color: var(--ink-2); }
+.hops.draw li { animation: hop .4s var(--ease) both; }
+@keyframes hop { from { transform: translateX(-5px); opacity: .3; } to { transform: none; opacity: 1; } }
+.reachlist { display: grid; gap: 3px; }
+.reachlist button { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 5px 6px; border-radius: 4px; font-size: 12.5px; width: 100%; }
+.reachlist button:hover { background: var(--panel); }
+.note { font-size: 11px; color: var(--ink-3); margin-top: 10px; }
+
+/* phone */
+@media (max-width: 980px) {
+  .app { height: auto; }
+  html, body { height: auto; }
+  .verdict { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .v-say { grid-column: 1 / -1; padding-right: 0; }
+  .v-n:nth-of-type(2) { border-left: 0; }
+  .panes { grid-template-columns: minmax(0, 1fr); }
+  .pane { overflow: visible; padding-inline: 0; }
+  .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+  .left { max-height: 360px; overflow: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .ping, .hops.draw li { animation: none !important; } }
+</style>
+
+<div class="app">
+  <div class="top">
+    <span class="brand">TESLON</span>
+    <div class="prs" role="group" aria-label="Which PR">
+      <button type="button" data-ds="big" aria-pressed="true">Large AI PR · example</button>
+      <button type="button" data-ds="real" aria-pressed="false">PR #559 · real</button>
+    </div>
+    <span id="badge"></span>
+    <span class="meta" id="meta"></span>
+    <button class="copy" type="button" id="copy">Copy test plan</button>
+  </div>
+
+  <div class="verdict" id="verdict"></div>
+
+  <div class="panes">
+    <aside class="pane left" aria-label="Changes in this PR">
+      <div class="ph"><h2>Changes</h2><span id="chgcount"></span></div>
+      <input class="search" id="q" type="search" placeholder="Filter changes, files, screens" aria-label="Filter">
+      <div id="alerts"></div>
+      <div id="changes"></div>
+    </aside>
+
+    <main class="pane center">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-view="map" aria-selected="true">App map</button>
+        <button type="button" role="tab" data-view="matrix" aria-selected="false">Matrix</button>
+        <button type="button" role="tab" data-view="plan" aria-selected="false">Test plan</button>
+      </div>
+      <div class="focus-note" id="focus"></div>
+      <div id="view"></div>
+    </main>
+
+    <aside class="pane right" aria-label="Detail and evidence" aria-live="polite">
+      <div id="detail"></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+/* ===================== data =====================
+   real: PR #559, every fact read or run at 1d76b00.
+   big:  an EXAMPLE PR, invented to show how the report scales. Not findings. */
+const H = (b, file, rule, p = 'derived') => ({ b, file, rule, p });
+
+const REAL = {
+  real: true, title: 'PR #559 · Validate pet birthday', meta: ['spring-petclinic-microservices', 'rebase-merged · dc9ca15..1d76b00', '3 files · 2 code · 1 test'],
+  modules: [['pets', 'Pets'], ['owners', 'Owners'], ['visits', 'Visits'], ['vets', 'Vets'], ['home', 'Home'], ['every', 'On every screen'], ['beyond', 'Beyond the screens']],
+  surfaces: [
+    ['add-pet', 'Add Pet', 'pets', 'screen', '/owners/:ownerId/new-pet'], ['edit-pet', 'Edit Pet', 'pets', 'screen', '/owners/:ownerId/pets/:petId'],
+    ['owner', 'Owner details', 'owners', 'screen', '/owners/details/:ownerId'], ['owners', 'Find owners', 'owners', 'screen', '/owners'], ['reg', 'Register owner', 'owners', 'screen', '/owners/new'], ['editown', 'Edit owner', 'owners', 'screen', '/owners/:ownerId/edit'],
+    ['visits', 'Visits', 'visits', 'screen', '/owners/:ownerId/pets/:petId/visits'], ['vets', 'Veterinarians', 'vets', 'screen', '/vets'], ['home', 'Home', 'home', 'screen', '/'],
+    ['chat', 'AI chat', 'every', 'widget', 'all 9 screens'],
+    ['pets-t', 'pets table', 'beyond', 'data', 'customers DB'], ['grafana', 'Grafana · HTTP panels', 'beyond', 'dashboard', 'json:85, :92, :173'], ['jmeter', 'JMeter load test', 'beyond', 'test', 'petclinic_test_plan.jmx'], ['jobs', 'Jobs and listeners', 'beyond', 'job', '1 listener'],
+  ],
+  changes: [
+    { id: 'cc', kind: 'rule + validation', title: 'Create pet: future birth date and empty name now refused', file: 'PetRequest.java:29 · PetResource.java:58',
+      path: [H('New rule', 'PetRequest.java:29', '@PastOrPresent: a date after now is refused'), H('Read as UTC', 'PetRequest.java:28', '@JsonFormat yyyy-MM-dd → 00:00 UTC', 'verified'), H('Enforced on create', 'PetResource.java:58', '@Valid: every rule on the body, so @Size(min = 1) on name switches on too'), H('API', 'PetResource.java:55', 'POST /owners/{ownerId}/pets'), H('Gateway', 'application.yml:36, :38', '/api/customer/** StripPrefix=2')] },
+    { id: 'cu', kind: 'rule + validation', title: 'Update pet: the same rules now enforced', file: 'PetRequest.java:29 · PetResource.java:71',
+      path: [H('New rule', 'PetRequest.java:29', '@PastOrPresent'), H('Enforced on update', 'PetResource.java:71', '@Valid on the update body'), H('API', 'PetResource.java:69', 'PUT /owners/*/pets/{petId}'), H('Gateway', 'application.yml:36, :38', '/api/customer/** StripPrefix=2')] },
+    { id: 't', kind: 'test only', title: 'Tests for the new rules', file: 'PetResourceTest.java', none: 'Test code: no runtime surface', path: [] },
+  ],
+  impacts: [
+    { c: 'cc', s: 'add-pet', t: 't1', p: 'verified', do: 'Pick a date after today, press Submit.', before: 'Saved.', after: 'Rejected (400). Red banner "Bad Request", no field marked.',
+      hops: [H('The page sends it', 'PetFormPage.js:61', 'POST, since this route has no :petId'), H('The field', 'PetFormPage.js:105', 'type="date", no max: a future date can be picked'), H('What the person sees', 'client.js:82 → errors.js:23 → RootApp.js:17', 'The 400 body has no field list', 'verified')] },
+    { c: 'cc', s: 'add-pet', t: 't1', p: 'verified', do: 'In India before 05:30, pick today.', before: 'Saved.', after: 'Rejected: "today" is judged in UTC.', hops: [H('Boundary', 'run on the service', 'UTC today 201, UTC tomorrow 400', 'verified')] },
+    { c: 'cc', s: 'chat', t: 't1', p: 'derived', do: 'Ask the chat to add a cat born next year.', before: 'Pet added.', after: 'Should refuse in a sentence. Risk: an error, the 400 is not handled.', hops: [H('Another caller', 'AIDataProvider.java:73', 'discovery "customers-service"'), H('No error handling', 'AIDataProvider.java:75', '.retrieve() with no onStatus'), H('Tool and wiring', 'PetclinicTools.java:64 · PetclinicChatClient.java:53', '@Tool + defaultTools'), H('On every screen', 'RootApp.js:23', '<chat-box> beside <router-view>')] },
+    { c: 'cc', s: 'chat', t: 't1', p: 'verified', hole: true, do: 'Through the chat or API, create a pet with no name, or three spaces.', before: 'Saved with no name.', after: 'Still saved. Only "" is refused.', hops: [H('Rule hole', 'PetRequest.java:30', '@Size(min = 1) accepts null and spaces; the service returned 201', 'verified')] },
+    { c: 'cc', s: 'chat', t: 't1', p: 'verified', do: 'Through the chat or API, create a pet with name "".', before: 'Saved.', after: 'Rejected (400): new on create.', hops: [H('Service', 'POST /owners/1/pets', 'name "" → 400', 'verified')] },
+    { c: 'cc', s: 'grafana', t: 'w', p: 'derived', do: 'After deploy, watch HTTP Request Latency and Activity.', before: 'No 400s from pet saves.', after: 'New 400s counted; Pets Created unchanged.', hops: [H('Metric', 'http.server.requests', 'every status is recorded'), H('Panels', 'dashboard json:85, :173 (:449 unchanged)', 'filters evaluated per panel')] },
+    { c: 'cu', s: 'edit-pet', t: 't1', p: 'derived', do: 'Change the date to after today, press Update Pet.', before: 'Saved.', after: 'Rejected (400), same banner.', hops: [H('The page sends it', 'PetFormPage.js:61', 'PUT, since this route has :petId'), H('Screen', 'router.js:39', '/owners/:ownerId/pets/:petId')] },
+    { c: 'cu', s: 'owner', t: 't2', p: 'derived', do: 'Edit a pet whose birth date is already in the future; save unchanged.', before: 'Saved.', after: 'Rejected until the date is fixed.', hops: [H('Stored as', 'Pet.java:44', 'pets.birth_date keeps old values'), H('Shown and edited here', 'OwnerDetailsPage.js:66, :84', 'Edit Pet → router.js:39')] },
+    { c: 'cu', s: 'pets-t', t: 't2', p: 'verified', do: 'Before release, run: SELECT id FROM pets WHERE birth_date > CURRENT_DATE;', before: 'No check needed.', after: 'Each row is a pet that gets locked. Seed data: 0 of 13.', hops: [H('Seed data', 'db/hsqldb/data.sql, db/mysql/data.sql', '13 rows each, 0 break', 'verified')] },
+  ],
+  skips: {
+    owners: ['Reads the owners list only.', "OwnersPage.js:12 request('/api/customer/owners')"],
+    reg: ['Creates owners: an API this PR did not touch.', 'OwnerFormPage.js:49 POST /api/customer/owners'],
+    editown: ['Reads and updates owners only.', 'OwnerFormPage.js:23, :46'],
+    visits: ['Calls the visits service only.', 'VisitsPage.js:23, :35 /api/visit/…'],
+    vets: ['Another service.', "VetsPage.js:10 request('/api/vet/vets')"],
+    home: ['Calls no API.', 'WelcomePage.js'],
+    jmeter: ['Sends a 2018 date and a name: still valid.', 'jmx:249, :300, :343 · run on the service: 201', 'verified'],
+    jobs: ['The only listener loads vets.', 'VectorStoreController.java:49 @EventListener'],
+  },
+  unseen: [], conflicts: [],
+};
+
+const BIG = {
+  real: false, title: 'PR #1207 · Billing v2, rabbits, reminders (example)', meta: ['example-clinic monorepo · 6 services · Vue', 'squash-merged · 41 commits', '58 files · 31 code · 12 tests · 6 config · 4 migrations · 5 styles'],
+  modules: [['owners', 'Owners'], ['pets', 'Pets'], ['visits', 'Visits'], ['vets', 'Vets'], ['billing', 'Billing'], ['reports', 'Reports'], ['admin', 'Admin'], ['home', 'Home'], ['every', 'On every screen'], ['beyond', 'Beyond the screens']],
+  surfaces: [
+    ['o-find', 'Find owners', 'owners', 'screen', '/owners'], ['o-details', 'Owner details', 'owners', 'screen', '/owners/:id'], ['o-new', 'Register owner', 'owners', 'screen', '/owners/new'], ['o-settings', 'Owner settings', 'owners', 'screen', '/owners/:id/settings'],
+    ['p-add', 'Add pet', 'pets', 'screen', '/owners/:id/pets/new'], ['p-edit', 'Edit pet', 'pets', 'screen', '/owners/:id/pets/:petId'], ['p-profile', 'Pet profile', 'pets', 'screen', '/pets/:petId'],
+    ['v-book', 'Book visit', 'visits', 'screen', '/pets/:petId/visits/new'], ['v-history', 'Visit history', 'visits', 'screen', '/pets/:petId/visits'], ['v-cal', 'Calendar', 'visits', 'screen', '/visits/calendar'], ['v-detail', 'Visit detail', 'visits', 'screen', '/visits/:id'],
+    ['e-list', 'Veterinarians', 'vets', 'screen', '/vets'], ['e-profile', 'Vet profile', 'vets', 'screen', '/vets/:id'], ['e-sched', 'Vet schedule', 'vets', 'screen', '/vets/:id/schedule'],
+    ['b-inv', 'Invoices', 'billing', 'screen', '/billing/invoices'], ['b-detail', 'Invoice detail', 'billing', 'screen', '/billing/invoices/:id'], ['b-pay', 'Payments', 'billing', 'screen', '/billing/payments'], ['b-prices', 'Price list', 'billing', 'screen', '/billing/prices'],
+    ['r-rev', 'Revenue', 'reports', 'screen', '/reports/revenue'], ['r-visits', 'Visits report', 'reports', 'screen', '/reports/visits'], ['r-export', 'Export center', 'reports', 'screen', '/reports/export'],
+    ['a-users', 'Users', 'admin', 'screen', '/admin/users'], ['a-roles', 'Roles', 'admin', 'screen', '/admin/roles'], ['a-settings', 'Settings', 'admin', 'screen', '/admin/settings'], ['a-audit', 'Audit log', 'admin', 'screen', '/admin/audit'],
+    ['h-home', 'Home', 'home', 'screen', '/'], ['h-login', 'Login', 'home', 'screen', '/login'],
+    ['w-chat', 'AI chat', 'every', 'widget', 'all screens'], ['w-search', 'Header search', 'every', 'widget', 'all screens'],
+    ['d-owners', 'owners table', 'beyond', 'data', 'clinic DB'], ['d-pets', 'pets table', 'beyond', 'data', 'clinic DB'], ['d-visits', 'visits table', 'beyond', 'data', 'clinic DB'], ['d-inv', 'invoices table', 'beyond', 'data', 'billing DB'],
+    ['j-remind', 'Reminder job', 'beyond', 'job', 'cron 0 7 * * *'], ['j-night', 'Nightly invoicing', 'beyond', 'job', 'cron 0 2 * * *'],
+    ['m-http', 'Grafana · HTTP', 'beyond', 'dashboard', 'ops'], ['m-rev', 'Revenue dashboard', 'beyond', 'dashboard', 'finance'],
+    ['e-remind', 'Reminder email', 'beyond', 'email', 'templates/reminder'], ['e-inv', 'Invoice email', 'beyond', 'email', 'templates/invoice'],
+    ['x-csv', 'Visits CSV export', 'beyond', 'export', 'reports'], ['x-pdf', 'Invoice PDF', 'beyond', 'export', 'billing'], ['k-bill', 'VisitBooked → billing', 'beyond', 'event', 'kafka'],
+  ],
+  changes: [
+    { id: 'c1', kind: 'rule tightened', title: 'Birth date can no longer be in the future', file: 'PetRequest.java:29', path: [H('New rule', 'PetRequest.java:29', '@PastOrPresent'), H('API', 'PetController.java:41, :63', 'POST and PUT pets')] },
+    { id: 'c10', kind: 'shared component', title: 'Date picker: earliest date is now today', file: 'DatePicker.vue:18', path: [H('Default changed', 'DatePicker.vue:18', 'min defaults to today'), H('Used by', '7 screens', 'every <DatePicker> without its own min')] },
+    { id: 'c3', kind: 'field renamed', title: 'Visit date is now sent as visitDate', file: 'VisitDTO.java:22', path: [H('JSON property', 'VisitDTO.java:22', '@JsonProperty("visitDate")'), H('Readers', '5 screens, 1 email, 1 export', 'still read .date')] },
+    { id: 'c4', kind: 'enum value', title: 'New pet type: Rabbit', file: 'PetType.java:14', path: [H('Enum value', 'PetType.java:14', 'RABBIT'), H('Exhaustive switch', 'PriceCalculator.java:52', 'no case for RABBIT, default throws')] },
+    { id: 'c6', kind: 'behaviour', title: 'Invoice rounding: half-up → half-even', file: 'InvoiceCalculator.java:88', path: [H('Rounding mode', 'InvoiceCalculator.java:88', 'RoundingMode.HALF_EVEN'), H('Totals', 'InvoiceService.java:120', 'computed on create, not on read')] },
+    { id: 'c9', kind: 'migration', title: 'Owner telephone limited to 15 characters', file: '0042-owner-phone.xml:9', path: [H('Column', '0042-owner-phone.xml:9', 'owners.telephone VARCHAR(20) → (15)'), H('Entity', 'Owner.java:38', '@Size(max = 15)')] },
+    { id: 'c5', kind: 'route moved', title: 'Owner edit screen moved to /settings', file: 'router.ts:41', path: [H('Route', 'router.ts:41', '/owners/:id/edit → /owners/:id/settings'), H('Links', '3 links, 1 email template', 'point at the old path')] },
+    { id: 'c7', kind: 'permission', title: 'Only admins can delete a vet', file: 'VetController.java:57', path: [H('Method security', 'VetController.java:57', "@PreAuthorize(\"hasRole('ADMIN')\")"), H('UI', 'VetProfile.vue:88', 'Delete button shown to every role')] },
+    { id: 'c8', kind: 'config key', title: 'Reminder setting renamed', file: 'application.yml:44', path: [H('Key', 'application.yml:44', 'visits.reminder.days → visit.reminder-days'), H('Reader', 'ReminderProperties.java:12', 'still binds the old name, falls back to 1')] },
+    { id: 'c12', kind: 'i18n key', title: 'Telephone label key renamed', file: 'messages_en.json:61', path: [H('Key', 'messages_en.json:61', 'owner.telephone → owner.phone'), H('Missing', 'messages_es.json', 'no owner.phone in Spanish')] },
+    { id: 'c13', kind: 'event schema', title: 'VisitBooked event gains a field', file: 'VisitBooked.java:9', path: [H('Event', 'VisitBooked.java:9', 'new field channel'), H('Consumer', 'BillingListener.java:31', 'tolerant reader: unknown fields ignored')] },
+    { id: 'c14', kind: 'cache', title: 'Vet list cached for 60 min, was 10', file: 'CacheConfig.java:25', path: [H('TTL', 'CacheConfig.java:25', 'vets: 10m → 60m'), H('Evicted on', 'VetService.java:—', 'nothing: no @CacheEvict')] },
+    { id: 'c11', kind: 'global CSS', title: 'Striped table colours changed', file: 'app.css:210', path: [H('Selector', 'app.css:210', '.table-striped tr:nth-child(odd)'), H('Used by', '6 screens', 'every striped table')] },
+    { id: 'c2', kind: 'validation on', title: 'Create pet now validates every field', file: 'PetController.java:41', path: [H('@Valid', 'PetController.java:41', 'all rules on the body now enforced')] },
+    { id: 'c15', kind: 'dependency', title: 'spring-boot 4.0.1 → 4.0.2', file: 'pom.xml:9', none: 'Checked against the defaults catalogue: no behaviour change for constructs this repo uses', path: [] },
+    { id: 'c16', kind: 'test only', title: '12 test files, 2 docs', file: 'src/test/**', none: 'No runtime surface', path: [] },
+  ],
+  impacts: [],
+  skips: {},
+  unseen: [
+    { title: 'Feature flag new-billing', text: 'Chooses which invoice calculator runs (BillingConfig.java:31). Its production value lives in the flag service, not in the repo.', fix: 'Connect the flag service, or tell Teslon the value.' },
+    { title: 'payments-gateway repo', text: 'Consumes invoice events, but Teslon was not given that repository.', fix: 'Add the repo to the analysis.' },
+  ],
+  conflicts: [
+    { title: 'Birth date: only today can be chosen', a: 'c1', b: 'c10', s: ['p-add', 'p-edit'], text: 'The new rule refuses dates after today; the new date picker refuses dates before today. On Add pet and Edit pet, today is the only date a person can pick.' },
+  ],
+};
+/* example impacts, compact: change, surfaces, tier, do, before, after */
+const X = (c, list, t, d, before, after, extra = {}) => list.forEach((s) => BIG.impacts.push({ c, s, t, do: d, before, after, p: 'derived', hops: null, ...extra }));
+X('c1', ['p-add', 'p-edit', 'w-chat'], 't1', 'Enter a birth date after today and save.', 'Saved.', 'Rejected (400).');
+X('c1', ['d-pets'], 't2', 'Before release, count pets with a future birth date.', 'No check.', 'Those pets can no longer be saved.');
+X('c10', ['p-add', 'p-edit', 'r-rev', 'r-visits'], 't1', 'Open the date field and try a date before today.', 'Any date could be picked.', 'Past dates are greyed out.');
+X('c10', ['v-book', 'v-cal', 'b-pay'], 't2', 'Open the date field.', 'Past dates allowed.', 'Today is the earliest date.');
+X('c3', ['v-history', 'v-cal', 'v-detail', 'r-visits', 'x-csv'], 't1', 'Open it for a pet with past visits.', 'Visit dates shown.', 'Dates blank: the field is now called visitDate.');
+X('c3', ['e-remind', 'p-profile', 'r-export'], 't2', 'Trigger it for a pet with a visit.', 'Shows the visit date.', 'Date missing.');
+X('c4', ['b-prices', 'b-detail', 'j-night'], 't1', 'Use a Rabbit on it.', 'Rabbit did not exist.', 'Price lookup throws: no case for RABBIT.');
+X('c4', ['p-add', 'p-edit', 'r-rev'], 't2', 'Look for Rabbit in the type list.', 'Six types.', 'Seven types, Rabbit included.');
+X('c6', ['b-detail', 'x-pdf'], 't1', 'Create an invoice whose total ends in .xx5.', '2.345 → 2.35', '2.345 → 2.34');
+X('c6', ['b-inv', 'r-rev', 'd-inv'], 't2', 'Compare new invoices with old ones.', 'Half-up everywhere.', 'Old invoices half-up, new ones half-even.');
+X('c6', ['m-rev'], 'w', 'After deploy, watch daily revenue.', 'Baseline.', 'Can drift by cents per invoice.');
+X('c9', ['d-owners'], 't1', 'Before release, count owners whose telephone is longer than 15.', 'Up to 20 allowed.', 'The migration fails on deploy if any exist.');
+X('c9', ['o-new', 'o-settings'], 't1', 'Enter a 16-character telephone.', 'Saved.', 'Rejected (400).');
+X('c5', ['o-settings', 'o-details'], 't1', 'Open owner settings from Owner details.', 'Opened /edit.', 'Opens /settings; old /edit links 404.');
+X('c5', ['o-find', 'e-inv'], 't2', 'Follow the owner link.', 'Worked.', 'Links still point at /edit: 404.');
+X('c7', ['e-profile'], 't1', 'As a receptionist, press Delete on a vet.', 'Deleted.', '403, but the button is still shown.');
+X('c7', ['e-list'], 't2', 'As a receptionist, delete from the list.', 'Deleted.', '403.');
+X('c8', ['j-remind', 'e-remind'], 't1', 'Book a visit 3 days out; wait for the 07:00 job.', 'Reminder 3 days before.', 'Reminder 1 day before: the old key is no longer read.');
+X('c8', ['a-settings'], 't2', 'Open reminder settings.', 'Shows 3 days.', 'Shows 1 day.');
+X('c12', ['o-details', 'o-new', 'o-settings'], 't2', 'Switch the language to Spanish.', 'Teléfono', 'owner.phone shown as raw key.');
+X('c13', ['k-bill'], 't2', 'Book a visit during the rollout.', 'Billed.', 'Billed; old consumers ignore the new field.');
+X('c14', ['e-list', 'e-profile'], 't2', 'Edit a vet, then reload the list.', 'Updated within 10 minutes.', 'Stale for up to 60 minutes.');
+X('c11', ['o-find', 'e-list', 'b-inv', 'v-history', 'a-audit', 'a-users'], 'w', 'Glance at the striped tables.', 'Grey stripes.', 'New stripe colour.');
+X('c2', ['w-chat'], 't1', 'Through the chat, add a pet with no name.', 'Saved.', 'Still saved if the name is left out.', { hole: true });
+X('c2', ['m-http'], 'w', 'After deploy, watch 4xx rate.', 'Baseline.', 'New 400s from pet creation.');
+BIG.skips = { 'h-home': ['No changed API, component or style reaches it.', 'Home.vue'], 'h-login': ['Auth flow untouched.', 'Login.vue'], 'a-roles': ['Reads roles only.', 'Roles.vue'], 'e-sched': ['Its date field sets its own min.', 'VetSchedule.vue:31 :min="weekStart"'], 'w-search': ['Searches owners and pets by name only.', 'HeaderSearch.vue'], 'd-visits': ['JSON rename only: column visit_date unchanged.', 'Visit.java:27 @Column("visit_date")'] };
+
+/* ===================== state ===================== */
+const DS = { real: REAL, big: BIG };
+let ds = 'big', view = 'map', focusChange = null, sel = null, q = '';
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const RANK = { t1: 3, t2: 2, w: 1 };
+const TIERNAME = { t1: 'Test first', t2: 'Test next', w: 'Watch', s: 'Skip' };
+const COL = { t1: 'var(--t1)', t2: 'var(--t2)', w: 'var(--w)', s: 'var(--skip)' };
+
+function model() {
+  const d = DS[ds];
+  const surf = Object.fromEntries(d.surfaces.map(([id, name, mod, kind, route]) => [id, { id, name, mod, kind, route }]));
+  const bySurf = {}, byChange = {};
+  for (const im of d.impacts) { (bySurf[im.s] ||= []).push(im); (byChange[im.c] ||= []).push(im); }
+  const tierOf = (sid, onlyChange) => {
+    const list = (bySurf[sid] || []).filter((i) => !onlyChange || i.c === onlyChange);
+    if (!list.length) return 's';
+    return list.reduce((a, i) => (RANK[i.t] > RANK[a] ? i.t : a), list[0].t);
+  };
+  const conflictSurf = {};
+  for (const c of d.conflicts) for (const sid of c.s) (conflictSurf[sid] ||= []).push(c.a, c.b);
+  return { d, surf, bySurf, byChange, tierOf, conflictSurf };
+}
+
+/* ===================== render ===================== */
+function render() {
+  const M = model(), d = M.d;
+  $('badge').innerHTML = d.real ? '<span class="badge real">real · verified</span>' : '<span class="badge example">example data · shows scale</span>';
+  $('meta').innerHTML = [d.title, ...d.meta].map((m) => `<span>${esc(m)}</span>`).join('');
+  document.querySelectorAll('.prs button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.ds === ds));
+
+  // verdict
+  const ids = Object.keys(M.surf);
+  const tiers = ids.map((s) => M.tierOf(s));
+  const test = tiers.filter((t) => t === 't1' || t === 't2').length;
+  const watch = tiers.filter((t) => t === 'w').length;
+  const skip = tiers.filter((t) => t === 's').length;
+  const cases = d.impacts.filter((i) => i.t !== 'w').length;
+  const screensT1 = ids.filter((s) => M.surf[s].kind === 'screen' && M.tierOf(s) === 't1').length;
+  $('verdict').innerHTML = `
+    <div class="v-say"><h1>${d.changes.length} changes reach ${test} places to test</h1><p>${screensT1} screens to test first · ${cases} cases · nothing printed until both ledgers balance</p></div>
+    <button class="v-n t" type="button" data-plan="1"><b>${test}</b><span>Test</span><small>${cases} cases</small></button>
+    <div class="v-n"><b>${watch}</b><span>Watch</span><small>after deploy</small></div>
+    <div class="v-n s"><b>${skip}</b><span>Skip</span><small>each with proof</small></div>
+    <div class="v-n c"><b>${d.conflicts.length}</b><span>Conflicts</span><small>between changes</small></div>
+    <div class="v-n u"><b>${d.unseen.length}</b><span>Unseen</span><small>${d.unseen.length ? 'said out loud' : 'nothing hidden'}</small></div>`;
+  $('verdict').querySelector('[data-plan]').addEventListener('click', () => setView('plan'));
+
+  // left
+  $('chgcount').textContent = `${d.changes.length} · sorted by risk`;
+  $('alerts').innerHTML = d.conflicts.map((c, i) => `<button class="alert conf" type="button" data-conf="${i}"><span class="k">Conflict between 2 changes</span><b>${esc(c.title)}</b><p>${esc(c.text)}</p></button>`).join('') +
+    d.unseen.map((u) => `<div class="alert unk"><span class="k">Could not see</span><b>${esc(u.title)}</b><p>${esc(u.text)} <i>${esc(u.fix)}</i></p></div>`).join('');
+  $('alerts').querySelectorAll('[data-conf]').forEach((b) => b.addEventListener('click', () => { const c = d.conflicts[+b.dataset.conf]; focusChange = null; selectSurface(c.s[0], { conflict: c }); }));
+  const ql = q.toLowerCase();
+  const risk = (c) => { const l = M.byChange[c.id] || []; return l.filter((i) => i.t === 't1').length * 100 + l.filter((i) => i.t === 't2').length * 10 + l.length; };
+  const list = [...d.changes].sort((a, b) => risk(b) - risk(a)).filter((c) => !ql || (c.title + c.file + c.kind + (M.byChange[c.id] || []).map((i) => M.surf[i.s].name).join(' ')).toLowerCase().includes(ql));
+  $('changes').innerHTML = `<button class="chg all" type="button" data-c="" aria-pressed="${!focusChange}"><span class="dot" style="background:var(--ink)"></span><b>All changes together</b></button>` +
+    list.map((c) => {
+      const l = M.byChange[c.id] || [];
+      const top = l.length ? l.reduce((a, i) => (RANK[i.t] > RANK[a] ? i.t : a), l[0].t) : 's';
+      const count = (t) => new Set(l.filter((i) => i.t === t).map((i) => i.s)).size;
+      const bar = ['t1', 't2', 'w'].map((t) => count(t) ? `<i style="width:${count(t) * 9}px;background:${COL[t]}"></i>` : '').join('');
+      return `<button class="chg" type="button" data-c="${c.id}" aria-pressed="${focusChange === c.id}"><span class="dot" style="background:${COL[top]}"></span><b>${esc(c.title)}</b><span class="sub"><span class="kind">${esc(c.kind)}</span><span class="file">${esc(c.file)}</span><span>${l.length ? new Set(l.map((i) => i.s)).size + ' reached' : esc(c.none || 'reaches nothing')}</span></span><span class="reach">${bar}</span></button>`;
+    }).join('');
+  $('changes').querySelectorAll('.chg').forEach((b) => b.addEventListener('click', () => { focusChange = b.dataset.c || null; sel = null; render(); if (focusChange) showChange(focusChange); else showOverview(); ping(); }));
+
+  // focus note
+  const fc = d.changes.find((c) => c.id === focusChange);
+  $('focus').innerHTML = fc ? `Showing what <b>${esc(fc.title)}</b> reaches <button type="button" id="clearf">show all changes</button>` : `All ${d.changes.length} changes together · tap a screen for its cases and evidence`;
+  $('clearf')?.addEventListener('click', () => { focusChange = null; render(); showOverview(); });
+
+  // center
+  document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.view === view));
+  if (view === 'map') renderMap(M); else if (view === 'matrix') renderMatrix(M); else renderPlan(M);
+}
+
+function tileHTML(M, s) {
+  const t = M.tierOf(s.id, focusChange);
+  const n = new Set((M.bySurf[s.id] || []).filter((i) => !focusChange || i.c === focusChange).map((i) => i.c)).size;
+  const dim = focusChange && t === 's' ? ' dim' : '';
+  const cls = (t === 's' ? ' skip' : '') + dim + (M.conflictSurf[s.id] && (!focusChange || M.conflictSurf[s.id].includes(focusChange)) ? ' conflict' : '');
+  const right = t === 's' ? '<span class="n">SKIP</span>' : `<span class="n" style="color:${COL[t]}">${n}</span>`;
+  const sub = s.kind === 'screen' ? s.route : `<span class="kindtag">${esc(s.kind)}</span> · ${esc(s.route)}`;
+  return `<button class="tile${cls}" type="button" data-s="${s.id}" aria-pressed="${sel === s.id}" title="${esc(s.name)} · ${TIERNAME[t]}"><span class="bar" style="background:${COL[t]}"></span><span class="nm"><b>${esc(s.name)}</b><span>${sub}</span></span>${right}</button>`;
+}
+function renderMap(M) {
+  const d = M.d;
+  const html = d.modules.map(([mid, mname]) => {
+    const ss = Object.values(M.surf).filter((s) => s.mod === mid);
+    if (!ss.length) return '';
+    const testN = ss.filter((s) => ['t1', 't2'].includes(M.tierOf(s.id, focusChange))).length;
+    const wide = mid === 'beyond' ? ' wide' : '';
+    return `<section class="mod${wide}"><div class="mod-h"><b>${esc(mname)}</b><span>${testN ? testN + ' to test' : 'nothing to test'} · ${ss.length}</span></div><div class="tiles">${ss.map((s) => tileHTML(M, s)).join('')}</div></section>`;
+  }).join('');
+  $('view').innerHTML = `<div class="map">${html}</div>`;
+  bindTiles();
+}
+function renderMatrix(M) {
+  const d = M.d;
+  const cols = d.modules.flatMap(([mid]) => Object.values(M.surf).filter((s) => s.mod === mid));
+  const head = cols.map((s) => `<th scope="col" title="${esc(s.name)}"><div>${esc(s.name)}</div></th>`).join('');
+  const rows = d.changes.map((c) => {
+    const cells = cols.map((s) => {
+      const im = (M.bySurf[s.id] || []).filter((i) => i.c === c.id);
+      if (!im.length) return '<td></td>';
+      const t = im.reduce((a, i) => (RANK[i.t] > RANK[a] ? i.t : a), im[0].t);
+      return `<td style="background:${COL[t]}"><button type="button" data-s="${s.id}" data-c="${c.id}" aria-label="${esc(c.title)} reaches ${esc(s.name)}: ${TIERNAME[t]}"></button></td>`;
+    }).join('');
+    return `<tr class="${focusChange === c.id ? 'hl' : ''}"><th scope="row" title="${esc(c.title)}">${esc(c.title)}</th>${cells}</tr>`;
+  }).join('');
+  $('view').innerHTML = `<div class="mx-wrap"><table class="mx"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table></div><p class="note">Rows are changes, columns are every screen and surface. A row with many cells is a wide change; a column with many cells is a screen several changes meet on, where they can interact.</p>`;
+  $('view').querySelectorAll('td button').forEach((b) => b.addEventListener('click', () => { focusChange = b.dataset.c; selectSurface(b.dataset.s); render(); }));
+}
+function planKey() { return 'teslon-plan-' + ds; }
+function loadDone() { try { return new Set(JSON.parse(localStorage.getItem(planKey()) || '[]')); } catch (e) { return new Set(); } }
+function saveDone(set) { try { localStorage.setItem(planKey(), JSON.stringify([...set])); } catch (e) {} }
+function caseKey(i) { return i.c + '|' + i.s + '|' + i.do; }
+function renderPlan(M) {
+  const d = M.d, done = loadDone();
+  const groups = ['t1', 't2', 'w'];
+  const html = groups.map((t) => {
+    const list = d.impacts.filter((i) => i.t === t && (!focusChange || i.c === focusChange));
+    if (!list.length) return '';
+    return `<div class="plan-g"><span class="chip ${t}">${TIERNAME[t]}</span> ${list.length}</div>` + list.map((i) => {
+      const s = M.surf[i.s], c = d.changes.find((x) => x.id === i.c), k = caseKey(i);
+      return `<label class="case${done.has(k) ? ' done' : ''}"><input type="checkbox" data-k="${esc(k)}" ${done.has(k) ? 'checked' : ''}><span><span class="c-h"><b>${esc(s.name)}</b><span>${esc(s.route)}</span>${i.hole ? '<span class="chip hole">rule hole</span>' : ''}</span><p><span class="chip do">do</span> ${esc(i.do)}</p><p><b>Expect</b> ${esc(i.after)} <span style="color:var(--ink-3)">(before: ${esc(i.before)})</span></p><p style="font-size:11px;color:var(--ink-3)">because ${esc(c.title)} · ${esc(c.file)}</p></span></label>`;
+    }).join('');
+  }).join('');
+  $('view').innerHTML = `<div class="plan">${html}</div>`;
+  $('view').querySelectorAll('input[data-k]').forEach((cb) => cb.addEventListener('change', () => { const s = loadDone(); cb.checked ? s.add(cb.dataset.k) : s.delete(cb.dataset.k); saveDone(s); cb.closest('.case').classList.toggle('done', cb.checked); }));
+}
+function bindTiles() { $('view').querySelectorAll('.tile').forEach((b) => b.addEventListener('click', () => { selectSurface(b.dataset.s); $('view').querySelectorAll('.tile').forEach((x) => x.setAttribute('aria-pressed', x.dataset.s === sel)); })); }
+
+/* ===================== detail ===================== */
+function hopsHTML(list) { return `<ol class="hops${reduce ? '' : ' draw'}">${list.map((h, i) => `<li style="animation-delay:${i * 50}ms"><span class="hb">${esc(h.b)} <span class="chip ${h.p === 'verified' ? 'v' : 'dv'}">${h.p}</span></span><span class="hf">${esc(h.file)}</span><span class="hr">${esc(h.rule)}</span></li>`).join('')}</ol>`; }
+function selectSurface(sid, opts = {}) {
+  sel = sid;
+  const M = model(), d = M.d, s = M.surf[sid];
+  const t = M.tierOf(sid);
+  const list = (M.bySurf[sid] || []);
+  let html = `<div class="d-h"><span class="eyebrow">${esc(d.modules.find((m) => m[0] === s.mod)[1])} · ${esc(s.kind)}</span><h3>${esc(s.name)}</h3><span class="route">${esc(s.route)}</span><span><span class="chip ${t === 's' ? 's' : t}">${TIERNAME[t]}</span> ${list.length ? `<span style="font-size:11.5px;color:var(--ink-3)">${list.length} case${list.length > 1 ? 's' : ''} from ${new Set(list.map((i) => i.c)).size} change${new Set(list.map((i) => i.c)).size > 1 ? 's' : ''}</span>` : ''}</span></div>`;
+  const conf = opts.conflict || d.conflicts.find((c) => c.s.includes(sid));
+  if (conf) html += `<div class="card" style="border:1px solid var(--conf)"><span class="chip conf">conflict between changes</span><b>${esc(conf.title)}</b><p style="margin:0;font-size:12.5px;color:var(--ink-2)">${esc(conf.text)}</p><span class="because">${esc(d.changes.find((c) => c.id === conf.a).file)} × ${esc(d.changes.find((c) => c.id === conf.b).file)}</span></div>`;
+  if (!list.length) {
+    const sk = d.skips[sid] || ['No changed construct reaches it: every call, component and style on it was checked.', '—'];
+    html += `<div class="card"><span><span class="chip s">skip</span> ${sk[2] === 'verified' ? '<span class="chip v">verified</span>' : '<span class="chip dv">derived</span>'}</span><p style="margin:0;font-size:13px">${esc(sk[0])}</p><span class="hf" style="font-family:var(--mono);font-size:11px;color:var(--ink-3)">${esc(sk[1])}</span></div><p class="note">If this screen breaks after the deploy, Teslon was wrong here, and that miss becomes a new rule and a regression case.</p>`;
+  } else {
+    list.sort((a, b) => RANK[b.t] - RANK[a.t]).forEach((i, n) => {
+      const c = d.changes.find((x) => x.id === i.c);
+      const cls = i.hole ? 'h' : i.t === 't1' ? 'a' : i.t === 't2' ? 'a2' : 'aw';
+      html += `<div class="card"><span class="because"><span class="chip ${i.t}">${TIERNAME[i.t]}</span> ${i.hole ? '<span class="chip hole">rule hole</span> ' : ''}because <b>${esc(c.title)}</b></span><span class="do"><span class="chip do">do</span> ${esc(i.do)}</span><div class="dl"><div class="b"><span>−</span><span>${esc(i.before)}</span></div><div class="${cls}"><span>${i.hole ? '=' : '+'}</span><span>${esc(i.after)}</span></div></div><button class="ev-t" type="button" data-ev="${n}">Show evidence · ${c.path.length + (i.hops || [0]).length} hops · ${i.p}</button><div class="ev" data-evb="${n}" hidden>${hopsHTML([...c.path, ...(i.hops || [H('Screen · ' + s.name, s.route, 'where a person meets it')])])}</div></div>`;
+    });
+    if (!d.real) html += `<p class="note">Example data: invented to show how the report scales. Switch to PR #559 for real, verified findings.</p>`;
+  }
+  $('detail').innerHTML = html;
+  $('detail').querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => { const box = $('detail').querySelector(`[data-evb="${b.dataset.ev}"]`); box.hidden = !box.hidden; b.textContent = (box.hidden ? 'Show' : 'Hide') + b.textContent.slice(4); }));
+  const first = $('detail').querySelector('[data-ev]'); if (first) first.click();
+}
+function showChange(cid) {
+  const M = model(), d = M.d, c = d.changes.find((x) => x.id === cid);
+  const l = M.byChange[cid] || [];
+  const ss = [...new Set(l.map((i) => i.s))].map((s) => M.surf[s]).sort((a, b) => RANK[M.tierOf(b.id, cid)] - RANK[M.tierOf(a.id, cid)]);
+  let html = `<div class="d-h"><span class="eyebrow">change · ${esc(c.kind)}</span><h3>${esc(c.title)}</h3><span class="route">${esc(c.file)}</span></div>`;
+  if (!l.length) html += `<div class="card"><span class="chip s">reaches nothing</span><p style="margin:0">${esc(c.none || '')}</p></div>`;
+  else {
+    html += `<div class="card"><span class="eyebrow">How it travels</span>${hopsHTML(c.path)}</div><span class="eyebrow">Reaches ${ss.length}</span><div class="reachlist">${ss.map((s) => { const t = M.tierOf(s.id, cid); return `<button type="button" data-s="${s.id}"><span class="chip ${t}">${TIERNAME[t]}</span><span>${esc(s.name)} <span style="color:var(--ink-3);font-size:11px">${esc(s.route)}</span></span></button>`; }).join('')}</div>`;
+  }
+  $('detail').innerHTML = html;
+  $('detail').querySelectorAll('.reachlist button').forEach((b) => b.addEventListener('click', () => selectSurface(b.dataset.s)));
+}
+function showOverview() {
+  const M = model(), d = M.d;
+  if (d.conflicts.length) return selectSurface(d.conflicts[0].s[0], { conflict: d.conflicts[0] });
+  const firstT1 = Object.keys(M.surf).find((s) => M.tierOf(s) === 't1' && M.surf[s].kind === 'screen');
+  if (firstT1) selectSurface(firstT1);
+}
+function ping() {
+  if (reduce) return;
+  const tiles = [...document.querySelectorAll('.tile:not(.skip):not(.dim)')];
+  tiles.forEach((t, i) => { t.classList.remove('ping'); void t.offsetWidth; t.style.animationDelay = `${i * 28}ms`; t.classList.add('ping'); });
+}
+function setView(v) { view = v; render(); }
+
+/* ===================== wiring ===================== */
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+document.querySelectorAll('.prs button').forEach((b) => b.addEventListener('click', () => { ds = b.dataset.ds; focusChange = null; sel = null; render(); showOverview(); ping(); }));
+$('q').addEventListener('input', (e) => { q = e.target.value; render(); });
+$('copy').addEventListener('click', async () => {
+  const M = model(), d = M.d;
+  const lines = [`${d.title}${d.real ? '' : ' — EXAMPLE DATA'}`, ''];
+  for (const t of ['t1', 't2', 'w']) {
+    const l = d.impacts.filter((i) => i.t === t); if (!l.length) continue;
+    lines.push(TIERNAME[t].toUpperCase());
+    l.forEach((i) => lines.push(`[ ] ${M.surf[i.s].name} — DO: ${i.do} EXPECT: ${i.after}`));
+    lines.push('');
+  }
+  const text = lines.join('\n'), btn = $('copy');
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; } catch (e) { btn.textContent = 'Copy blocked'; }
+  setTimeout(() => (btn.textContent = 'Copy test plan'), 1600);
+});
+render(); showOverview(); ping();
+</script>
