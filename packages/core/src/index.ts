@@ -15,3 +15,4 @@ export * from './history/index.js';
 export * from './resolve/index.js';
 export * from './lang/java/index.js';
 export { listFiles } from './files.js';
+export * from './engine/index.js';

@@ -33,6 +33,8 @@ import {
   NotAGitRepositoryError,
   GitUnavailableError,
   SCHEMA_VERSION,
+  impact,
+  renderText,
 } from '@teslon/core';
 
 const [, , command = 'help', ...argv] = process.argv;
@@ -45,7 +47,7 @@ const [, , command = 'help', ...argv] = process.argv;
  * "--json", and `teslon analyze a.ts --junit out.xml` analysed a file called
  * out.xml. One parser, used by every command, means a flag can go anywhere.
  */
-const VALUED = new Set(['--junit', '--fail-on', '--port']);
+const VALUED = new Set(['--junit', '--fail-on', '--port', '--link']);
 
 function parseArgs(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
@@ -624,6 +626,36 @@ switch (command) {
     break;
   }
 
+  case 'impact': {
+    // The engine: typed behaviour changes, followed to the screens, fields,
+    // data and dashboards that meet them, every cited line re-read at head.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const spec = rest[0];
+    if (!spec) {
+      console.error('usage: teslon impact <base>..<head> | <base> <head>  [--json] [--evidence] [--link <url>=<path>]');
+      process.exitCode = 1;
+      break;
+    }
+    const [base, head] = spec.includes('..') ? spec.split('..') as [string, string] : [spec, rest[1] ?? 'HEAD'];
+    const linked: Record<string, string> = {};
+    const link = parsed.flags.get('--link');
+    if (typeof link === 'string') {
+      const eq = link.lastIndexOf('=');
+      if (eq > 0) linked[link.slice(0, eq)] = link.slice(eq + 1);
+    }
+    try {
+      const report = impact({ repo: root, base: base || 'HEAD~1', head: head || 'HEAD', linked });
+      if (flag('--json')) console.log(JSON.stringify(report, null, 2));
+      else console.log(renderText(report, { evidence: flag('--evidence'), repoName: root.split('/').pop()! }));
+      // evidence that no longer matches the code is a failure, never a warning
+      if (report.verification.failed.length) process.exitCode = 3;
+    } catch (err) {
+      console.error(`\nteslon impact: ${(err as Error).message}\n`);
+      process.exitCode = 2;
+    }
+    break;
+  }
+
   case 'profile': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
     for (const file of rest) {
@@ -855,6 +887,8 @@ switch (command) {
     console.log(`
 teslon — what a change can actually break
 
+  teslon impact <base>..<head> what to test after a change: screens, fields,
+                              data, dashboards, with evidence (--evidence, --json)
   teslon pr [base] [head]     analyse the current branch against its merge base
   teslon analyze <file...>    blast radius for specific files
   teslon profile <file...>    what a file does: endpoint, reads, writes, effects

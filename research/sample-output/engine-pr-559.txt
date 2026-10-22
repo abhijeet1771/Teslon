@@ -1,0 +1,112 @@
+Teslon impact  dc9ca15..1d76b00  spm
+2 behaviour changes · 8 to test · 8 skipped with proof · 2 not visible · evidence 70/70 lines re-read at head
+
+WHAT CHANGED
+ 1. Create pet: now refuses birthDate @PastOrPresent, name @Size(min = 1)
+    POST /api/customer/owners/{ownerId}/pets
+    ✓ rule PetRequest.java:29 · ✓ rule PetRequest.java:30 · ✓ @valid added PetResource.java:58 · ✓ api PetResource.java:55 · ✓ gateway application.yml:36
+ 2. Update pet: now refuses birthDate @PastOrPresent, name @Size(min = 1)
+    PUT /api/customer/owners/*/pets/{petId}
+    ✓ rule PetRequest.java:29 · ✓ rule PetRequest.java:30 · ✓ @valid added PetResource.java:71 · ✓ api PetResource.java:69 · ✓ gateway application.yml:36
+
+TEST FIRST
+ ▸ POST /api/customer/owners/{ownerId}/pets
+   □ birthDate: Send POST /api/customer/owners/{ownerId}/pets with a future date for birthDate.
+       expect HTTP 400.   (before: Accepted (2xx).)
+   □ birthDate: Send POST /api/customer/owners/{ownerId}/pets with birthDate left out.
+       expect Still accepted: @PastOrPresent accepts a missing value.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:29
+   □ name: Send POST /api/customer/owners/{ownerId}/pets with too short a value for name.
+       expect HTTP 400.   (before: Accepted (2xx).)
+   □ name: Send POST /api/customer/owners/{ownerId}/pets with name left out, or only spaces.
+       expect Still accepted: @Size(min = 1) accepts a missing value and counts spaces.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:30
+ ▸ PUT /api/customer/owners/*/pets/{petId}
+   □ birthDate: Send PUT /api/customer/owners/*/pets/{petId} with a future date for birthDate.
+       expect HTTP 400.   (before: Accepted (2xx).)
+   □ birthDate: Send PUT /api/customer/owners/*/pets/{petId} with birthDate left out.
+       expect Still accepted: @PastOrPresent accepts a missing value.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:29
+   □ name: Send PUT /api/customer/owners/*/pets/{petId} with too short a value for name.
+       expect HTTP 400.   (before: Accepted (2xx).)
+   □ name: Send PUT /api/customer/owners/*/pets/{petId} with name left out, or only spaces.
+       expect Still accepted: @Size(min = 1) accepts a missing value and counts spaces.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:30
+ ▸ Add Pet  (/owners/:ownerId/new-pet)
+   □ Pet › Birth date: Enter a date after today, press Submit.
+       expect Rejected (400).   (before: Saved.)
+       because ✓ which field PetFormPage.js:52 → ✓ the field PetFormPage.js:105
+   □ Pet › Birth date: On a machine in a time zone ahead of UTC (India before 05:30 IST), pick today's date, press Submit.
+       expect Rejected: "today" is judged in UTC.   (before: Saved.)
+       because ✓ which field PetFormPage.js:52 → ✓ the field PetFormPage.js:105 → ✓ read as utc PetRequest.java:28
+   – Pet › Name: not affected, required + v-model.trim: the field is emptied on change and the browser blocks submit
+     path: ✓ the page sends it PetFormPage.js:61 → ✓ screen router.js:36 → ✓ then PetFormPage.js:62
+ ▸ Edit Pet  (/owners/:ownerId/pets/:petId)
+   □ Pet › Birth date: Enter a date after today, press Update Pet.
+       expect Rejected (400).   (before: Saved.)
+       because ✓ which field PetFormPage.js:52 → ✓ the field PetFormPage.js:105
+   □ Pet › Birth date: On a machine in a time zone ahead of UTC (India before 05:30 IST), pick today's date, press Update Pet.
+       expect Rejected: "today" is judged in UTC.   (before: Saved.)
+       because ✓ which field PetFormPage.js:52 → ✓ the field PetFormPage.js:105 → ✓ read as utc PetRequest.java:28
+   – Pet › Name: not affected, required + v-model.trim: the field is emptied on change and the browser blocks submit
+     path: ✓ the page sends it PetFormPage.js:61 → ✓ screen router.js:39 → ✓ then PetFormPage.js:62
+ ▸ AI chat (<chat-box>)  (every screen)
+   □ birthDate: Ask the chat to add pet to owner with a future date for birthDate.
+       expect A sentence saying it could not. Risk: an error, because the 400 is not handled.   (before: Done.)
+   □ birthDate: Ask the chat to add pet to owner with birthDate left out.
+       expect Still accepted: @PastOrPresent accepts a missing value.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:29
+   □ name: Ask the chat to add pet to owner with too short a value for name.
+       expect A sentence saying it could not. Risk: an error, because the 400 is not handled.   (before: Done.)
+   □ name: Ask the chat to add pet to owner with name left out, or only spaces.
+       expect Still accepted: @Size(min = 1) accepts a missing value and counts spaces.   (before: Accepted.)   [rule hole]
+       because ✓ rule hole PetRequest.java:30
+     path: ✓ another service calls it AIDataProvider.java:73 → ✓ no error handling AIDataProvider.java:73 → ✓ exposed to an ai model PetclinicTools.java:64 → ✓ called by PetclinicTools.java:71 → ✓ wired into the chat PetclinicChatClient.java:53 → ✓ the chat calls it ChatBox.js:47 → ✓ on every screen RootApp.js:23
+
+TEST NEXT
+ ▸ pets table  pets
+   □ birth_date: Before release, on a read-only copy of production: SELECT id FROM pets WHERE birth_date > CURRENT_DATE;
+       expect Every row returned is a record that can no longer be saved until it is fixed. Seed data breaking it: 0 of 13 rows in db/hsqldb/data.sql; 0 of 13 rows in db/mysql/data.sql.   (before: Old rows could be saved.)
+       because ✓ stored as Pet.java:44
+   – name: not affected, the only screen that sends this blocked such values before this change too; callers outside the repo are under NOT VISIBLE
+ ▸ Owner Information  (/owners/details/:ownerId)
+   □ Pets and Visits › Birth Date: Open a record whose Birth Date already breaks @PastOrPresent, press Edit Pet, save without changing anything.
+       expect Rejected until the value is fixed.   (before: Saved.)
+     path: ✓ stored as Pet.java:44 → ✓ shown here OwnerDetailsPage.js:66 → ✓ the way to edit it OwnerDetailsPage.js:83
+
+WATCH AFTER RELEASE
+ ▸ grafana-petclinic-dashboard  grafana-petclinic-dashboard.json
+   □ HTTP Request Latency: After deploy, watch "HTTP Request Latency".
+       expect It now includes the 400s from POST /api/customer/owners/{ownerId}/pets and PUT /api/customer/owners/*/pets/{petId}.   (before: No 400s from these requests.)
+       because ✓ query grafana-petclinic-dashboard.json:85 → ✓ query grafana-petclinic-dashboard.json:92
+   □ HTTP Request Activity: After deploy, watch "HTTP Request Activity".
+       expect It now includes the 400s from POST /api/customer/owners/{ownerId}/pets and PUT /api/customer/owners/*/pets/{petId}. Its other query (line 181) drops 400s and does not change.   (before: No 400s from these requests.)
+       because ✓ query grafana-petclinic-dashboard.json:173 → ✓ query grafana-petclinic-dashboard.json:181
+   – Pets Created: not affected, @Timed("petclinic.pet") on PetResource records processCreationForm() only when it runs; @Valid rejects before it runs
+   – SPC Business Histogram: not affected, @Timed("petclinic.pet") on PetResource records processCreationForm() only when it runs; @Valid rejects before it runs
+
+SKIP (checked, not affected)
+ – VectorStoreController.loadVetDataToVectorStoreOnStartup(): @EventListener: uses none of PetRequest, Pet  ✓ VectorStoreController.java:49
+ – petclinic_test_plan.jmx: sends values the new rules accept  ✓ petclinic_test_plan.jmx:249
+ – Welcome to Petclinic  (/): calls no API  ✓ router.js:15
+ – Owners  (/owners): calls no changed API: GET /api/customer/owners  ✓ OwnersPage.js:12
+ – Owner  (/owners/:ownerId/edit): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
+ – Visits  (/owners/:ownerId/pets/:petId/visits): calls no changed API: GET /api/visit/owners/{*}/pets/{*}/visits, POST /api/visit/owners/{*}/pets/{*}/visits  ✓ VisitsPage.js:23 ✓ VisitsPage.js:35
+ – Add Owner  (/owners/new): calls no changed API: GET /api/customer/owners/{*}, PUT /api/customer/owners/{*}, POST /api/customer/owners  ✓ OwnerFormPage.js:23 ✓ OwnerFormPage.js:46 ✓ OwnerFormPage.js:49
+ – Veterinarians  (/vets): calls no changed API: GET /api/vet/vets  ✓ VetsPage.js:10
+
+NOT VISIBLE TO TESLON
+ ? callers outside this repository of POST /api/customer/owners/{ownerId}/pets, PUT /api/customer/owners/*/pets/{petId}
+     mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above
+     to close it: check gateway access logs for other callers of these paths
+ ? runtime configuration in https://github.com/spring-petclinic/spring-petclinic-microservices-config
+     the config server serves properties from another repository (application.yml:7); error bodies, time zones and flags may be set there
+     to close it: pass that repository with --link https://github.com/spring-petclinic/spring-petclinic-microservices-config=<path>
+
+LEDGER  3 changed files
+ · explained         spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetRequest.java
+ · explained         spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java
+ · test only         spring-petclinic-customers-service/src/test/java/org/springframework/samples/petclinic/customers/web/PetResourceTest.java
+
+This build models request rules (Bean Validation) end to end. Not modelled yet: response shape changes (fields renamed, removed or retyped in what an API returns); database schema and migrations; messages and events between services; configuration and feature flags; permissions and security rules.
+(time varies)
