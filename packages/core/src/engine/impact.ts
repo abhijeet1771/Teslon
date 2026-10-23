@@ -410,7 +410,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
       const ignores: Hop[] = [];
       for (const p of targets) {
         if (/http_server_requests/.test(p.expr)) {
-          const keeps = eps.some((e) => promKeeps(p.expr, { status: '400', uri: e.path, method: e.verb, outcome: 'CLIENT_ERROR' }));
+          const answers = eps.map((e) => promKeeps(p.expr, { status: '400', uri: e.path, method: e.verb, outcome: 'CLIENT_ERROR' }, 'http_server_requests'));
+          if (answers.some((a) => a === undefined)) { unseen.push({ what: `the query of "${p.title}" (${fileName(p.file)}:${p.line})`, why: 'it does not parse as PromQL, so whether it counts the new 400s is unknown', resolve: 'read the panel by hand' }); continue; }
+          const keeps = answers.some(Boolean);
           (keeps ? counts : ignores).push({ label: 'Query', file: p.file, line: p.line, quote: 'http_server_requests', rule: `${p.expr}: ${keeps ? 'its filter keeps status 400' : 'its filter drops status 400'}` });
           continue;
         }

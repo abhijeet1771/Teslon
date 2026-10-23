@@ -1,12 +1,13 @@
 import ts from 'typescript';
 import type { Snapshot } from './snapshot.js';
+import { readTemplate, readSfc, type TplElement, type TplShow, type TplLink } from './vue-template.js';
 
 /**
  * The browser side of a Vue app: which screen is which route, what each
- * screen draws (headings, fields, buttons, values it shows), and which API
- * calls it makes with what payload. Scripts are read with the TypeScript
- * compiler; templates, which are HTML, with a small tag reader that keeps
- * line numbers.
+ * screen draws (headings, fields, buttons, values it shows, and the conditions
+ * each is drawn under), and which API calls it makes with what payload.
+ * Scripts are read with the TypeScript compiler, templates with Vue's own
+ * parser.
  */
 
 export interface Route { readonly path: string; readonly component: string; readonly file: string; readonly line: number }
@@ -30,25 +31,20 @@ export interface ApiCall {
   readonly code: string;
 }
 
-export interface El {
-  readonly tag: string;
-  readonly line: number;
-  readonly attrs: Readonly<Record<string, string>>;
-  readonly text: string;
-}
+export type El = TplElement;
 
 export interface Component {
   readonly file: string;
   readonly elements: readonly El[];
   /** `{{ … }}` and bound attributes: values the screen shows. */
-  readonly shows: readonly { readonly expr: string; readonly line: number; readonly label: string }[];
+  readonly shows: readonly TplShow[];
   /** `const petId = route.params.petId` */
   readonly routeParams: ReadonlyMap<string, string>;
   /** router.push(...) targets, as templates. */
   readonly pushes: readonly { readonly target: string; readonly line: number }[];
   /** <router-link :to> targets, with the link text. */
-  readonly links: readonly { readonly target: string; readonly line: number; readonly text: string }[];
-  /** Local modules it imports: child components, services, stores. */
+  readonly links: readonly TplLink[];
+  /** Local modules it imports or draws: child components, services, stores, a split SFC's script. */
   readonly deps: readonly string[];
   /** Ways data reaches it that this reader does not follow; a screen with any of these is never ruled out. */
   readonly opaque: readonly { readonly what: string; readonly line: number }[];
@@ -121,33 +117,6 @@ function urlTemplate(e: ts.Expression, consts: ReadonlyMap<string, ts.Expression
   return null;
 }
 
-function readTemplate(text: string, start: number, end: number): { elements: El[]; shows: Component['shows']; links: Component['links'] } {
-  const tpl = text.slice(start, end);
-  const elements: El[] = [];
-  const shows: { expr: string; line: number; label: string }[] = [];
-  const links: { target: string; line: number; text: string }[] = [];
-  const tagRe = /<(input|select|textarea|label|h[1-6]|button|router-link|dt|th|td|dd|div|span|a)\b([^>]*)>/g;
-  for (const m of tpl.matchAll(tagRe)) {
-    const attrs: Record<string, string> = {};
-    for (const a of (m[2] ?? '').matchAll(/([:@\w.#-]+)(?:\s*=\s*"([^"]*)")?/g)) attrs[a[1]!] = a[2] ?? '';
-    const after = tpl.slice(m.index! + m[0].length);
-    const closeAt = after.search(new RegExp(`</${m[1]}>`));
-    const inner = closeAt >= 0 ? after.slice(0, closeAt) : '';
-    const plain = inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    const line = lineAt(text, start + m.index!);
-    if (/^(input|select|textarea|label|h[1-6]|button|dt|th)$/.test(m[1]!)) elements.push({ tag: m[1]!, line, attrs, text: plain.slice(0, 80) });
-    if (m[1] === 'router-link') links.push({ target: attrs[':to'] ?? attrs['to'] ?? '', line, text: plain.slice(0, 60) });
-  }
-  for (const m of tpl.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)) {
-    const line = lineAt(text, start + m.index!);
-    // the label of a value is the nearest <dt>/<th>/<label> above it on the screen
-    const before = tpl.slice(0, m.index!);
-    const lab = [...before.matchAll(/<(?:dt|th|label)[^>]*>([^<]+)</g)].pop()?.[1]?.trim() ?? '';
-    shows.push({ expr: m[1]!.trim(), line, label: lab });
-  }
-  return { elements, shows, links };
-}
-
 export function readVue(snap: Snapshot): FrontendFacts {
   const files = snap.files.filter((f) => /\.(m?js|ts|vue)$/.test(f) && !/(^|\/)(node_modules|dist|build|target|test|tests|__tests__|e2e|cypress)\//.test(f) && !/\.(spec|test|d)\.\w+$/.test(f) && /(src|static|scripts|app|webapp)\//.test(f));
   const fileSet = new Set(files);
@@ -157,6 +126,7 @@ export function readVue(snap: Snapshot): FrontendFacts {
   const registered: { tag: string; file: string }[] = [];
   const roots: { file: string; template: string; line: number }[] = [];
   const foreign = new Map<string, string[]>();
+  const usesByFile = new Map<string, readonly string[]>();
   let vueSeen = files.some((f) => f.endsWith('.vue'));
   const wrappers = new Set<string>();
   for (const f of files) {
@@ -181,18 +151,22 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : null;
     if (other) { if (!foreign.has(other)) foreign.set(other, []); foreign.get(other)!.push(f); continue; }
     if (/from\s+['"]vue['"]|\bVue\.createApp\b|\bnew\s+Vue\(/.test(raw)) vueSeen = true;
-    let text = raw;
+    const text = raw;
     let scriptStart = 0;
     let templateRange: [number, number] | null = null;
+    let scriptSrc: string | null = null;
+    let scriptText = raw;
+    let scriptTs = f.endsWith('.ts');
     if (f.endsWith('.vue')) {
-      const t = /<template[^>]*>([\s\S]*)<\/template>/.exec(raw);
-      if (t) templateRange = [t.index + t[0].indexOf('>') + 1, t.index + t[0].length - '</template>'.length];
-      const s = /<script[^>]*>([\s\S]*?)<\/script>/.exec(raw);
-      scriptStart = s ? s.index + s[0].indexOf('>') + 1 : raw.length;
-      text = raw;
+      const sfc = readSfc(raw);
+      if (sfc.template) templateRange = [sfc.template.start, sfc.template.end];
+      scriptStart = sfc.script ? sfc.script.start : raw.length;
+      scriptText = sfc.script ? sfc.script.content : '';
+      scriptTs = sfc.script?.lang === 'ts' || sfc.script?.lang === 'tsx';
+      // `<script src="./x.component.ts">`: the logic lives in another file, read on its own
+      if (sfc.script?.src) scriptSrc = resolveRel(f, sfc.script.src.startsWith('.') ? sfc.script.src : `./${sfc.script.src}`, fileSet);
     }
-    const scriptText = f.endsWith('.vue') ? raw.slice(scriptStart, raw.indexOf('</script>', scriptStart) >= 0 ? raw.indexOf('</script>', scriptStart) : raw.length) : raw;
-    const sf = ts.createSourceFile(f, scriptText, ts.ScriptTarget.Latest, true, f.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    const sf = ts.createSourceFile(f, scriptText, ts.ScriptTarget.Latest, true, scriptTs ? ts.ScriptKind.TS : ts.ScriptKind.JS);
     const off = f.endsWith('.vue') ? scriptStart : 0;
     const lineOfNode = (n: ts.Node): number => lineAt(text, off + n.getStart(sf));
     const imports = new Map<string, string>();
@@ -311,8 +285,12 @@ export function readVue(snap: Snapshot): FrontendFacts {
     // second pass: variables declared after use (e.g. `url`) are now known
     for (const c of localCalls) calls.push(c);
     const tr = template as { start: number; end: number } | null;
-    const tplInfo = tr ? readTemplate(text, tr.start, tr.end) : { elements: [], shows: [], links: [] };
-    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set(imports.values())], opaque });
+    const tplInfo = tr ? readTemplate(text.slice(tr.start, tr.end), lineAt(text, tr.start) - 1) : { elements: [], shows: [], links: [], uses: [], errors: [] };
+    for (const e of tplInfo.errors.slice(0, 1)) opaque.push({ what: `a template Vue could not fully parse (${e})`, line: tr ? lineAt(text, tr.start) : 1 });
+    // components drawn in the template are part of the screen too, imported or not
+    const drawn = tplInfo.uses.map((tag) => imports.get(tag) ?? imports.get(tag.replace(/(^|-)(\w)/g, (_m, _d, c: string) => c.toUpperCase())) ?? null).filter((x): x is string => !!x);
+    usesByFile.set(f, tplInfo.uses);
+    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set([...imports.values(), ...drawn, ...(scriptSrc ? [scriptSrc] : [])])], opaque });
     if (tr) {
       const tt = text.slice(tr.start, tr.end);
       if (/<router-view/.test(tt)) roots.push({ file: f, template: tt, line: lineAt(text, tr.start) });
@@ -322,6 +300,12 @@ export function readVue(snap: Snapshot): FrontendFacts {
     for (const g of registered) if (g.file.startsWith(`${f}#`)) { const id = g.file.split('#')[1]!; if (imports.has(id)) g.file = imports.get(id)!; }
   }
 
+  for (const [f, tags] of usesByFile) {
+    const comp = components.get(f);
+    if (!comp) continue;
+    const extra = registered.filter((g) => tags.includes(g.tag) && fileSet.has(g.file)).map((g) => g.file);
+    if (extra.length) components.set(f, { ...comp, deps: [...new Set([...comp.deps, ...extra])] });
+  }
   // a registered component drawn beside <router-view> is on every screen
   const globals: Global[] = [];
   for (const g of registered) {

@@ -21,6 +21,11 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@angular/compiler": "^20.3.34",
+    "@lezer/highlight": "^1.2.5",
+    "@lezer/lr": "^1.4.11",
+    "@prometheus-io/lezer-promql": "^0.315.1",
+    "@vue/compiler-dom": "^3.5.44",
     "java-parser": "^3.0.1",
     "typescript": "^5.5.0"
   }

@@ -1,3 +1,4 @@
+import { parser as promql } from '@prometheus-io/lezer-promql';
 import type { Snapshot } from './snapshot.js';
 
 /**
@@ -41,13 +42,47 @@ export function readDashboards(snap: Snapshot): Panel[] {
   return out;
 }
 
-/** Does a PromQL selector's label filter keep a series with these labels? */
-export function promKeeps(expr: string, labels: Readonly<Record<string, string>>): boolean {
-  return [...expr.matchAll(/(\w+)\s*(=~|!~|!=|=)\s*"([^"]*)"/g)].every(([, k, op, v]) => {
-    if (!(k! in labels)) return true;
-    const hit = op!.includes('~') ? new RegExp(`^(?:${v})$`).test(labels[k!]!) : labels[k!] === v;
-    return op!.startsWith('!') ? !hit : hit;
+export interface PromSelector { readonly metric: string; readonly matchers: readonly { readonly label: string; readonly op: string; readonly value: string }[] }
+
+/** The vector selectors in a PromQL expression, read with Prometheus's own grammar. null: it does not parse. */
+export function promSelectors(expr: string): PromSelector[] | null {
+  const tree = promql.parse(expr);
+  let bad = false;
+  const out: PromSelector[] = [];
+  tree.iterate({
+    enter: (n) => {
+      if (n.type.isError) bad = true;
+      if (n.name !== 'VectorSelector') return;
+      const txt = expr.slice(n.from, n.to);
+      const metric = /^[a-zA-Z_:][\w:]*/.exec(txt)?.[0] ?? '';
+      const matchers: { label: string; op: string; value: string }[] = [];
+      n.node.cursor().iterate((m) => {
+        if (m.name !== 'UnquotedLabelMatcher' && m.name !== 'QuotedLabelMatcher') return;
+        const mm = /^\s*"?([\w.]+)"?\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"/.exec(expr.slice(m.from, m.to));
+        if (mm) matchers.push({ label: mm[1]!, op: mm[2]!, value: mm[3]!.replace(/\\(.)/g, '$1') });
+        return false;
+      });
+      // `{__name__="x"}` names the metric too
+      const named = matchers.find((m) => m.label === '__name__' && m.op === '=');
+      out.push({ metric: metric || named?.value || '', matchers: matchers.filter((m) => m.label !== '__name__') });
+    },
   });
+  return bad ? null : out;
+}
+
+/**
+ * Does a query count a series with these labels? True when any selector of
+ * the given metric family keeps it. undefined: the query does not parse.
+ */
+export function promKeeps(expr: string, labels: Readonly<Record<string, string>>, metricPrefix = ''): boolean | undefined {
+  const sels = promSelectors(expr);
+  if (!sels) return undefined;
+  return sels.filter((s) => s.metric.startsWith(metricPrefix)).some((s) => s.matchers.every(({ label, op, value }) => {
+    if (!(label in labels)) return true;
+    let hit: boolean;
+    try { hit = op.includes('~') ? new RegExp(`^(?:${value})$`).test(labels[label]!) : labels[label] === value; } catch { return true; }
+    return op.startsWith('!') ? !hit : hit;
+  }));
 }
 
 /* ---------------- load-test and request plans ---------------- */
