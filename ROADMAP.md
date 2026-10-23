@@ -108,6 +108,26 @@ The new engine is built next to the old one (`packages/core/src/engine/`). The
 CLI switches to it when it beats the old one on the proving ground, never
 before.
 
+## Revision, 2026-10-23: breadth before more depth
+
+Measured on the last 60 spm commits, the engine models a change in 3 of
+them. The other 57 are reported honestly as NOT MODELLED, so nothing is
+missed silently, but a QA lead gets almost nothing from them. The order
+inside stages 3 and 4 changes:
+
+1. First, triage and a "where" layer for every PR: changed method →
+   endpoints → screens, changed front-end file → screens, dependency →
+   modules.
+2. Then the official parsers and an Angular reader.
+3. Then the response-shape delta.
+
+Spikes show what to adopt: the Vue and Angular compilers, the TypeScript
+type checker and lezer-promql. They also show what not to adopt as a source:
+smart-doc, which silently missed the JHipster rename. See
+[`research/ADOPTION.md`](research/ADOPTION.md). The full list of what a QA
+needs, with today's status for each, is in
+[`research/WHAT-TO-TEST.md`](research/WHAT-TO-TEST.md).
+
 ## Implementation order
 
 Six principles decide the order:
