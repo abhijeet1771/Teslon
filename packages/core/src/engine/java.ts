@@ -237,6 +237,13 @@ export function readJavaFile(path: string, src: string): JavaFile {
       }
       if (stop < 0) break;
       const stopT = toks[stop]!.t;
+      // a record's compact constructor: `Name { ... }`, no parameter list
+      if (stopT === '{' && stop === k2 + 1 && toks[k2]?.t === name) {
+        const be = close(toks, stop, '{', '}');
+        methods.push({ name, line: toks[k2]!.line, returnType: '', annotations: manns, params: [], body: toks.slice(stop + 1, be), endLine: toks[be]!.line });
+        j = be + 1;
+        continue;
+      }
       if (stopT === '(') {
         const nameTok = toks[stop - 1]!;
         const pe = close(toks, stop, '(', ')');

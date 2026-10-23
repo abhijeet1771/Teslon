@@ -17,6 +17,8 @@ export interface Endpoint extends Located {
   readonly method: string;
   readonly methodLine: number;
   readonly body: null | { readonly type: string; readonly valid: boolean; readonly line: number };
+  /** The handler's declared return type, as written: `ResponseEntity<List<Pet>>`. */
+  readonly returns: string;
 }
 
 export interface Constraint extends Located { readonly rule: string; readonly name: string }
@@ -53,7 +55,8 @@ export interface JavaCall extends Located {
 
 export interface CallEdge extends Located { readonly from: string; readonly to: string }
 
-export interface Tool extends Located { readonly cls: string; readonly method: string }
+/** A method an AI model can call: `@Tool`, or a `@Bean` function handed to a chat client by name. */
+export interface Tool extends Located { readonly cls: string; readonly method: string; readonly mark: string }
 export interface ToolWiring extends Located { readonly toolsClass: string; readonly holder: string; readonly expr: string }
 export interface Listener extends Located { readonly kind: string; readonly cls: string; readonly method: string; readonly mentions: readonly string[] }
 export interface Timed extends Located { readonly metric: string; readonly cls: string; readonly method?: string }
@@ -75,6 +78,8 @@ export interface SpringFacts {
   readonly gateway: readonly GatewayRoute[];
   readonly gatewayService: string | null;
   readonly configRepos: readonly (Located & { readonly uri: string })[];
+  /** Simple class name → simple names of what it extends or implements. */
+  readonly supertypes: ReadonlyMap<string, readonly string[]>;
   moduleOf(file: string): string;
   serviceOf(file: string): string | null;
   dto(module: string, type: string): Dto | undefined;
@@ -188,7 +193,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
         for (const b of bases) for (const p of mappingPaths(a)) {
           endpoints.push({
             service: serviceOf(file), module: moduleOf(file), verb: verbOf(a), path: joinPath(b, p),
-            file, line: a.line, cls: t.name.split('.').pop()!, method: m.name, methodLine: m.line,
+            file, line: a.line, cls: t.name.split('.').pop()!, method: m.name, methodLine: m.line, returns: m.returnType,
             body: bodyParam ? { type: bodyParam.type, valid: !!hasAnn(bodyParam.annotations, 'Valid', 'Validated'), line: bodyParam.line } : null,
           });
         }
@@ -226,6 +231,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
   const wiring: ToolWiring[] = [];
   const listeners: Listener[] = [];
   const timed: Timed[] = [];
+  const functionRefs: { name: string; holder: string; file: string; line: number; call: string }[] = [];
   const entityNames = new Set(entities.map((e) => e.name));
   for (const { file, t } of allTypes) {
     const cls = t.name.split('.').pop()!;
@@ -253,20 +259,37 @@ export function readSpring(snap: Snapshot): SpringFacts {
     for (const m of t.methods) {
       const mt = hasAnn(m.annotations, 'Timed');
       if (mt && annStrings(mt)[0]) timed.push({ metric: annStrings(mt)[0]!, cls, method: m.name, file, line: mt.line });
-      if (hasAnn(m.annotations, 'Tool')) tools.push({ cls, method: m.name, file, line: hasAnn(m.annotations, 'Tool')!.line });
+      if (hasAnn(m.annotations, 'Tool')) tools.push({ cls, method: m.name, file, line: hasAnn(m.annotations, 'Tool')!.line, mark: 'Tool' });
       const la = m.annotations.find((a) => LISTENERS.has(a.name));
       if (la) {
         const words = new Set(m.body.map((x) => x.t));
         listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e)) });
       }
-      const locals = new Map<string, string>(m.params.map((p) => [p.name, p.type]));
+      const locals = new Map<string, string>(m.params.map((p) => [p.name, p.type.replace(/<.*$/, '')]));
       const body = m.body;
+      const own = new Set(t.methods.map((x) => x.name));
+      const edge = (to: string, line: number): void => { if (to !== `${cls}.${m.name}`) callEdges.push({ from: `${cls}.${m.name}`, to, file, line }); };
       for (let k = 0; k < body.length; k++) {
         const x = body[k]!;
-        // bean calls: field.method(
-        if (/^[a-z]/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(') {
-          const type = ft.get(x.t);
-          if (type && fieldTypes.has(type)) callEdges.push({ from: `${cls}.${m.name}`, to: `${type}.${body[k + 2]!.t}`, file, line: x.line });
+        // local variables: `Type name =` and `Type name;`
+        if (/^[A-Z]\w*$/.test(x.t) && /^[a-z]\w*$/.test(body[k + 1]?.t ?? '') && (body[k + 2]?.t === '=' || body[k + 2]?.t === ';' || body[k + 2]?.t === ':')) locals.set(body[k + 1]!.t, x.t);
+        // bean calls: field.method( and local.method(
+        if (/^[a-z]/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(' && body[k - 1]?.t !== '.') {
+          const type = ft.get(x.t) ?? locals.get(x.t);
+          if (x.t === 'this' && own.has(body[k + 2]!.t)) edge(`${cls}.${body[k + 2]!.t}`, x.line);
+          else if (type && fieldTypes.has(type)) edge(`${type}.${body[k + 2]!.t}`, x.line);
+        }
+        // calls inside the class: helper(…), and to static methods: Other.helper(…)
+        if (/^[a-z]\w*$/.test(x.t) && body[k + 1]?.t === '(' && body[k - 1]?.t !== '.' && body[k - 1]?.t !== 'new' && own.has(x.t)) edge(`${cls}.${x.t}`, x.line);
+        if (/^[A-Z]\w*$/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(' && fieldTypes.has(x.t)) edge(`${x.t}.${body[k + 2]!.t}`, x.line);
+        // method references: this::helper, Type::helper
+        if (body[k + 1]?.t === '::' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '')) {
+          const target = x.t === 'this' ? cls : /^[A-Z]/.test(x.t) && fieldTypes.has(x.t) ? x.t : (ft.get(x.t) ?? locals.get(x.t));
+          if (target) edge(`${target}.${body[k + 2]!.t}`, x.line);
+        }
+        // functions handed to a chat client by bean name: .defaultFunctions("listOwners", …)
+        if ((x.t === 'defaultFunctions' || x.t === 'functions' || x.t === 'toolNames' || x.t === 'defaultToolNames') && body[k - 1]?.t === '.' && body[k + 1]?.t === '(') {
+          for (const arg of callArgs(body, k + 1)) if (/^"/.test(arg[0]?.t ?? '')) functionRefs.push({ name: arg[0]!.t.slice(1, -1), holder: cls, file, line: arg[0]!.line, call: x.t });
         }
         // tools handed to a chat client
         if ((x.t === 'defaultTools' || x.t === 'tools') && body[k - 1]?.t === '.' && body[k + 1]?.t === '(') {
@@ -346,7 +369,19 @@ export function readSpring(snap: Snapshot): SpringFacts {
   }
   const gatewayService = gateway.length ? serviceOf(gateway[0]!.file) : null;
 
-  return { services, javaFiles, unreadable, endpoints, dtos, entities, calls, callEdges, tools, wiring, listeners, timed, gateway, gatewayService, configRepos, moduleOf, serviceOf, dto };
+  // a function named to the chat client is the @Bean method of that name
+  for (const ref of functionRefs) {
+    for (const { file, t } of allTypes) {
+      const m = t.methods.find((x) => x.name === ref.name && hasAnn(x.annotations, 'Bean'));
+      if (!m) continue;
+      const cls = t.name.split('.').pop()!;
+      if (!tools.some((x) => x.cls === cls && x.method === m.name)) tools.push({ cls, method: m.name, file, line: hasAnn(m.annotations, 'Bean')!.line, mark: 'Bean' });
+      wiring.push({ toolsClass: cls, holder: ref.holder, file: ref.file, line: ref.line, expr: `.${ref.call}("${ref.name}")` });
+    }
+  }
+  const supertypes = new Map<string, string[]>();
+  for (const { t } of allTypes) supertypes.set(t.name.split('.').pop()!, t.supertypes.map((x) => x.split('.').pop()!.replace(/<.*$/, '')));
+  return { services, javaFiles, unreadable, endpoints, dtos, entities, calls, callEdges, tools, wiring, listeners, timed, gateway, gatewayService, configRepos, supertypes, moduleOf, serviceOf, dto };
 }
 
 /** Where an external path through the gateway really lands. */

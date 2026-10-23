@@ -16,11 +16,13 @@ export interface Hop {
   readonly quote: string;
   /** The rule that makes this a step: "@Valid enforces every rule on the body". */
   readonly rule: string;
-  /** Set by verification: does the line still say this at head? */
+  /** Which commit the line is read from; head unless the code is gone at head. */
+  readonly side?: 'base';
+  /** Set by verification: does the line still say this at head (or at base, for `side: 'base'`)? */
   verified?: boolean;
 }
 
-export type SurfaceKind = 'screen' | 'widget' | 'api' | 'data' | 'dashboard' | 'job' | 'test-plan';
+export type SurfaceKind = 'screen' | 'widget' | 'api' | 'data' | 'dashboard' | 'job' | 'test-plan' | 'module' | 'deploy';
 
 export interface Surface {
   readonly id: string;
@@ -52,27 +54,62 @@ export interface Case {
   readonly hops: readonly Hop[];
 }
 
+export type DeltaKind =
+  | 'request-rules-enforced' | 'request-rules-relaxed'
+  /** Code that runs changed; where it lands is known, the behaviour change is not typed. */
+  | 'code-changed'
+  /** A screen's own template or script changed. */
+  | 'ui-changed'
+  | 'dependency-changed'
+  | 'deploy-changed';
+
 export interface Delta {
   readonly id: string;
-  readonly kind: 'request-rules-enforced' | 'request-rules-relaxed';
+  readonly kind: DeltaKind;
   readonly title: string;
   readonly endpoint: string;
   readonly rules: readonly { readonly field: string; readonly json: string; readonly rule: string; readonly name: string; readonly file: string; readonly line: number }[];
   readonly causes: readonly Hop[];
 }
 
-export interface Unseen { readonly what: string; readonly why: string; readonly resolve: string }
+export interface Unseen {
+  readonly what: string;
+  readonly why: string;
+  readonly resolve: string;
+  /** Files this covers, when it is about specific code (an unread front end, an unreached method). */
+  readonly files?: readonly string[];
+}
 
 export interface LedgerEntry {
   readonly file: string;
-  readonly status: 'explained' | 'test-only' | 'not-modelled' | 'no-runtime-effect' | 'deleted';
+  /**
+   * explained: a typed delta accounts for every line. followed: the lines were
+   * followed to where they land, but what they do is not typed. not-modelled:
+   * nothing followed these lines.
+   */
+  readonly status: 'explained' | 'followed' | 'test-only' | 'not-modelled' | 'no-runtime-effect' | 'deleted';
+  /** What kind of file this is, and why that status. */
+  readonly kind?: FileKind;
+  readonly reason?: string;
   readonly by: readonly string[];
   /** For not-modelled: the changed lines no rule accounted for. */
   readonly lines: readonly number[];
+  /** For not-modelled: base-side lines removed with nothing in their place, that nothing followed. */
+  readonly removed?: readonly number[];
+}
+
+export type FileKind = 'docs' | 'ci' | 'tooling' | 'test' | 'dependencies' | 'deploy' | 'config' | 'java' | 'frontend' | 'style' | 'data' | 'i18n' | 'other';
+
+export interface Triage {
+  /** Does the PR change anything the running app does? unknown: some lines were not followed. */
+  readonly appEffect: 'none' | 'yes' | 'unknown';
+  readonly summary: string;
+  readonly kinds: Readonly<Partial<Record<FileKind, number>>>;
 }
 
 export interface ImpactReport {
   readonly schema: 'teslon.impact/1';
+  readonly triage: Triage;
   readonly repo: string;
   readonly base: string;
   readonly head: string;

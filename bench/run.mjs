@@ -85,8 +85,12 @@ function scoreNew(c, r) {
   const wrongSkips = missed.filter(skippedAs);
   const flagged = new Set([...r.ledger.filter((l) => l.status === 'not-modelled').map((l) => l.file)]);
   const unseenText = r.unseen.map((u) => `${u.what} ${u.why}`).join('\n');
-  const warned = c.cause.some((f) => flagged.has(f) || unseenText.includes(f.split('/').pop()));
-  const silent = warned ? [] : missed;
+  const unseenFiles = new Set(r.unseen.flatMap((u) => u.files ?? []));
+  // a miss is warned when the change behind it is flagged, or the reader is told the item's own code was not read
+  const causeWarned = c.cause.some((f) => flagged.has(f) || unseenText.includes(f.split('/').pop()));
+  const itemWarned = (t) => causeWarned || (t.files ?? []).some((f) => unseenFiles.has(f));
+  const warned = missed.every(itemWarned);
+  const silent = missed.filter((t) => !itemWarned(t));
   const truthKeys = (t) => (k) => { const [s, f] = k.split('|'); return s === norm(t.id) && (!t.field || !f || same(f, t.field)); };
   const extra = [...claims.keys()].filter((k) => !c.test.some((t) => truthKeys(t)(k)));
   const wrong = c.skip.filter((t) => [...claims.keys()].some((k) => { const [s, f] = k.split('|'); return s === norm(t.id) && (t.field ? same(f, t.field) : true) && !(t.field === undefined && c.test.some((x) => norm(x.id) === s)); }));

@@ -73,12 +73,14 @@ export interface ChangedFile {
   readonly headLines: readonly number[];
   /** 1-based base-side lines that were removed or changed. */
   readonly baseLines: readonly number[];
+  /** Each diff hunk: the base lines it replaces and the head lines it puts in their place. */
+  readonly hunks: readonly { readonly base: readonly number[]; readonly head: readonly number[] }[];
 }
 
 export function changedFiles(repo: string, base: string, head: string): ChangedFile[] {
   const out = git(repo, ['diff', '--no-renames', '-U0', '--no-color', base, head]);
   const files: ChangedFile[] = [];
-  let cur: { path: string; status: ChangedFile['status']; headLines: number[]; baseLines: number[] } | null = null;
+  let cur: { path: string; status: ChangedFile['status']; headLines: number[]; baseLines: number[]; hunks: { base: number[]; head: number[] }[] } | null = null;
   let oldPath = '';
   for (const raw of out.split('\n')) {
     if (raw.startsWith('diff --git ')) {
@@ -86,7 +88,7 @@ export function changedFiles(repo: string, base: string, head: string): ChangedF
       // Binary and mode-only changes have no +++ line; the header still names
       // the file, so it is recorded with no lines rather than dropped.
       const m = / b\/(.*)$/.exec(raw);
-      cur = { path: m?.[1] ?? raw, status: 'modified', headLines: [], baseLines: [] };
+      cur = { path: m?.[1] ?? raw, status: 'modified', headLines: [], baseLines: [], hunks: [] };
       oldPath = '';
       continue;
     }
@@ -104,8 +106,10 @@ export function changedFiles(repo: string, base: string, head: string): ChangedF
     if (h && cur) {
       const bs = Number(h[1]), bc = h[2] === undefined ? 1 : Number(h[2]);
       const hs = Number(h[3]), hc = h[4] === undefined ? 1 : Number(h[4]);
-      for (let i = 0; i < bc; i++) cur.baseLines.push(bs + i);
-      for (let i = 0; i < hc; i++) cur.headLines.push(hs + i);
+      const hunk = { base: [] as number[], head: [] as number[] };
+      for (let i = 0; i < bc; i++) { cur.baseLines.push(bs + i); hunk.base.push(bs + i); }
+      for (let i = 0; i < hc; i++) { cur.headLines.push(hs + i); hunk.head.push(hs + i); }
+      cur.hunks.push(hunk);
     }
   }
   if (cur) files.push(cur);

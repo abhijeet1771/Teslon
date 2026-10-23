@@ -1,4 +1,5 @@
 Teslon impact  dc9ca15..1d76b00  spm
+2 files change the running app.
 2 behaviour changes · 8 to test · 8 skipped with proof · 2 not visible · evidence 70/70 lines re-read at head
 
 WHAT CHANGED
@@ -106,7 +107,7 @@ NOT VISIBLE TO TESLON
 LEDGER  3 changed files
  · explained         spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetRequest.java
  · explained         spring-petclinic-customers-service/src/main/java/org/springframework/samples/petclinic/customers/web/PetResource.java
- · test only         spring-petclinic-customers-service/src/test/java/org/springframework/samples/petclinic/customers/web/PetResourceTest.java
+ · test only         spring-petclinic-customers-service/src/test/java/org/springframework/samples/petclinic/customers/web/PetResourceTest.java  (tests: they check the app, they are not the app)
 
-This build models request rules (Bean Validation) end to end. Not modelled yet: response shape changes (fields renamed, removed or retyped in what an API returns); database schema and migrations; messages and events between services; configuration and feature flags; permissions and security rules.
+Typed end to end: request rules (Bean Validation). Followed to where they run: changed Java methods and types, front-end files, dependencies, deployment files. Not typed yet: what changed code does (it is followed to where it runs, not typed); response shape changes (fields renamed, removed or retyped in what an API returns); database schema and migrations; messages and events between services; configuration keys and feature flags; permissions and security rules; text and translations.
 (time varies)

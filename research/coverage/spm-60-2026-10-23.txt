@@ -1,0 +1,61 @@
+1d76b00 none    test=  0 [] nm=0 | Use dynamic date instead of hardcoded year in future-bi
+a3f9d06 yes     test=  4 [api,screen,widget,dashboard] nm=0 | Add validation to reject future pet birth dates
+1e7ecb8 yes     test=  5 [api,screen,data,dashboard] nm=0 | Pet birthdays cannot be set to a future date
+dc9ca15 unknown test= 13 [screen,api,module] nm=2 (petclinic.css,petclinic.scss) | Migrate from AngularJS to Vue.js for frontend component
+aefaf7f yes     test=  1 [job] nm=0 | Fix GenAI vector store loading from JAR (#564)
+295fa8d yes     test= 20 [api,module] nm=0 | Fix 405 errors from api-gateway by upgrading chaos-monk
+3858f9c none    test=  0 [] nm=0 | Add missing pet not found web test (#545)
+3bc491b yes     test=  3 [deploy] nm=0 | Bump Grafana to 11.4.0 and Prometheus to v3.1.0 (#555)
+f03042b none    test=  0 [] nm=0 | fix(workflows): avoid require('@actions/github') in tri
+305a1f1 none    test=  0 [] nm=0 | ci: bypass PR triage for spring-petclinic org members
+f08e5e4 none    test=  0 [] nm=0 | feat(workflows): enhance PR triage by detecting non-pro
+d518311 none    test=  0 [] nm=0 | feat(workflows): auto-close invalid PRs and enforce PR 
+3e9d6f9 none    test=  0 [] nm=0 | Fix README typos and broken links
+9a76b4e unknown test= 20 [api,module] nm=1 (application.yml) | fix: zipkin tracing
+597ad1f yes     test=  1 [module] nm=0 | Update Spring Boot Admin to 4.0.2
+17cad88 unknown test= 26 [api,job,module,screen] nm=1 (application.yml) | Bump to Spring Cloud 2025.1.0 (aka Oakwood) and Spring 
+e8827d8 none    test=  0 [] nm=0 | Add support for genai-service in image push and tag scr
+bb225dd none    test=  0 [] nm=0 | Update Grafana dashboard URL to port 3030
+2df15ab yes     test=  1 [deploy] nm=0 | Fix port mapping for Grafana service in docker-compose
+b6eaebf yes     test=  1 [deploy] nm=0 | Remove the temporary JAVA_OPTS environment variable for
+a16800b none    test=  0 [] nm=0 | Bump to actions/checkout@v4 and setup-java@v4
+6220cbf unknown test=  0 [] nm=3 (schema.sql,schema.sql,schema.sql) | Update MySQL version to 8.4.5 LTS
+bac5c68 none    test=  0 [] nm=0 | JetBrains support for Open-Source Projects (#304)
+f9fd559 unknown test=  1 [deploy] nm=1 (application.yml) | Externalise the genai-service configuration (#301)
+ce0a734 yes     test= 24 [api,module] nm=0 | Bump to Spring Cloud 2024 and Spring Boot 3.4.1 (#302)
+b9c725f yes     test= 21 [api,job,module] nm=0 | Get rid of Lombok #251 (#300)
+104410a none    test=  0 [] nm=0 | Add "Open with Codeanywhere" badge to README.md (#292)
+79b527a unknown test= 28 [api,job,module,screen,deploy] nm=3 (application.yml,application.yml,logback-spring.xml) | Generative AI support for Spring Petclinic Microservice
+f2c1422 unknown test=  0 [] nm=1 (pom.xml) | Add user friendly error when Java < 17 is used (Issue #
+06a9bac none    test=  0 [] nm=0 | Add  Microservices Overview to readme (#276)
+f154535 none    test=  0 [] nm=0 | Disable Github linguist support for CSS
+50935af none    test=  0 [] nm=0 | Upgrade to Maven 3.9.8 and Maven Wrapper 3.3.2 (#274)
+4aee9a8 unknown test=  3 [api,module,screen] nm=7 (nav.html,owner-details.template.html,owner-form.template.html) | Bootstrap 5 with SCSS migration (#273)
+09172e9 yes     test= 21 [api,module] nm=0 | Bump to Spring Cloud 2023.0.3 and Spring Boot 3.2.7 (#2
+b12e565 none    test=  0 [] nm=0 | Add GitHub Codespaces badge
+5c75862 none    test=  0 [] nm=0 | Add Dev Container configuration (#271)
+d7805f3 unknown test=  3 [api,module,screen] nm=1 (wro.xml) | Bump org.webjars:bootstrap from 3.3.7-1 to 3.4.0 in /sp
+85f8f36 yes     test= 14 [api,module] nm=0 | Bump to Chaos Monkey 3.1.0 (#264)
+9fc2e39 yes     test= 21 [api,module] nm=0 | Bump to Spring Cloud 2023.0.1 and Spring Boot 3.2.4 (#2
+935bd51 yes     test=  1 [deploy] nm=0 | fix docker build on btrfs (#255)
+39f6670 yes     test=  8 [api] nm=0 | Introducing record class to only customer-service to st
+81a1cc0 unknown test=  0 [] nm=1 (pom.xml) | Add shell scripts and documentation to build and push D
+161c6bb none    test=  0 [] nm=0 | Rename master branch to main #167 (#250)
+a538be2 yes     test= 22 [api,module,deploy] nm=0 | Upgrade to Spring Cloud 2023.0.0 (#249)
+159be8f unknown test=  2 [deploy] nm=1 (pom.xml) | Remove dockerize in favor of docker-compose features (#
+850aa93 none    test=  0 [] nm=0 | Docker build with the --load option (#246)
+d07a6ef unknown test=  0 [] nm=2 (pom.xml,pom.xml) | Support for Docker and Podman build on mac silicon (ARM
+453bfe0 yes     test= 14 [api,module] nm=0 | Lombok issue fix with Java 21 (#245)
+a6159bf yes     test= 16 [api,module] nm=0 | Add database observability (#244)
+ec50c28 yes     test= 21 [api,module] nm=0 | Upgrade to Spring Cloud 2022.0.4 and Spring Boot 3.0.9 
+07553f4 yes     test= 17 [api,module] nm=0 | Repair Zipkin Micrometer Tracing (#225)
+652f4d6 yes     test= 21 [api,module] nm=0 | Downgrade to Spring Cloud 2022.0.2 (#233)
+56a8f53 yes     test= 21 [api,module] nm=0 | Upgrade to Spring Boot 3.1.0 and Spring Cloud 2022.0.3 
+99e6e54 yes     test= 21 [api,module] nm=0 | Bump to Spring Cloud 2022.0.1 (#222)
+ec7ea22 none    test=  0 [] nm=0 | Spring Cloud Sleuth has to be migrated to Micrometer Tr
+5786d53 yes     test= 23 [api,module,deploy] nm=0 | Upgrade to Spring Cloud 2022.2, Spring Boot 3 and Java 
+a05f4fb yes     test= 21 [api,module] nm=0 | Bump to Spring Cloud 2021.0.2 and Spring Boot 2.6.7 (#2
+f8d05ba yes     test= 21 [api,module] nm=0 | Spring Cloud 2021.0.1 (#202)
+8685f93 unknown test= 15 [api,data,dashboard] nm=8 (owner-form.template.html,Owner.java,Pet.java) | Refactoring & clean up (#201)
+05007a6 unknown test=  1 [screen] nm=6 (app.js,httpErrorHandlingInterceptor.js,infrastructure.js) | Return to owner details (#195)
+{"tally":{"none":20,"yes":26,"unknown":14},"withSurfaces":36,"failedEvidence":0,"avgMs":1165}

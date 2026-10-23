@@ -46,6 +46,10 @@ export interface Component {
   readonly links: readonly TplLink[];
   /** Local modules it imports or draws: child components, services, stores, a split SFC's script. */
   readonly deps: readonly string[];
+  /** Line of the import (or of the tag that draws it, or of `<script src>`) for each dep. */
+  readonly depLines: Readonly<Record<string, number>>;
+  /** Packages it imports by name: `vue`, `axios`, `chart.js`. */
+  readonly packages: readonly string[];
   /** Ways data reaches it that this reader does not follow; a screen with any of these is never ruled out. */
   readonly opaque: readonly { readonly what: string; readonly line: number }[];
 }
@@ -59,7 +63,7 @@ export interface FrontendFacts {
   readonly globals: readonly Global[];
   readonly files: readonly string[];
   /** Front-end code in a framework this reader does not read, by framework. */
-  readonly unread: readonly { readonly framework: string; readonly files: number; readonly example: string }[];
+  readonly unread: readonly { readonly framework: string; readonly files: number; readonly example: string; readonly paths: readonly string[] }[];
 }
 
 const HTTP_CALL = /^(fetch|axios(\.(get|post|put|patch|delete|request))?|http\.(get|post|put|patch|delete)|\$http\.(get|post|put|patch|delete)|api\.(get|post|put|patch|delete))$/;
@@ -148,7 +152,7 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const raw = snap.read(f);
     if (raw === null) continue;
     // a file of another framework is not read as Vue: its routes and calls work differently
-    const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : null;
+    const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : /\bangular\s*\.\s*module\s*\(/.test(raw) ? 'AngularJS' : null;
     if (other) { if (!foreign.has(other)) foreign.set(other, []); foreign.get(other)!.push(f); continue; }
     if (/from\s+['"]vue['"]|\bVue\.createApp\b|\bnew\s+Vue\(/.test(raw)) vueSeen = true;
     const text = raw;
@@ -170,6 +174,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const off = f.endsWith('.vue') ? scriptStart : 0;
     const lineOfNode = (n: ts.Node): number => lineAt(text, off + n.getStart(sf));
     const imports = new Map<string, string>();
+    const importLine = new Map<string, number>();
+    const packages = new Set<string>();
     const consts = new Map<string, ts.Expression>();
     const routeParams = new Map<string, string>();
     const pushes: { target: string; line: number }[] = [];
@@ -180,7 +186,12 @@ export function readVue(snap: Snapshot): FrontendFacts {
 
     const visit = (n: ts.Node): void => {
       if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
-        const target = resolveRel(f, n.moduleSpecifier.text, fileSet);
+        const spec = n.moduleSpecifier.text;
+        const target = resolveRel(f, spec, fileSet);
+        if (target && !importLine.has(target)) importLine.set(target, lineOfNode(n));
+        if (!spec.startsWith('.') && !spec.startsWith('/')) packages.add(spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]!);
+        // a side-effect import (`import './styles.scss'`) is a dependency too
+        if (target && !n.importClause) imports.set(`#side:${target}`, target);
         const cl = n.importClause;
         if (target && cl) {
           if (cl.name) imports.set(cl.name.text, target);
@@ -290,7 +301,9 @@ export function readVue(snap: Snapshot): FrontendFacts {
     // components drawn in the template are part of the screen too, imported or not
     const drawn = tplInfo.uses.map((tag) => imports.get(tag) ?? imports.get(tag.replace(/(^|-)(\w)/g, (_m, _d, c: string) => c.toUpperCase())) ?? null).filter((x): x is string => !!x);
     usesByFile.set(f, tplInfo.uses);
-    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set([...imports.values(), ...drawn, ...(scriptSrc ? [scriptSrc] : [])])], opaque });
+    const depLines: Record<string, number> = Object.fromEntries(importLine);
+    if (scriptSrc) depLines[scriptSrc] = lineAt(text, scriptStart);
+    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set([...imports.values(), ...drawn, ...(scriptSrc ? [scriptSrc] : [])])], depLines, packages: [...packages], opaque });
     if (tr) {
       const tt = text.slice(tr.start, tr.end);
       if (/<router-view/.test(tt)) roots.push({ file: f, template: tt, line: lineAt(text, tr.start) });
@@ -303,8 +316,11 @@ export function readVue(snap: Snapshot): FrontendFacts {
   for (const [f, tags] of usesByFile) {
     const comp = components.get(f);
     if (!comp) continue;
-    const extra = registered.filter((g) => tags.includes(g.tag) && fileSet.has(g.file)).map((g) => g.file);
-    if (extra.length) components.set(f, { ...comp, deps: [...new Set([...comp.deps, ...extra])] });
+    const extra = registered.filter((g) => tags.includes(g.tag) && fileSet.has(g.file));
+    if (!extra.length) continue;
+    const lines: Record<string, number> = { ...comp.depLines };
+    for (const g of extra) if (!(g.file in lines)) lines[g.file] = comp.elements.find((e) => e.tag === g.tag)?.line ?? 1;
+    components.set(f, { ...comp, deps: [...new Set([...comp.deps, ...extra.map((g) => g.file)])], depLines: lines });
   }
   // a registered component drawn beside <router-view> is on every screen
   const globals: Global[] = [];
@@ -315,7 +331,11 @@ export function readVue(snap: Snapshot): FrontendFacts {
     }
   }
   // without a Vue app, objects shaped like { path, component } are not screens
-  const unread = [...foreign].map(([framework, fs]) => ({ framework, files: fs.length, example: fs[0]! }));
+  const unread = [...foreign].map(([framework, fs]) => {
+    const dirs = new Set(fs.map((f) => f.slice(0, f.lastIndexOf('/') + 1)));
+    const html = snap.files.filter((f) => /\.html?$/.test(f) && dirs.has(f.slice(0, f.lastIndexOf('/') + 1)));
+    return { framework, files: fs.length, example: fs[0]!, paths: [...fs, ...html] };
+  });
   return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component)) : [], calls, components, globals, files, unread };
 }
 

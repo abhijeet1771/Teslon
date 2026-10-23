@@ -47,29 +47,61 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
   const notModelled = r.ledger.filter((l) => l.status === 'not-modelled');
 
   L.push(`Teslon impact  ${r.base.slice(0, 7)}..${r.head.slice(0, 7)}${opts.repoName ? `  ${opts.repoName}` : ''}`);
+  L.push(r.triage.appEffect === 'none' ? `✓ ${r.triage.summary} Nothing to test in the app.` : r.triage.summary);
   L.push(`${r.deltas.length} behaviour change${r.deltas.length === 1 ? '' : 's'} · ${active.length} to test · ${skipped.length} skipped with proof · ${r.unseen.length} not visible · evidence ${ok}/${r.verification.hops} lines re-read at head${r.verification.failed.length ? '  ✗ SOME EVIDENCE FAILED' : ''}`);
   if (notModelled.length) L.push(`⚠ ${notModelled.length} changed file${notModelled.length === 1 ? '' : 's'} with lines no rule explains — see LEDGER`);
   L.push('');
 
   if (!r.deltas.length) {
-    L.push('No behaviour change this build can model was found.');
+    if (r.triage.appEffect !== 'none') L.push('No behaviour change this build can model or follow was found.');
     L.push('');
   } else {
     L.push('WHAT CHANGED');
-    r.deltas.forEach((d, i) => {
+    const typed = r.deltas.filter((d) => d.kind.startsWith('request-rules'));
+    const followed = r.deltas.filter((d) => !d.kind.startsWith('request-rules'));
+    typed.forEach((d, i) => {
       L.push(` ${i + 1}. ${d.title}`);
-      L.push(`    ${d.endpoint}`);
+      if (d.endpoint) L.push(`    ${d.endpoint}`);
       L.push(`    ${d.causes.map((h) => `${mark(h)} ${h.label.toLowerCase()} ${at(h)}`).join(' · ')}`);
     });
+    if (followed.length) {
+      L.push(`${typed.length ? '' : ' '}${typed.length ? ' ' : ''}Followed to where it runs (what it does is not typed):`);
+      for (const d of followed.slice(0, 12)) L.push(`  · ${d.title}${d.causes[0] ? `  ${mark(d.causes[0])} ${at(d.causes[0])}` : ''}`);
+      if (followed.length > 12) L.push(`  · … ${followed.length - 12} more`);
+    }
+    L.push('');
+  }
+
+  // a change that many places run is one regression list, not one block per place
+  const byDelta = new Map<string, Set<string>>();
+  for (const c of r.cases) if (c.tier === 'test-next') { if (!byDelta.has(c.delta)) byDelta.set(c.delta, new Set()); byDelta.get(c.delta)!.add(c.surface); }
+  const broad = new Set([...byDelta].filter(([id, ss]) => ss.size > 4 && !r.deltas.find((d) => d.id === id)?.kind.startsWith('request-rules')).map(([id]) => id));
+  const grouped = (c: Case): boolean => c.tier === 'test-next' && broad.has(c.delta);
+  if (broad.size) {
+    L.push('REGRESSION (changed code that many places run; check each still works)');
+    for (const id of broad) {
+      const d = r.deltas.find((x) => x.id === id);
+      const ss = [...byDelta.get(id)!].map((sid) => r.surfaces.find((x) => x.id === sid)!).filter(Boolean);
+      L.push(` ▸ ${d?.title ?? id}`);
+      for (const [kind, label] of [['screen', 'Screens'], ['widget', 'On every screen'], ['api', 'APIs'], ['job', 'Jobs'], ['module', 'Services']] as const) {
+        const of = ss.filter((x) => x.kind === kind);
+        if (!of.length) continue;
+        const names = of.map((x) => (kind === 'screen' ? `${x.name} (${x.where})` : x.name));
+        L.push(`     ${label} (${of.length}): ${names.slice(0, 12).join(' · ')}${names.length > 12 ? ` · +${names.length - 12}` : ''}`);
+      }
+      const one = r.cases.find((c) => c.delta === id && grouped(c));
+      const eg = one ? one.hops.filter((h) => !causes.has(h)) : [];
+      if (eg.length) L.push(`     path, e.g.: ${short(eg)}`);
+    }
     L.push('');
   }
 
   for (const [tier, title] of TIERS) {
-    const list = active.filter((s) => s.tier === tier);
+    const list = active.filter((s) => s.tier === tier && r.cases.some((c) => c.surface === s.id && !grouped(c)));
     if (!list.length) continue;
     L.push(title);
     for (const s of list) {
-      const cs = r.cases.filter((c) => c.surface === s.id);
+      const cs = r.cases.filter((c) => c.surface === s.id && !grouped(c));
       const run = cs.filter((c) => c.tier !== 'skip');
       const not = cs.filter((c) => c.tier === 'skip');
       L.push(` ▸ ${s.name}${s.kind === 'screen' || s.kind === 'widget' ? `  (${where(s)})` : s.kind === 'api' ? '' : `  ${where(s)}`}`);
@@ -113,11 +145,11 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
 
   L.push(`LEDGER  ${r.ledger.length} changed file${r.ledger.length === 1 ? '' : 's'}`);
   for (const l of r.ledger) {
-    const tag = { explained: 'explained', 'test-only': 'test only', 'not-modelled': 'NOT MODELLED', 'no-runtime-effect': 'no runtime effect', deleted: 'deleted' }[l.status];
-    L.push(` ${l.status === 'not-modelled' ? '!' : '·'} ${tag.padEnd(17)} ${l.file}${l.lines.length ? `  lines ${l.lines.slice(0, 12).join(', ')}${l.lines.length > 12 ? ' …' : ''}` : ''}`);
+    const tag = ({ explained: 'explained', followed: 'followed', 'test-only': 'test only', 'not-modelled': 'NOT MODELLED', 'no-runtime-effect': 'no app effect', deleted: 'deleted' } as const)[l.status];
+    L.push(` ${l.status === 'not-modelled' ? '!' : '·'} ${tag.padEnd(17)} ${l.file}${l.lines.length ? `  lines ${l.lines.slice(0, 12).join(', ')}${l.lines.length > 12 ? ' …' : ''}` : ''}${l.reason && l.status !== 'explained' ? `  (${l.reason})` : ''}`);
   }
   L.push('');
-  L.push(`This build models request rules (Bean Validation) end to end. Not modelled yet: ${r.notModelled.join('; ')}.`);
+  L.push(`Typed end to end: request rules (Bean Validation). Followed to where they run: changed Java methods and types, front-end files, dependencies, deployment files. Not typed yet: ${r.notModelled.join('; ')}.`);
   if (r.verification.failed.length) {
     L.push('');
     L.push('EVIDENCE THAT FAILED RE-READING');

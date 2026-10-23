@@ -2,7 +2,9 @@ import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
 import { readVue, targetsRoute, type Component } from './vue.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
-import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier } from './model.js';
+import { followChanges } from './where.js';
+import { fileKind, noAppEffect } from './kinds.js';
+import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage } from './model.js';
 
 /**
  * The engine. Given two commits, it works out which behaviour changed (typed
@@ -10,8 +12,9 @@ import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier
  * the places a person meets it, says what was checked and ruled out, and
  * re-reads every cited line at head before anything is reported.
  *
- * This build models request rules (Bean Validation, switched on by @Valid) end
- * to end. Every other changed construct is listed as NOT MODELLED in the
+ * Request rules (Bean Validation, switched on by @Valid) are modelled end to
+ * end. Other changed code is followed to the screens, APIs and jobs that run
+ * it (where.ts). Lines nothing followed are listed as NOT MODELLED in the
  * ledger, never left out.
  */
 
@@ -88,6 +91,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const fb = readSpring(B);
   const fh = readSpring(H);
   const ui = readVue(H);
+  const ub = readVue(B);
   const changes = changedFiles(opts.repo, B.ref, H.ref);
 
   const deltas: Delta[] = [];
@@ -96,6 +100,13 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const unseen: Unseen[] = [];
   const explainedLines = new Map<string, Set<number>>();
   const explain = (file: string, line: number): void => { if (!explainedLines.has(file)) explainedLines.set(file, new Set()); explainedLines.get(file)!.add(line); };
+  const followedLines = new Map<string, Set<number>>();
+  const followedBase = new Map<string, Set<number>>();
+  const follow = (file: string, line: number, side?: 'base'): void => {
+    const m = side === 'base' ? followedBase : followedLines;
+    if (!m.has(file)) m.set(file, new Set());
+    m.get(file)!.add(line);
+  };
   const surface = (s: Omit<Surface, 'tier'> & { tier: Tier }): Surface => {
     const cur = surfaces.get(s.id);
     if (!cur) { surfaces.set(s.id, s); return s; }
@@ -122,7 +133,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   };
   const screensUsing = (file: string) => ui.routes.filter((r) => closure(r.component).has(file));
   const addCase = (c: Case): void => {
-    if (cases.some((x) => x.surface === c.surface && x.do === c.do)) return;
+    if (cases.some((x) => x.surface === c.surface && x.delta === c.delta && x.do === c.do)) return;
     cases.push(c);
   };
 
@@ -141,7 +152,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
       const action = e.verb === 'POST' ? 'Create' : e.verb === 'PUT' || e.verb === 'PATCH' ? 'Update' : e.verb;
       const noun = e.body!.type.replace(/(Request|DTO|Dto|Form|Command)$/, '').toLowerCase();
       const causes: Hop[] = [];
-      for (const r of list) causes.push({ label: kind === 'request-rules-enforced' ? 'Rule' : 'Rule removed', file: r.file, line: r.line, quote: r.name, rule: `${r.field.name}: ${r.rule}` });
+      // a removed rule is read where it was: at base
+      for (const r of list) causes.push({ label: kind === 'request-rules-enforced' ? 'Rule' : 'Rule removed', file: r.file, line: r.line, quote: r.name, rule: `${r.field.name}: ${r.rule}`, ...(kind === 'request-rules-relaxed' ? { side: 'base' as const } : {}) });
       const validChanged = !before?.body?.valid && e.body!.valid;
       if (e.body!.valid) causes.push({ label: validChanged ? '@Valid added' : 'Enforced by', file: e.file, line: e.body!.line, quote: 'Valid', rule: validChanged ? '@Valid now enforces every rule on the body, not only the new one' : '@Valid on the request body' });
       causes.push({ label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} in ${e.service}` });
@@ -155,9 +167,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
         causes,
       };
       deltas.push(d);
-      for (const c of causes) explain(c.file, c.line);
+      for (const c of causes) { if (c.side === 'base') follow(c.file, c.line, 'base'); else explain(c.file, c.line); }
       // the field declaration and the @Valid parameter lines are part of the change
-      for (const r of list) explain(r.file, r.field.line);
+      for (const r of list) { if (kind === 'request-rules-relaxed') follow(r.file, r.field.line, 'base'); else explain(r.file, r.field.line); }
       const aid = `api:${d.endpoint}`;
       surface({ id: aid, kind: 'api', name: d.endpoint, where: `${e.service} ${e.verb} ${e.path}`, tier: 'test-first' });
       for (const r of d.rules) {
@@ -170,6 +182,18 @@ export function impact(opts: ImpactOptions): ImpactReport {
       if (kind === 'request-rules-enforced') propagate(d, e);
     }
   }
+
+  /* ---------- 1b. everything else that changed: where it lands ---------- */
+  const touched = new Set<Endpoint>();
+  const noEffectFiles = new Map<string, string>();
+  const touchedUi = new Set<string>();
+  followChanges({
+    B, H, fb, fh, ui, ub, changes, deltas, unseen,
+    surface: (x) => surface(x), addCase, closure,
+    explained: (file, line) => explainedLines.get(file)?.has(line) ?? false,
+    follow, touched, touchedUi,
+    noEffect: (file, reason) => noEffectFiles.set(file, reason),
+  });
 
   function propagate(d: Delta, e: Endpoint): void {
     const writerScreens = new Set<string>();
@@ -246,7 +270,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
               for (const fc of front) {
                 const g = ui.globals.find((x) => x.file === fc.file);
                 const hops: Hop[] = [...d.causes, callHop, ...(handling ? [handling] : []),
-                  { label: 'Exposed to an AI model', file: tool.file, line: tool.line, quote: 'Tool', rule: `${tool.cls}.${tool.method}() is a tool the model can call` },
+                  { label: 'Exposed to an AI model', file: tool.file, line: tool.line, quote: tool.mark, rule: `${tool.cls}.${tool.method}() is a tool the model can call` },
                   ...ch.hops,
                   { label: 'Wired into the chat', file: w.file, line: w.line, quote: w.expr.split('(')[0]!.replace('.', ''), rule: `${w.holder}${w.expr}` },
                   { label: 'The chat calls it', file: fc.file, line: fc.line, quote: callText(fc), rule: `${fc.verbs.join('/')} ${fc.tpl}` }];
@@ -445,14 +469,59 @@ export function impact(opts: ImpactOptions): ImpactReport {
     else unseen.push({ what: `${l.cls}.${l.method}() (${fileName(l.file)}:${l.line})`, why: `a ${l.kind} job uses ${used.join(', ')} without going through the API, so @Valid does not check what it saves; whether it saves values the new rules refuse is not modelled`, resolve: 'read this job by hand' });
   }
 
+  /* ---------- 3. ledger: every changed line accounted for ---------- */
+  const ledger: LedgerEntry[] = [];
+  const kinds: Partial<Record<FileKind, number>> = {};
+  for (const cf of changes) {
+    const kind = fileKind(cf.path);
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+    const none = noAppEffect(kind) ?? noEffectFiles.get(cf.path) ?? null;
+    if (kind === 'test') { ledger.push({ file: cf.path, status: 'test-only', kind, reason: 'tests: they check the app, they are not the app', by: [], lines: [] }); continue; }
+    if (none) { ledger.push({ file: cf.path, status: 'no-runtime-effect', kind, reason: none, by: [], lines: [] }); continue; }
+    const by = deltas.filter((d) => d.causes.some((c) => c.file === cf.path)).map((d) => d.id);
+    if (cf.status === 'deleted') {
+      const followed = touchedUi.has(cf.path) || by.length > 0;
+      ledger.push({ file: cf.path, status: followed ? 'deleted' : 'not-modelled', kind, reason: followed ? 'deleted; the screens that used it are listed' : 'deleted; nothing followed what used it', by, lines: [] });
+      continue;
+    }
+    const ex = explainedLines.get(cf.path) ?? new Set<number>();
+    const fo = followedLines.get(cf.path) ?? new Set<number>();
+    const fob = followedBase.get(cf.path) ?? new Set<number>();
+    const meaningful = (t: string): boolean => !(t === '' || t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#') || t.startsWith('<!--') || /^(import|package)\s/.test(t) || t === '}' || t === '{');
+    const real = cf.headLines.filter((n) => meaningful((H.line(cf.path, n) ?? '').trim()));
+    // lines removed with nothing in their place: removing is a change too
+    const removedReal = cf.hunks.filter((h) => !h.head.some((n) => meaningful((H.line(cf.path, n) ?? '').trim()))).flatMap((h) => h.base).filter((n) => meaningful((B.line(cf.path, n) ?? '').trim()));
+    const left = real.filter((n) => !ex.has(n) && !fo.has(n));
+    const removedLeft = removedReal.filter((n) => !fob.has(n));
+    const anyFollowed = real.some((n) => fo.has(n)) || removedReal.some((n) => fob.has(n));
+    if (!left.length && !removedLeft.length) ledger.push({ file: cf.path, status: real.some((n) => ex.has(n)) && !anyFollowed ? 'explained' : anyFollowed ? 'followed' : by.length ? 'explained' : 'no-runtime-effect', kind, ...(anyFollowed ? { reason: 'followed to where it runs; what it does is not typed' } : !real.length && !removedReal.length ? { reason: 'only blank lines, comments or imports changed' } : {}), by, lines: [] });
+    else ledger.push({ file: cf.path, status: 'not-modelled', kind, reason: removedLeft.length && !left.length ? `lines removed (base ${removedLeft.slice(0, 8).join(', ')}) and nothing followed what used them` : 'nothing followed these lines', by, lines: left, ...(removedLeft.length ? { removed: removedLeft } : {}) });
+  }
+  const unfollowed = ledger.filter((l) => l.status === 'not-modelled');
+  const runtime = ledger.filter((l) => l.status !== 'test-only' && l.status !== 'no-runtime-effect');
+  const triage: Triage = {
+    appEffect: !runtime.length ? 'none' : unfollowed.length ? 'unknown' : 'yes',
+    kinds,
+    summary: !runtime.length
+      ? `No effect on the running app: ${ledger.length} file${ledger.length === 1 ? '' : 's'} (${Object.keys(kinds).join(', ')}).`
+      : `${runtime.length} file${runtime.length === 1 ? '' : 's'} change the running app${unfollowed.length ? `; ${unfollowed.length} not followed (see LEDGER)` : ''}.`,
+  };
+
   /* ---------- 3. screens not reached: a skip only when all of their code was read ---------- */
   const notRuledOut: string[] = [];
+  // a skip says "not affected": only true when every changed line was explained or followed
+  const canSkip = deltas.length > 0 && !unfollowed.length && !surfaces.has('screen:*');
+  const touchedPaths = [...touched].map((e) => ({ e, exp: exposedAs(fh, e) }));
+  const hitsTouched = (c: { tpl: string; verbs: readonly string[] }): boolean => touchedPaths.some(({ e, exp }) => c.verbs.includes(e.verb) && (templateHits(c.tpl, exp ? exp.path : e.path) || templateHits(c.tpl, e.path)));
+  let held = 0;
   for (const r of deltas.length ? ui.routes : []) {
     const id = `screen:${r.path}`;
     if (surfaces.has(id)) continue;
+    if (!canSkip) { held++; continue; }
     const comp = ui.components.get(r.component);
     const files = closure(r.component);
     const own = ui.calls.filter((c) => files.has(c.file));
+    if ([...files].some((f) => touchedUi.has(f)) || own.some(hitsTouched)) { notRuledOut.push(`${r.path} (runs changed code)`); continue; }
     const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
     if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); continue; }
     const ro = readsOnly.get(r.path);
@@ -460,38 +529,24 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const verb = vc ? (new RegExp(`:${vc.param}\\b`).test(r.path) ? vc.ifTrue : vc.ifFalse) : undefined;
     if (ro) { surfaces.set(id, { id, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'skip', reason: 'only reads the changed API', evidence: [ro] }); continue; }
     const read = files.size > 1 ? ` (read ${files.size} files: the screen and what it imports)` : '';
+    const codeToo = deltas.some((d) => d.kind !== 'request-rules-enforced' && d.kind !== 'request-rules-relaxed') ? 'runs none of the changed code and ' : '';
     surfaces.set(id, {
       id, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'skip',
-      reason: own.length ? `calls no changed API: ${own.map((c) => `${c.verbs.join('/')} ${c.tpl}`).join(', ')}${read}` : `calls no API${read}`,
+      reason: own.length ? `${codeToo}calls no changed API: ${own.map((c) => `${c.verbs.join('/')} ${c.tpl}`).join(', ')}${read}` : `${codeToo}calls no API${read}`,
       evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `${r.path} → ${fileName(r.component)}` }],
     });
   }
+  if (held) unseen.push({ what: `${held} screen${held === 1 ? '' : 's'} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no screen can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen' });
   if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'their data goes through code this build does not follow (stores, injected services, URLs built elsewhere)', resolve: 'check these screens by hand' });
-  for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue only, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand` });
+  for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue only, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
 
   /* ---------- 4. what could not be seen ---------- */
-  if (deltas.length) unseen.push({ what: `callers outside this repository of ${[...new Set(deltas.map((d) => d.endpoint))].join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });
+  if (deltas.some((d) => d.endpoint)) unseen.push({ what: `callers outside this repository of ${[...new Set(deltas.map((d) => d.endpoint).filter(Boolean))].join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });
   for (const c of fh.configRepos) {
     const local = opts.linked?.[c.uri];
     if (!local) unseen.push({ what: `runtime configuration in ${c.uri}`, why: `the config server serves properties from another repository (${fileName(c.file)}:${c.line}); error bodies, time zones and flags may be set there`, resolve: `pass that repository with --link ${c.uri}=<path>` });
   }
   for (const u of fh.unreadable) unseen.push({ what: u.file, why: `could not be parsed: ${u.error}`, resolve: 'check this file by hand' });
-
-  /* ---------- 5. ledger: every changed line accounted for ---------- */
-  const ledger: LedgerEntry[] = [];
-  for (const cf of changes) {
-    if (cf.status === 'deleted') { ledger.push({ file: cf.path, status: 'deleted', by: [], lines: [] }); continue; }
-    if (/(^|\/)src\/test\/|(^|\/)(test|tests|__tests__|e2e|cypress)\/|\.(spec|test)\.\w+$/.test(cf.path)) { ledger.push({ file: cf.path, status: 'test-only', by: [], lines: [] }); continue; }
-    const ex = explainedLines.get(cf.path) ?? new Set<number>();
-    const left = cf.headLines.filter((n) => {
-      if (ex.has(n)) return false;
-      const t = (H.line(cf.path, n) ?? '').trim();
-      return !(t === '' || t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || /^import\s/.test(t) || t === '}' || t === '{');
-    });
-    const by = deltas.filter((d) => d.causes.some((c) => c.file === cf.path)).map((d) => d.id);
-    if (!left.length) ledger.push({ file: cf.path, status: by.length ? 'explained' : 'no-runtime-effect', by, lines: [] });
-    else ledger.push({ file: cf.path, status: 'not-modelled', by, lines: left });
-  }
 
   /* ---------- 6. verification: every hop re-read at head ---------- */
   const failed: Hop[] = [];
@@ -499,21 +554,23 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const allHops = [...deltas.flatMap((d) => d.causes), ...cases.flatMap((c) => c.hops), ...[...surfaces.values()].flatMap((s) => s.evidence ?? [])];
   for (const h of new Set(allHops)) {
     count++;
-    const text = H.line(h.file, h.line);
+    const text = (h.side === 'base' ? B : H).line(h.file, h.line);
     h.verified = text !== null && (h.quote === '' || text.includes(h.quote));
     if (!h.verified) failed.push(h);
   }
 
   const notModelled = [
+    'what changed code does (it is followed to where it runs, not typed)',
     'response shape changes (fields renamed, removed or retyped in what an API returns)',
     'database schema and migrations',
     'messages and events between services',
-    'configuration and feature flags',
+    'configuration keys and feature flags',
     'permissions and security rules',
+    'text and translations',
   ];
 
   return {
-    schema: 'teslon.impact/1', repo: opts.repo, base: B.ref, head: H.ref,
+    schema: 'teslon.impact/1', triage, repo: opts.repo, base: B.ref, head: H.ref,
     deltas, surfaces: [...surfaces.values()].sort((a, b) => RANK[b.tier] - RANK[a.tier] || a.id.localeCompare(b.id)),
     cases, unseen, ledger, verification: { hops: count, failed }, notModelled, ms: Date.now() - t0,
   };

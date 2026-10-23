@@ -189,11 +189,10 @@ export default {
 const HEAD = {
   [`${J}/PetForm.java`]: BASE[`${J}/PetForm.java`].replace('import jakarta.validation.constraints.NotBlank;', 'import jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.PastOrPresent;').replace('  private LocalDate birthDate;', '  @PastOrPresent\n  private LocalDate birthDate;'),
   [`${J}/PetController.java`]: BASE[`${J}/PetController.java`].replace('import org.springframework.web.bind.annotation.*;', 'import jakarta.validation.Valid;\nimport org.springframework.web.bind.annotation.*;').replace(/@RequestBody PetForm/g, '@Valid @RequestBody PetForm'),
-  [`${J}/PriceService.java`]: BASE[`${J}/PriceService.java`].replace('0.9', '0.8'),
   'src/test/java/com/acme/pets/PetControllerTest.java': 'package com.acme.pets;\n\nclass PetControllerTest {}\n',
 };
 
-let dir, report, quiet;
+let dir, report, quiet, both;
 test('setup', () => {
   dir = mkdtempSync(join(tmpdir(), 'teslon-engine-'));
   g(dir, 'init', '-q', '-b', 'main'); g(dir, 'config', 'user.email', 't@t'); g(dir, 'config', 'user.name', 'T');
@@ -203,14 +202,19 @@ test('setup', () => {
   put(dir, { [`${J}/PriceService.java`]: BASE[`${J}/PriceService.java`].replace('0.9', '0.7') }); g(dir, 'add', '-A'); g(dir, 'commit', '-qm', 'price');
   report = impact({ repo: dir, base: 'HEAD~2', head: 'HEAD~1', today: '2026-10-22' });
   quiet = impact({ repo: dir, base: 'HEAD~1', head: 'HEAD', today: '2026-10-22' });
+  // both commits together: the typed change plus a line nothing follows
+  both = impact({ repo: dir, base: 'HEAD~2', head: 'HEAD', today: '2026-10-22' });
 });
 
 const surface = (id) => report.surfaces.find((s) => s.id === id);
 const cases = (id) => report.cases.filter((c) => c.surface === id);
 
 test('the change is read as rules now enforced, not as edited lines', () => {
-  assert.deepEqual(report.deltas.map((d) => d.id).sort(), ['enf:POST /api/pets', 'enf:PUT /api/pets/{id}']);
-  for (const d of report.deltas) {
+  const typed = report.deltas.filter((d) => d.kind === 'request-rules-enforced');
+  assert.deepEqual(typed.map((d) => d.id).sort(), ['enf:POST /api/pets', 'enf:PUT /api/pets/{id}']);
+  // every changed line of the two files is explained by the typed change: nothing is "followed" twice
+  assert.deepEqual(report.deltas.filter((d) => d.kind === 'code-changed').map((d) => d.id), []);
+  for (const d of typed) {
     // @Valid switches on the rule that was already there, not only the new one
     assert.deepEqual(d.rules.map((r) => `${r.json} ${r.rule}`).sort(), ['birthDate @PastOrPresent', 'name @NotBlank']);
     assert.ok(d.causes.some((h) => h.label === '@Valid added'));
@@ -294,12 +298,21 @@ test('the ledger accounts for every changed file, and names the lines no rule ex
   assert.equal(byFile['PetForm.java'].status, 'explained');
   assert.equal(byFile['PetController.java'].status, 'explained');
   assert.equal(byFile['PetControllerTest.java'].status, 'test-only');
-  assert.equal(byFile['PriceService.java'].status, 'not-modelled');
-  assert.deepEqual(byFile['PriceService.java'].lines, [5]);
+  const all = Object.fromEntries(both.ledger.map((l) => [l.file.split('/').pop(), l]));
+  assert.equal(all['PriceService.java'].status, 'not-modelled');
+  assert.deepEqual(all['PriceService.java'].lines, [5]);
+  assert.ok(both.unseen.some((u) => /PriceService\.price\(\)/.test(u.what) && u.files.includes(`${J}/PriceService.java`)));
+});
+
+test('a line nothing follows means no screen is ruled out', () => {
+  assert.equal(both.surfaces.filter((s) => s.kind === 'screen' && s.tier === 'skip').length, 0);
+  assert.ok(both.unseen.some((u) => /not reached by what was followed/.test(u.what)));
+  assert.equal(both.triage.appEffect, 'unknown');
+  assert.equal(report.triage.appEffect, 'yes');
 });
 
 test('the text report leads with what to test and flags the unexplained file', () => {
-  const t = renderText(report);
+  const t = renderText(both);
   assert.match(t, /TEST FIRST/);
   assert.match(t, /Edit pet/);
   assert.match(t, /1 changed file with lines no rule explains/);
