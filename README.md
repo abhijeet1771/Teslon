@@ -181,11 +181,11 @@ The first line of every report says which case it was.
 | | |
 |---|---|
 | Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven |
-| Front end | Vue: routes, templates, forms, fields, components, the calls each screen makes. Angular, AngularJS and React code is detected and named under "could not see" until its reader ships |
+| Front end | **Vue**: routes, templates, forms, fields, components, the calls each screen makes. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls. React and AngularJS code is detected and named under "could not see" until its reader ships |
 | Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, `pom.xml`, `package.json`, resources under `src/main/resources` |
 
-The next stacks, in order, are Angular, React / Next.js, Node (Express,
-NestJS), .NET and Python. A stack Teslon does not read yet is reported under
+The next stacks, in order, are React / Next.js, Node (Express, NestJS), .NET
+and Python. A stack Teslon does not read yet is reported under
 "could not see", so it is never silently skipped. See
 [research/DECISIONS-2026-11-03.md](research/DECISIONS-2026-11-03.md) and
 [ROADMAP.md](ROADMAP.md).
@@ -197,10 +197,12 @@ NestJS), .NET and Python. A stack Teslon does not read yet is reported under
   - 20 were correctly "nothing to test in the app";
   - 0 cited lines failed to re-check
   ([research/coverage](research/coverage)).
-- **Bench.** On the labelled bench ([bench/](bench)):
+- **Bench.** On the labelled bench ([bench/results](bench/results)), Spring +
+  Vue and Spring + Angular:
+  - 18 of 18 places found;
   - 0 silent misses;
   - 0 wrong skips;
-  - every miss is named under "could not see".
+  - every cited line re-checked.
 
 ## Layout
 

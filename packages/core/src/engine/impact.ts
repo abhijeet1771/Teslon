@@ -1,6 +1,7 @@
 import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
-import { readVue, targetsRoute, type Component } from './vue.js';
+import { targetsRoute, routeQuote, type Component } from './vue.js';
+import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
 import { followChanges } from './where.js';
 import { fileKind, noAppEffect } from './kinds.js';
@@ -90,8 +91,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const H = snapshot(opts.repo, opts.head);
   const fb = readSpring(B);
   const fh = readSpring(H);
-  const ui = readVue(H);
-  const ub = readVue(B);
+  const ui = readFrontend(H);
+  const ub = readFrontend(B);
   const changes = changedFiles(opts.repo, B.ref, H.ref);
 
   const deltas: Delta[] = [];
@@ -233,7 +234,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
           else if (c.payload?.whole && c.payload.line) hops.push({ label: 'Which field', file: c.file, line: c.payload.line, quote: c.payload.whole.split('.')[0]!, rule: `the whole ${c.payload.whole} is sent, so ${rule.json} is ${c.payload.whole}.${rule.json}` });
           if (el) hops.push({ label: 'The field', file: c.file, line: el.line, quote: model ?? '', rule: g.why });
           const rr = ui.routes.find((x) => x.path === r.path)!;
-          hops.push({ label: 'Screen', file: rr.file, line: rr.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${r.path} → ${fileName(c.file)}` });
+          hops.push({ label: 'Screen', file: rr.file, line: rr.line, quote: routeQuote(rr), rule: `route ${r.path} → ${fileName(c.file)}` });
           const v = tryValue(rule.rule);
           const button = comp ? submitLabel(comp, verb) : 'save';
           if (g.reach === 'no') {
@@ -533,12 +534,12 @@ export function impact(opts: ImpactOptions): ImpactReport {
     surfaces.set(id, {
       id, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'skip',
       reason: own.length ? `${codeToo}calls no changed API: ${own.map((c) => `${c.verbs.join('/')} ${c.tpl}`).join(', ')}${read}` : `${codeToo}calls no API${read}`,
-      evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `${r.path} → ${fileName(r.component)}` }],
+      evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }],
     });
   }
   if (held) unseen.push({ what: `${held} screen${held === 1 ? '' : 's'} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no screen can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen' });
   if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'their data goes through code this build does not follow (stores, injected services, URLs built elsewhere)', resolve: 'check these screens by hand' });
-  for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue only, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
+  for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue and Angular front ends, not ${u.framework} yet, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
 
   /* ---------- 4. what could not be seen ---------- */
   if (deltas.some((d) => d.endpoint)) unseen.push({ what: `callers outside this repository of ${[...new Set(deltas.map((d) => d.endpoint).filter(Boolean))].join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });

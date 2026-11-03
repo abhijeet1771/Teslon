@@ -27,7 +27,32 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   that stops it loading anything. Written by `--out`, or alone with
   `--html`.
 
+- The Angular reader, with Angular's own template parser and the TypeScript
+  compiler. It reads:
+  - routes, including lazy route files (`loadChildren`, `loadComponent`) and
+    `tsconfig` path aliases;
+  - the resolvers and guards a route runs, so a screen whose data comes from
+    a resolver is reached through it;
+  - components drawn by selector, and named outlets (a navbar) as on every
+    screen;
+  - service calls whose URL is built from `this.resourceUrl`, from consts in
+    other files, or from an unresolved base taken as the server root (said
+    on the hop).
+  On the JHipster bench case (a JSON rename on `BankAccount.name`) it finds
+  6 of 6 screens, where it found 0 before. The bench is now 18 of 18, with 0
+  silent misses and 0 wrong skips.
+
+### Fixed
+- A route whose component belongs to another framework was listed as a
+  screen and could be skipped. It is now that framework's, named under
+  "could not see".
+- `.jsx` / `.tsx` files were not noticed at all, so a React front end was
+  missing from "could not see". JSX needs no React import, so the extension
+  is enough.
+
 ### Changed
+- `@angular/compiler` 21.2: it parses arrow functions in templates and still
+  runs on Node 20.
 - `teslon pr`, `merged`, `analyze`, `profile`, `paths`, `cases`, `changed`,
   `java` and `ui` of the first engine moved under `teslon legacy`. The README
   now describes the current product; the old one is

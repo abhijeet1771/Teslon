@@ -1,6 +1,6 @@
 import type { Snapshot, ChangedFile } from './snapshot.js';
 import { exposedAs, templateHits, type SpringFacts, type Endpoint } from './spring.js';
-import { targetsRoute, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
+import { targetsRoute, routeQuote, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
 import type { JType, JMethod } from './java.js';
 import type { Delta, Surface, Case, Hop, Unseen, Tier } from './model.js';
 import { fileKind } from './kinds.js';
@@ -111,8 +111,9 @@ function importChain(ui: FrontendFacts, from: string, to: string): Hop[] | null 
         let cur = to;
         while (cur !== from) {
           const p = prev.get(cur)!;
-          const line = ui.components.get(p)?.depLines[cur] ?? 1;
-          hops.unshift({ label: 'Uses', file: p, line, quote: '', rule: `${fileName(p)} uses ${fileName(cur)}` });
+          const comp = ui.components.get(p);
+          const line = comp?.depLines[cur] ?? 1;
+          hops.unshift({ label: 'Uses', file: comp?.depFiles?.[cur] ?? p, line, quote: '', rule: `${fileName(p)} uses ${fileName(cur)}` });
           cur = p;
         }
         return hops;
@@ -158,7 +159,7 @@ export function followChanges(ctx: WhereCtx): void {
     ctx.touched.add(e);
     n++;
     for (const c of browserCalls(fh, ui, e)) {
-      const callHop: Hop = { label: 'The page calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}` };
+      const callHop: Hop = { label: 'The page calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}${c.baseAssumed ? ' (its base URL is taken as the server root)' : ''}` };
       const global = ui.globals.find((g) => g.file === c.file || ctx.closure(g.file).has(c.file));
       if (global) {
         const sid = `widget:${global.tag}`;
@@ -177,7 +178,7 @@ export function followChanges(ctx: WhereCtx): void {
           surface: sid, delta: deltaId, tier: 'test-next',
           do: write ? `On ${title}, do what sends ${e.verb} ${c.tpl} and check it is saved as before.` : `Open ${title} and check what it shows from ${c.tpl}.`,
           expect: `Works as before: ${why}.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived',
-          hops: [...chain, apiHop, ...gwHop, callHop, ...chainUi, { label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${r.path}` }],
+          hops: [...chain, apiHop, ...gwHop, callHop, ...chainUi, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }],
         });
         n++;
       }
@@ -382,7 +383,7 @@ export function followChanges(ctx: WhereCtx): void {
           const sid = `screen:${rt.path}`;
           const title = screenTitle(ui.components.get(rt.component), rt.path);
           ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
-          ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-first', do: `Open ${title} and use what calls ${c.verbs.join('/')} ${c.tpl}.`, expect: `It still calls ${eb.verb} ${ext}, which was removed: it now fails.`, before: 'Worked.', after: 'Calls an API that is gone.', proof: 'derived', hops: [...chain, apiHop, { label: 'Still calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}` }, { label: 'Screen', file: rt.file, line: rt.line, quote: rt.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${rt.path}` }] });
+          ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-first', do: `Open ${title} and use what calls ${c.verbs.join('/')} ${c.tpl}.`, expect: `It still calls ${eb.verb} ${ext}, which was removed: it now fails.`, before: 'Worked.', after: 'Calls an API that is gone.', proof: 'derived', hops: [...chain, apiHop, { label: 'Still calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}` }, { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }] });
           n++;
         }
       }
@@ -480,14 +481,14 @@ export function followChanges(ctx: WhereCtx): void {
     for (const r of defined) {
       const sid = `screen:${r.path}`;
       ctx.surface({ id: sid, kind: 'screen', name: screenTitle(u.components.get(r.component), r.path), where: r.path, tier: 'test-first' });
-      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${r.path} directly and by every link to it.`, expect: 'The route and the screen it shows are as the change intends.', before: 'As released.', after: 'Route changed.', proof: 'derived', hops: [{ label: 'Route changed', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${r.path} → ${fileName(r.component)}` }] });
+      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${r.path} directly and by every link to it.`, expect: 'The route and the screen it shows are as the change intends.', before: 'As released.', after: 'Route changed.', proof: 'derived', hops: [{ label: 'Route changed', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path} → ${fileName(r.component)}` }] });
       reached++;
     }
     if (atHead) for (const rb of ub.routes.filter((r: Route) => r.file === cf.path && !ui.routes.some((x) => x.path === r.path))) {
       const sid = `screen:${rb.path}`;
       ctx.surface({ id: sid, kind: 'screen', name: `${rb.path} (route removed)`, where: rb.path, tier: 'test-first' });
       const linkers = [...ui.components.values()].flatMap((c) => [...c.links, ...c.pushes].filter((l) => targetsRoute(l.target, rb.path)).map((l) => ({ c, line: l.line })));
-      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${rb.path} and follow every link that led to it${linkers.length ? ` (${linkers.slice(0, 3).map((l) => `${fileName(l.c.file)}:${l.line}`).join(', ')})` : ''}.`, expect: 'The route is gone: links to it must be gone or point elsewhere.', before: 'Opened a screen.', after: 'Route removed.', proof: 'derived', hops: [{ label: 'Route removed', file: rb.file, line: rb.line, quote: rb.path.split('/').filter(Boolean)[0] ?? "'/'", side: 'base', rule: `route ${rb.path} existed at base` }] });
+      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${rb.path} and follow every link that led to it${linkers.length ? ` (${linkers.slice(0, 3).map((l) => `${fileName(l.c.file)}:${l.line}`).join(', ')})` : ''}.`, expect: 'The route is gone: links to it must be gone or point elsewhere.', before: 'Opened a screen.', after: 'Route removed.', proof: 'derived', hops: [{ label: 'Route removed', file: rb.file, line: rb.line, quote: routeQuote(rb), side: 'base', rule: `route ${rb.path} existed at base` }] });
       reached++;
     }
     if (screens === null) {
@@ -505,7 +506,7 @@ export function followChanges(ctx: WhereCtx): void {
         const tier: Tier = own ? 'test-first' : 'test-next';
         ctx.surface({ id: sid, kind: 'screen', name: title, where: r.path, tier });
         const via = targets.map((t) => importChain(u, r.component, t)).find((x) => x) ?? [];
-        ctx.addCase({ surface: sid, delta: id, tier, do: `Open ${title} and check ${what}.`, expect: own ? 'Shows and works as the change intends.' : `Works as before: it runs ${fileName(cf.path)}, which changed.`, before: 'As released.', after: own ? 'Changed.' : 'Runs changed code.', proof: 'derived', hops: atHead ? [changedHop, ...via, { label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${r.path}` }] : [changedHop] });
+        ctx.addCase({ surface: sid, delta: id, tier, do: `Open ${title} and check ${what}.`, expect: own ? 'Shows and works as the change intends.' : `Works as before: it runs ${fileName(cf.path)}, which changed.`, before: 'As released.', after: own ? 'Changed.' : 'Runs changed code.', proof: 'derived', hops: atHead ? [changedHop, ...via, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }] : [changedHop] });
         reached++;
       }
     }
@@ -683,7 +684,7 @@ function followPackageJson(ctx: WhereCtx, cf: ChangedFile): void {
       const sid = `screen:${r.path}`;
       ctx.surface({ id: sid, kind: 'screen', name: screenTitle(ctx.ui.components.get(r.component), r.path), where: r.path, tier: 'test-next' });
       const importAt = (ctx.H.read(user.file) ?? '').split('\n').findIndex((l) => /^\s*import\b/.test(l) && (l.includes(`'${m.name}`) || l.includes(`"${m.name}`))) + 1;
-      ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Use the parts of this screen drawn with ${m.name}.`, expect: 'Works as before.', before: 'As released.', after: `${m.name} ${m.from} → ${m.to}.`, proof: 'derived', hops: [...hops.filter((h) => h.rule.startsWith(m.name)), { label: 'Imports it', file: user.file, line: importAt || 1, quote: importAt ? m.name : '', rule: `${fileName(user.file)} imports ${m.name}` }, { label: 'Screen', file: r.file, line: r.line, quote: r.path.split('/').filter(Boolean)[0] ?? "'/'", rule: `route ${r.path}` }] });
+      ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Use the parts of this screen drawn with ${m.name}.`, expect: 'Works as before.', before: 'As released.', after: `${m.name} ${m.from} → ${m.to}.`, proof: 'derived', hops: [...hops.filter((h) => h.rule.startsWith(m.name)), { label: 'Imports it', file: user.file, line: importAt || 1, quote: importAt ? m.name : '', rule: `${fileName(user.file)} imports ${m.name}` }, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }] });
     }
   }
   ctx.deltas.push({ id, kind: 'dependency-changed', title: `${cf.path}: ${list}`, endpoint: '', rules: [], causes: hops.slice(0, 1) });

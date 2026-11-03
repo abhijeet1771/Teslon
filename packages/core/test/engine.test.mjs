@@ -174,8 +174,9 @@ export default {
   // through a home-made wrapper: the wrapper passes its parameter to fetch, so its callers are the calls
   'frontend/src/client.js': 'export async function request(url, options = {}) {\n  const res = await fetch(url, options);\n  return res.json();\n}\n',
   'frontend/src/views/Help.vue': "<template><div><h2>Help</h2></div></template>\n<script>\nimport { request } from '../client.js';\nexport default {\n  async mounted() { this.items = await request('/api/help'); },\n};\n</script>\n",
-  // another framework in the same repo is not read as Vue
-  'frontend/src/legacy/app.routes.ts': "import { Routes } from '@angular/router';\nimport { LegacyComponent } from './legacy.component';\n\nexport const routes: Routes = [{ path: 'legacy', component: LegacyComponent }];\n",
+  // another framework in the same repo is not read as Vue; JSX needs no React import to be React
+  'frontend/src/legacy/App.jsx': "export function App() {\n  return <h1>Legacy</h1>;\n}\n",
+  'frontend/src/legacy/routes.js': "import { App } from './App.jsx';\n\nexport const routes = [{ path: 'legacy', component: App }];\n",
   'ops/dashboards/app.json': JSON.stringify({
     title: 'Shop',
     panels: [
@@ -279,7 +280,7 @@ test('a screen is ruled out only when all of its code was read', () => {
 
 test('another framework in the repo is named as unread, never listed as screens', () => {
   assert.equal(surface('screen:legacy'), undefined);
-  assert.ok(report.unseen.some((u) => /Angular front end \(1 file,/.test(u.what)));
+  assert.ok(report.unseen.some((u) => /React front end \(1 file, e\.g\. frontend\/src\/legacy\/App\.jsx/.test(u.what)));
 });
 
 test('with nothing modelled, nothing is ruled out: no skips, and the ledger says what was not followed', () => {

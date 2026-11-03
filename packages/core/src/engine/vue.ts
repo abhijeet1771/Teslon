@@ -10,7 +10,17 @@ import { readTemplate, readSfc, type TplElement, type TplShow, type TplLink } fr
  * parser.
  */
 
-export interface Route { readonly path: string; readonly component: string; readonly file: string; readonly line: number }
+export interface Route {
+  readonly path: string;
+  readonly component: string;
+  readonly file: string;
+  readonly line: number;
+  /** Text on that line that names the route, when the full path is not written there (a child route file). */
+  readonly quote?: string;
+}
+
+/** What the route's line must say, for its hop to re-check. */
+export const routeQuote = (r: Route): string => r.quote ?? r.path.split('/').filter(Boolean)[0] ?? "'/'";
 
 export interface Payload {
   readonly name: string;
@@ -29,6 +39,10 @@ export interface ApiCall {
   readonly verbChoice?: { readonly param: string; readonly ifTrue: string; readonly ifFalse: string; readonly line: number };
   readonly payload?: Payload;
   readonly code: string;
+  /** The response type the code declares: `http.get<IBankAccount>(…)`. */
+  readonly resultType?: string;
+  /** The URL starts with a base this reader cannot resolve (`${SERVER_API_URL}api/x`); taken as the server root. */
+  readonly baseAssumed?: boolean;
 }
 
 export type El = TplElement;
@@ -48,6 +62,8 @@ export interface Component {
   readonly deps: readonly string[];
   /** Line of the import (or of the tag that draws it, or of `<script src>`) for each dep. */
   readonly depLines: Readonly<Record<string, number>>;
+  /** The file that line is in, when it is not the component's own (a route's resolver, in the routes file). */
+  readonly depFiles?: Readonly<Record<string, string>>;
   /** Packages it imports by name: `vue`, `axios`, `chart.js`. */
   readonly packages: readonly string[];
   /** Ways data reaches it that this reader does not follow; a screen with any of these is never ruled out. */
@@ -122,7 +138,7 @@ function urlTemplate(e: ts.Expression, consts: ReadonlyMap<string, ts.Expression
 }
 
 export function readVue(snap: Snapshot): FrontendFacts {
-  const files = snap.files.filter((f) => /\.(m?js|ts|vue)$/.test(f) && !/(^|\/)(node_modules|dist|build|target|test|tests|__tests__|e2e|cypress)\//.test(f) && !/\.(spec|test|d)\.\w+$/.test(f) && /(src|static|scripts|app|webapp)\//.test(f));
+  const files = snap.files.filter((f) => /\.(m?js|ts|vue|jsx|tsx)$/.test(f) && !/(^|\/)(node_modules|dist|build|target|test|tests|__tests__|e2e|cypress)\//.test(f) && !/\.(spec|test|d)\.\w+$/.test(f) && /(src|static|scripts|app|webapp)\//.test(f));
   const fileSet = new Set(files);
   const routes: Route[] = [];
   const calls: ApiCall[] = [];
@@ -152,7 +168,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const raw = snap.read(f);
     if (raw === null) continue;
     // a file of another framework is not read as Vue: its routes and calls work differently
-    const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : /\bangular\s*\.\s*module\s*\(/.test(raw) ? 'AngularJS' : null;
+    // JSX needs no import of React any more, so the extension alone says it is not Vue
+    const other = /from\s+['"]@angular\//.test(raw) ? 'Angular' : /from\s+['"]react(?:-dom)?['"]/.test(raw) || /\.(jsx|tsx)$/.test(f) ? 'React' : /from\s+['"]svelte/.test(raw) ? 'Svelte' : /\bangular\s*\.\s*module\s*\(/.test(raw) ? 'AngularJS' : null;
     if (other) { if (!foreign.has(other)) foreign.set(other, []); foreign.get(other)!.push(f); continue; }
     if (/from\s+['"]vue['"]|\bVue\.createApp\b|\bnew\s+Vue\(/.test(raw)) vueSeen = true;
     const text = raw;
@@ -336,7 +353,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const html = snap.files.filter((f) => /\.html?$/.test(f) && dirs.has(f.slice(0, f.lastIndexOf('/') + 1)));
     return { framework, files: fs.length, example: fs[0]!, paths: [...fs, ...html] };
   });
-  return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component)) : [], calls, components, globals, files, unread };
+  // a route is a screen only when its component was read here: one drawn by another framework is that framework's (named as unread)
+  return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component) && components.has(r.component)) : [], calls, components, globals, files, unread };
 }
 
 /** Does a link or push target land on this route path? */

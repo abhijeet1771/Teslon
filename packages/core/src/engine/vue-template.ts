@@ -21,6 +21,8 @@ export interface TplElement {
   readonly on: Readonly<Record<string, string>>;
   /** Inside `v-for`, outermost first: `pet in owner.pets`. */
   readonly loops: readonly string[];
+  /** The template file, when it is not the component's own file (Angular `templateUrl`). */
+  readonly file?: string;
 }
 
 export interface TplShow { readonly expr: string; readonly line: number; readonly label: string; readonly when: readonly string[] }

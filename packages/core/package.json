@@ -21,7 +21,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@angular/compiler": "^20.3.34",
+    "@angular/compiler": "^21.2.24",
     "@lezer/highlight": "^1.2.5",
     "@lezer/lr": "^1.4.11",
     "@prometheus-io/lezer-promql": "^0.315.1",
