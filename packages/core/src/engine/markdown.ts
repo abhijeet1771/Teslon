@@ -94,9 +94,9 @@ export function broadDeltas(r: ImpactReport): Map<string, Set<string>> {
   return new Map([...byDelta].filter(([id, ss]) => ss.size > 4 && !r.deltas.find((d) => d.id === id)?.kind.startsWith('request-rules')));
 }
 
-interface Counts { places: number; cases: number }
+export interface Counts { places: number; cases: number }
 
-function counts(r: ImpactReport): Record<Tier | 'unseen', Counts> {
+export function counts(r: ImpactReport): Record<Tier | 'unseen', Counts> {
   const out = { 'test-first': { places: 0, cases: 0 }, 'test-next': { places: 0, cases: 0 }, watch: { places: 0, cases: 0 }, skip: { places: 0, cases: 0 }, unseen: { places: r.unseen.length, cases: 0 } };
   for (const s of r.surfaces) out[s.tier].places++;
   for (const c of r.cases) if (c.tier !== 'skip') out[c.tier].cases++;
@@ -104,7 +104,7 @@ function counts(r: ImpactReport): Record<Tier | 'unseen', Counts> {
 }
 
 /** The cases to run first: one per place, riskiest first. */
-function startHere(r: ImpactReport, n: number): { s: Surface; c: Case }[] {
+export function startHere(r: ImpactReport, n: number): { s: Surface; c: Case }[] {
   const order = KIND_ORDER;
   const rank: Record<Tier, number> = { 'test-first': 0, 'test-next': 1, watch: 2, skip: 3 };
   const picks: { s: Surface; c: Case }[] = [];

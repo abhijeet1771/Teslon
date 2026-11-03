@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
-import { prRange, impact, renderComment, renderSummary, COMMENT_MARKER } from '../dist/index.js';
+import { prRange, impact, renderComment, renderSummary, renderHtml, COMMENT_MARKER } from '../dist/index.js';
 import { esc, code } from '../dist/engine/markdown.js';
 
 /**
@@ -202,5 +202,46 @@ test('repository text cannot inject markup, and a huge report is cut at a line w
     assert.match(s, /cut to fit the summary page/);
     assert.equal((s.match(/<details>/g) ?? []).length, (s.match(/<\/details>/g) ?? []).length);
     assert.ok(renderComment(big, meta).length < 60_000);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('the cockpit is one offline file: complete without its script, nothing loaded from anywhere, repository text inert', () => {
+  const d = init('teslon-pr-html-');
+  try {
+    put(d, {
+      'src/main/resources/application.yml': 'spring:\n  application:\n    name: things\n',
+      'src/main/java/a/Thing.java': 'package a;\n\npublic class Thing {\n  @jakarta.validation.constraints.NotBlank\n  private String name;\n}\n',
+      'src/main/java/a/C.java': ctl(false),
+    });
+    const base = commit(d, 'app', {});
+    const head = commit(d, 'valid', { 'src/main/java/a/C.java': ctl(true) });
+    const r = impact({ repo: d, base, head });
+    const meta = { number: 7, title: 'Validate </script><script>alert(1)</script> things', baseRef: 'main', state: 'open', how: 'open', repoUrl: 'https://github.com/acme/things', version: 't' };
+    const h = renderHtml(r, meta);
+
+    assert.match(h, /^<!doctype html>\n<html lang="en">/);
+    assert.match(h, /Content-Security-Policy" content="default-src 'none'/);
+    // nothing fetched: the only URLs are links a person clicks, to their own repository
+    assert.doesNotMatch(h, /<(script|link|img|iframe)[^>]+(src|href)="https?:/i);
+    assert.doesNotMatch(h, /@import|url\(/);
+    for (const m of h.matchAll(/href="(https?:[^"]+)"/g)) assert.ok(m[1].startsWith('https://github.com/acme/things/'), m[1]);
+    // the title is escaped in markup, and the data block cannot be closed from inside
+    assert.equal((h.match(/<script>alert\(1\)/g) ?? []).length, 0);
+    const data = /<script type="application\/json" id="teslon-data">(.*?)<\/script>/s.exec(h);
+    assert.ok(data, 'data block present');
+    assert.doesNotMatch(data[1], /</);
+    const parsed = JSON.parse(data[1]);
+    assert.equal(parsed.head, head);
+    assert.ok(parsed.cases.length >= 1);
+    // static and complete: the case, its proof, and a Pass/Fail per case are in the markup
+    assert.match(h, /id="test-first"/);
+    assert.match(h, /<span class="lbl">Do<\/span>Send POST \/things/);
+    assert.equal((h.match(/<button type="button" data-v="pass"/g) ?? []).length, parsed.cases.length);
+    assert.match(h, new RegExp(`href="https://github\\.com/acme/things/blob/${head}/src/main/java/a/C\\.java#L\\d+"`));
+    assert.match(h, /id="ledger"/);
+
+    const frag = renderHtml(r, meta, { fragment: true });
+    assert.doesNotMatch(frag, /<!doctype|<html|<body/i);
+    assert.match(frag, /^<title>PR #7 test brief<\/title>/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

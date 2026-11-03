@@ -12,3 +12,4 @@ export type {
 } from './model.js';
 export { prRange, type PrRange } from './pr-range.js';
 export { renderComment, renderSummary, COMMENT_MARKER, type PrMeta } from './markdown.js';
+export { renderHtml, type HtmlOptions } from './html.js';

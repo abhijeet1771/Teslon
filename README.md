@@ -48,7 +48,15 @@ The run's **summary page** has the full brief:
 - the safe-to-skip table with proof;
 - every changed file, accounted for.
 
-The same files are kept as a run artifact.
+The run artifact holds **`report.html`**, the cockpit, as one offline file.
+It has:
+- "Start here" and the verdict;
+- the test plan grouped by screen;
+- Pass / Fail on every case, kept in that browser for that commit;
+- an estimate from your minutes per case;
+- "Copy checklist" and "Copy as CSV".
+
+It loads nothing from the network.
 
 ## Set it up (GitHub Actions)
 
@@ -105,7 +113,7 @@ npm ci && npm run build
 
 cd ~/code/your-app                     # a clone with history
 node ~/teslon/packages/cli/dist/cli.js pr 559              # or a PR URL
-node ~/teslon/packages/cli/dist/cli.js pr 559 --out ./teslon-559   # comment.md, summary.md, report.json
+node ~/teslon/packages/cli/dist/cli.js pr 559 --out ./teslon-559   # open teslon-559/report.html
 ```
 
 With `GITHUB_TOKEN` set, it reads the PR's title and base branch, and
@@ -118,7 +126,8 @@ With `GITHUB_TOKEN` set, it reads the PR's title and base branch, and
 
 | Flag | |
 |---|---|
-| `--out <dir>` | write `comment.md`, `summary.md`, `report.json`, `report.txt` |
+| `--out <dir>` | write `report.html` (the cockpit), `comment.md`, `summary.md`, `report.json`, `report.txt` |
+| `--html <file>` | write just the cockpit |
 | `--comment` | post or update the one Teslon comment on the PR |
 | `--summary` | append the brief to the GitHub Actions run summary |
 | `--base <branch>`, `--base-sha <sha>` | when the base cannot be read from the PR or from git |

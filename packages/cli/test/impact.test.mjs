@@ -92,6 +92,7 @@ test('teslon pr <n>: fetches the PR from origin, checks it where it lands, and w
     assert.equal(report.meta.number, 7);
     assert.equal(report.verification.failed.length, 0);
     assert.ok(existsSync(join(out, 'report.txt')));
+    assert.match(readFileSync(join(out, 'report.html'), 'utf8'), /^<!doctype html>[\s\S]*POST \/things/);
 
     const merged = run('8');
     assert.equal(merged.status, 0, merged.stderr);

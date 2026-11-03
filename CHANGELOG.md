@@ -18,6 +18,14 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   PR number, merged ones included. It runs on the customer's runner and
   posts nothing but the comment.
 - An hours estimate only when the team gives its own minutes per case.
+- The cockpit, `report.html`, rendered from the engine's report: verdict,
+  "Start here", the test plan grouped by screen with DO / EXPECT / Before and
+  a "Why" fold per case linked to each line, regression lists, safe to skip
+  with proof, could not see, and every changed file. Pass / Fail per case is
+  kept in the browser per commit; "Copy checklist" and "Copy as CSV" take
+  the plan elsewhere. One file, complete without its script, with a policy
+  that stops it loading anything. Written by `--out`, or alone with
+  `--html`.
 
 ### Changed
 - `teslon pr`, `merged`, `analyze`, `profile`, `paths`, `cases`, `changed`,

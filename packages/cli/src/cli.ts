@@ -40,6 +40,7 @@ import {
   prRange,
   renderComment,
   renderSummary,
+  renderHtml,
   COMMENT_MARKER,
   type PrMeta,
 } from '@teslon/core';
@@ -59,7 +60,7 @@ const VERSION = '0.2.0';
  * "--json", and `teslon analyze a.ts --junit out.xml` analysed a file called
  * out.xml. One parser, used by every command, means a flag can go anywhere.
  */
-const VALUED = new Set(['--junit', '--fail-on', '--port', '--link', '--base', '--base-sha', '--out', '--minutes-per-case']);
+const VALUED = new Set(['--junit', '--fail-on', '--port', '--link', '--base', '--base-sha', '--out', '--minutes-per-case', '--html']);
 
 function parseArgs(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
@@ -557,7 +558,10 @@ switch (command) {
         writeFileSync(join(out, 'summary.md'), renderSummary(report, meta));
         writeFileSync(join(out, 'comment.md'), renderComment(report, meta));
         writeFileSync(join(out, 'report.txt'), renderText(report, { evidence: true, repoName: root.split('/').pop()! }));
+        writeFileSync(join(out, 'report.html'), renderHtml(report, meta));
       }
+      const html = parsed.flags.get('--html');
+      if (typeof html === 'string') writeFileSync(html, renderHtml(report, meta));
       if (flag('--summary') && process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, renderSummary(report, meta) + '\n');
       if (flag('--json')) console.log(JSON.stringify({ meta, ...report }, null, 2));
       else {
@@ -988,7 +992,8 @@ teslon — what a pull request changes for QA: what to test, what is safe to ski
   teslon pr [<number | url | branch>]   check a PR (open or merged) against its base branch
       --base <branch>        base branch (default: the PR's, else origin/HEAD, main, master)
       --base-sha <sha>       where the PR started, when git cannot tell (fast-forward merges)
-      --out <dir>            write report.json, summary.md, comment.md and report.txt
+      --out <dir>            write report.html (the cockpit), report.json, summary.md, comment.md, report.txt
+      --html <file>          write just the cockpit
       --comment              post or update one comment on the PR (needs GITHUB_TOKEN)
       --summary              add the full brief to the GitHub Actions run summary
       --minutes-per-case <n> your team's average; adds an hours estimate (never invented)
