@@ -1,0 +1,48 @@
+# Copy to .github/workflows/teslon.yml in the repository QA tests.
+#
+# On every PR that is ready for review, Teslon posts one comment (updated in
+# place on each push): what the PR impacts, how to test it, and what it
+# leaves untouched, with proof. The full brief is on the run's summary page,
+# and the files are kept as the "teslon-pr-N" artifact.
+#
+# For a PR that is already merged, or any PR by hand: Actions → Teslon →
+# "Run workflow" and type the PR number.
+#
+# Your code is read on this runner and never sent anywhere. The only call out
+# is to your own GitHub, to read the PR and post the comment.
+
+name: Teslon
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number (open or merged)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write   # to post the comment; without it the summary page still works
+
+concurrency:
+  group: teslon-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    # drafts wait until they are marked ready for review
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Teslon places the PR on its base branch, which needs history
+
+      # Pin to a commit SHA in production.
+      - uses: abhijeet1771/teslon@main
+        with:
+          pr: ${{ github.event.pull_request.number || inputs.pr }}
+          # minutes-per-case: 10   # your team's average; adds an hours estimate

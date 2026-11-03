@@ -96,8 +96,9 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
     L.push('');
   }
 
+  const order: Record<string, number> = { screen: 0, widget: 1, 'test-plan': 2, data: 3, api: 4, job: 5, dashboard: 6, module: 7, deploy: 8 };
   for (const [tier, title] of TIERS) {
-    const list = active.filter((s) => s.tier === tier && r.cases.some((c) => c.surface === s.id && !grouped(c)));
+    const list = active.filter((s) => s.tier === tier && r.cases.some((c) => c.surface === s.id && !grouped(c))).sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
     if (!list.length) continue;
     L.push(title);
     for (const s of list) {

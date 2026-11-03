@@ -5,6 +5,29 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 ## Unreleased
 
 ### Added
+- `teslon pr <number | url>`: a pull request in, the QA brief out. The PR is
+  checked where it lands on `main`: a merge commit against its first parent,
+  a rebase-merge by patch-id, a squash-merge by its whole diff, and an open PR
+  as GitHub's test merge (or its own branch, saying how far behind it is).
+  `--out` writes `comment.md`, `summary.md`, `report.json` and `report.txt`;
+  `--comment` posts one PR comment and updates it on every run; `--summary`
+  fills the Actions run summary. Repository text cannot inject markup or
+  @mention anyone, and both outputs are cut to GitHub's limits at a line.
+- The GitHub Action (`action.yml`) and the workflow to copy
+  (`examples/teslon.yml`): on every PR ready for review, and by hand for any
+  PR number, merged ones included. It runs on the customer's runner and
+  posts nothing but the comment.
+- An hours estimate only when the team gives its own minutes per case.
+
+### Changed
+- `teslon pr`, `merged`, `analyze`, `profile`, `paths`, `cases`, `changed`,
+  `java` and `ui` of the first engine moved under `teslon legacy`. The README
+  now describes the current product; the old one is
+  `docs/legacy-engine.md`.
+- Within each tier, screens come before the APIs behind them.
+- `lodash` and `lodash-es` are pinned to 4.18.1 through `overrides`, which
+  clears the high-severity advisories that came in through `java-parser`.
+
 - `teslon ui`: the local app. Six views — overview, what to test, prove it,
   coverage, who & how much, trust — over the same `TeslonResult` the CLI
   prints. Loopback only, no network requests of any kind, strict CSP, and a

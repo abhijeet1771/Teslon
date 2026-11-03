@@ -3,12 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
-  "workspaces": ["packages/*"],
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "tsc -b packages/core packages/ui packages/cli",
     "test": "node --test packages/*/test/*.test.mjs",
     "typecheck": "tsc -b --noEmit packages/core packages/ui packages/cli"
   },
-  "devDependencies": { "@types/node": "^20.14.0", "typescript": "^5.5.0" }
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "overrides": {
+    "lodash": "^4.18.1",
+    "lodash-es": "^4.18.1"
+  }
 }

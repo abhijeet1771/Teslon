@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { ghContext, prInfo, upsertComment, type PrInfo } from './github.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -35,9 +37,19 @@ import {
   SCHEMA_VERSION,
   impact,
   renderText,
+  prRange,
+  renderComment,
+  renderSummary,
+  COMMENT_MARKER,
+  type PrMeta,
 } from '@teslon/core';
 
-const [, , command = 'help', ...argv] = process.argv;
+// `teslon legacy <cmd>` reaches the older file-radius engine; `pr` there is its old meaning
+const [, , first = 'help', ...after] = process.argv;
+const legacy = first === 'legacy';
+const command = legacy ? (after[0] === 'pr' ? 'legacy-pr' : after[0] ?? 'help') : first;
+const argv = legacy ? after.slice(1) : after;
+const VERSION = '0.2.0';
 
 /**
  * Flags that take a value. Everything else that starts with `--` is a switch.
@@ -47,7 +59,7 @@ const [, , command = 'help', ...argv] = process.argv;
  * "--json", and `teslon analyze a.ts --junit out.xml` analysed a file called
  * out.xml. One parser, used by every command, means a flag can go anywhere.
  */
-const VALUED = new Set(['--junit', '--fail-on', '--port', '--link']);
+const VALUED = new Set(['--junit', '--fail-on', '--port', '--link', '--base', '--base-sha', '--out', '--minutes-per-case']);
 
 function parseArgs(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
@@ -484,6 +496,92 @@ switch (command) {
   }
 
   case 'pr': {
+    // A pull request, open or merged, checked against its base branch.
+    const root = process.env.TESLON_ROOT ?? process.cwd();
+    const git = (...a: string[]): string => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const has = (ref: string): boolean => { try { git('rev-parse', '--verify', '--quiet', `${ref}^{commit}`); return true; } catch { return false; } };
+    const target = rest[0];
+    const n = target ? Number(/^#?(\d+)$/.exec(target)?.[1] ?? /\/pull\/(\d+)/.exec(target)?.[1] ?? NaN) : NaN;
+    const gh = ghContext(root);
+    const notes: string[] = [];
+    let info: PrInfo | null = null;
+    if (Number.isFinite(n) && gh.token) {
+      try { info = await prInfo(gh, n); } catch (e) { notes.push(`could not read PR #${n} from GitHub (${(e as Error).message.slice(0, 80)}); going on with git alone`); }
+    }
+    try {
+      // the PR's own head, fetched under a ref of ours so nothing local is moved
+      let headRef = target ?? 'HEAD';
+      let mergeRef: string | undefined;
+      if (Number.isFinite(n)) {
+        headRef = `refs/teslon/pr/${n}`;
+        // GitHub's test merge, for open PRs: the PR as it would land on today's base
+        try { git('fetch', '--no-tags', '--quiet', 'origin', `+refs/pull/${n}/merge:refs/teslon/pr/${n}-merge`); mergeRef = `refs/teslon/pr/${n}-merge`; } catch { /* merged or conflicting PRs have none */ }
+        try { git('fetch', '--no-tags', '--quiet', 'origin', `+refs/pull/${n}/head:${headRef}`); }
+        catch (e) {
+          if (info?.headSha && has(info.headSha)) headRef = info.headSha;
+          else if (!has(headRef)) throw new Error(`could not fetch PR #${n} from origin (${(e as Error).message.split('\n')[0]}). Fetch it yourself: git fetch origin pull/${n}/head`);
+        }
+      }
+      const baseFlag = parsed.flags.get('--base');
+      let baseBranch = typeof baseFlag === 'string' ? baseFlag : info?.baseRef ?? null;
+      if (!baseBranch) {
+        const found = isGitRepository(gitIn(root)) ? defaultBase(gitIn(root)) : null;
+        if (!found) throw new Error('no base branch given, and none of origin/HEAD, main, master, develop or trunk exists. Name it: --base <branch>');
+        baseBranch = found.ref.replace(/^origin\//, '');
+      }
+      let baseRef = has(`origin/${baseBranch}`) ? `origin/${baseBranch}` : baseBranch;
+      if (!has(baseRef)) {
+        try { git('fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`); baseRef = `origin/${baseBranch}`; }
+        catch { throw new Error(`base branch ${baseBranch} is not here and could not be fetched`); }
+      }
+      const baseSha = parsed.flags.get('--base-sha');
+      const range = prRange(root, headRef, baseRef, { label: baseBranch, ...(typeof baseSha === 'string' ? { baseSha } : {}), ...(mergeRef ? { mergeRef } : {}) });
+      const linked: Record<string, string> = {};
+      const link = parsed.flags.get('--link');
+      if (typeof link === 'string') { const eq = link.lastIndexOf('='); if (eq > 0) linked[link.slice(0, eq)] = link.slice(eq + 1); }
+      const report = impact({ repo: root, base: range.base, head: range.head, linked });
+      const mpc = Number(parsed.flags.get('--minutes-per-case') ?? process.env.TESLON_MINUTES_PER_CASE ?? NaN);
+      const runUrl = process.env.GITHUB_RUN_ID && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL ?? 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : undefined;
+      const meta: PrMeta = {
+        baseRef: baseBranch, state: info?.merged ? 'merged' : range.state, how: range.how, version: VERSION,
+        ...(Number.isFinite(n) ? { number: n } : {}),
+        ...(info ? { title: info.title, url: info.url, author: info.author } : {}),
+        ...(gh.repo ? { repoUrl: `${gh.server}/${gh.repo}` } : {}),
+        ...(runUrl ? { runUrl } : {}),
+        ...(Number.isFinite(mpc) && mpc > 0 ? { minutesPerCase: mpc } : {}),
+      };
+      const out = parsed.flags.get('--out');
+      if (typeof out === 'string') {
+        mkdirSync(out, { recursive: true });
+        writeFileSync(join(out, 'report.json'), JSON.stringify({ meta, ...report }, null, 2));
+        writeFileSync(join(out, 'summary.md'), renderSummary(report, meta));
+        writeFileSync(join(out, 'comment.md'), renderComment(report, meta));
+        writeFileSync(join(out, 'report.txt'), renderText(report, { evidence: true, repoName: root.split('/').pop()! }));
+      }
+      if (flag('--summary') && process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, renderSummary(report, meta) + '\n');
+      if (flag('--json')) console.log(JSON.stringify({ meta, ...report }, null, 2));
+      else {
+        for (const note of notes) console.log(`(${note})`);
+        console.log(`PR${Number.isFinite(n) ? ` #${n}` : ''}${info ? ` · ${info.title}` : ''} · ${range.how}`);
+        console.log(renderText(report, { evidence: flag('--evidence'), repoName: root.split('/').pop()! }));
+      }
+      if (flag('--comment')) {
+        if (!Number.isFinite(n)) console.error('teslon pr: --comment needs a PR number');
+        else {
+          try { console.error(`comment: ${await upsertComment(gh, n, renderComment(report, meta), COMMENT_MARKER)}`); }
+          // a fork's token cannot comment; the summary page still has everything
+          catch (e) { console.error(`teslon pr: could not post the comment (${(e as Error).message.slice(0, 160)})`); }
+        }
+      }
+      if (report.verification.failed.length) process.exitCode = 3;
+    } catch (err) {
+      console.error(`\nteslon pr: ${(err as Error).message}\n`);
+      process.exitCode = 2;
+    }
+    break;
+  }
+
+  case 'legacy-pr': {
     const root = process.env.TESLON_ROOT ?? process.cwd();
     const head = rest[1] ?? 'HEAD';
     let base = rest[0];
@@ -492,7 +590,7 @@ switch (command) {
       const found = isGitRepository(gitIn(root)) ? defaultBase(gitIn(root)) : null;
       if (!found) {
         console.error('\nNo base branch was given, and none of origin/HEAD, main, master, develop or trunk exists here.');
-        console.error('Name it: teslon pr <base> [head]\n');
+        console.error('Name it: teslon legacy pr <base> [head]\n');
         process.exitCode = 2;
         break;
       }
@@ -875,7 +973,7 @@ switch (command) {
   }
 
   case 'version':
-    console.log(`teslon 0.1.0 (schema ${SCHEMA_VERSION})`);
+    console.log(`teslon ${VERSION} (impact schema teslon.impact/1, legacy schema ${SCHEMA_VERSION})`);
     break;
 
   default:
@@ -885,20 +983,22 @@ switch (command) {
       process.exitCode = 1;
     }
     console.log(`
-teslon — what a change can actually break
+teslon — what a pull request changes for QA: what to test, what is safe to skip, with evidence
 
-  teslon impact <base>..<head> what to test after a change: screens, fields,
-                              data, dashboards, with evidence (--evidence, --json)
-  teslon pr [base] [head]     analyse the current branch against its merge base
-  teslon analyze <file...>    blast radius for specific files
-  teslon profile <file...>    what a file does: endpoint, reads, writes, effects
-  teslon paths <file> [sym]   proof paths from each exported symbol outward
-  teslon cases <file...>      what a tester must cover, read from the code
-  teslon changed [base]       what changed about behaviour, not about text
-  teslon java                 read a Java source tree: routes, injection, entities
+  teslon pr [<number | url | branch>]   check a PR (open or merged) against its base branch
+      --base <branch>        base branch (default: the PR's, else origin/HEAD, main, master)
+      --base-sha <sha>       where the PR started, when git cannot tell (fast-forward merges)
+      --out <dir>            write report.json, summary.md, comment.md and report.txt
+      --comment              post or update one comment on the PR (needs GITHUB_TOKEN)
+      --summary              add the full brief to the GitHub Actions run summary
+      --minutes-per-case <n> your team's average; adds an hours estimate (never invented)
+      --evidence             print every step of every chain
+      --json                 the report as JSON
+
+  teslon impact <base>..<head>          the same for any two commits
+
   teslon version
 
-Teslon never narrows on a guess. When it cannot resolve something it widens
-the radius and says so.
+Older file-radius engine: teslon legacy <pr | merged | analyze | profile | paths | cases | changed | java | ui>
 `);
 }

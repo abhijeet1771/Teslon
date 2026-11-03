@@ -277,7 +277,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
                 if (g) {
                   hops.push({ label: 'On every screen', file: g.root, line: g.line, quote: `<${g.tag}`, rule: `<${g.tag}> is drawn beside <router-view>` });
                   const sid = `widget:${g.tag}`;
-                  surface({ id: sid, kind: 'widget', name: `AI chat (<${g.tag}>)`, where: 'every screen', tier: 'test-first' });
+                  surface({ id: sid, kind: 'widget', name: 'AI chat', where: `every screen · <${g.tag}>`, tier: 'test-first' });
                   for (const rule of d.rules) {
                     const has = sentDto?.fields.some((f) => f.json === rule.json);
                     if (sentDto && !has) continue;

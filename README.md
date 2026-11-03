@@ -1,244 +1,218 @@
 # Teslon
 
-**What a change can actually break.**
+**What a pull request changes for QA: what to test, how, and what is safe to skip, with proof.**
 
-A developer changes one helper and tells QA to "just test the checkout page".
-The real reach is four screens, an invoice PDF and an emailed receipt. Nobody
-is hiding anything — nothing in the workflow walks the dependency graph
-backwards, so nobody knows.
+A developer says "I changed this page, test it". Three other places break and
+nobody looks at them. Near a release there is no time to test everything.
 
-Teslon walks it backwards, and then keeps going where the graph runs out.
+Teslon reads the pull request against `main`, before anyone starts testing,
+and says:
 
-## Status
+- **what it impacts**: page → section → field, API, data, jobs, the AI chat,
+  dashboards, services and deployment;
+- **how to test each one**: DO this, EXPECT that, and what happened before;
+- **what it leaves untouched**, each with the reason and the line that proves
+  it, so it is safe to skip;
+- **what Teslon could not see**, said out loud with how to close it. It never
+  stays silent.
 
-Early. The engine is being built against measurements taken first; see
-`fixtures/torture` for the repository those measurements came from.
+Every claim cites `file:line`, and every cited line is read again at the
+commit before anything is printed.
 
-## Why it is not just an import graph
+## What QA sees on the PR
 
-A reverse import graph — what "impact analysis" usually means — was measured
-against a fixture containing eighteen ways a dependency can exist without an
-import statement. It found **34.8%** of them. Adding layers for names,
-templates, configs, generated code, widening and clones took that to **95.7%**,
-and pushing to 100% nearly tripled the over-selection.
+One comment, updated in place on every push. This one is for a real PR
+([spring-petclinic-microservices #559](https://github.com/spring-petclinic/spring-petclinic-microservices/pull/559)):
 
-Those numbers are from a 32-file fixture. The recall findings transfer,
-because a missed class of edge is missed at any scale. The selection figures
-do not, and have to be re-measured on a real repository.
+> ### Teslon · what PR #559 changes for QA
+>
+> | Test first | Test next | Watch after release | Safe to skip | Teslon could not see |
+> |---|---|---|---|---|
+> | **5 places** · 16 cases | 2 places · 2 cases | 1 place | 8 places, each with proof | 2 things |
+>
+> **Start here**
+> 1. **Add Pet** `/owners/:ownerId/new-pet`: **Pet › Birth date**: Enter a date after today, press Submit. → **Expect** Rejected (400). _Before: Saved._
+> 2. **Edit Pet** `/owners/:ownerId/pets/:petId`: **Pet › Birth date**: Enter a date after today, press Update Pet. → **Expect** Rejected (400). _Before: Saved._
+> 3. **AI chat** (on every screen): Ask the chat to add a pet with a future birth date. → **Expect** A sentence saying it could not. Risk: an error, because the 400 is not handled. _Before: Done._
+> 4. API `POST /api/customer/owners/{ownerId}/pets`: …
+>
+> **Safe to skip** (8): Welcome to Petclinic `/` · Owners `/owners` · Owner `/owners/:ownerId/edit` · Visits … · Veterinarians `/vets` · …
+>
+> **Teslon could not see** (2): callers outside this repository of POST /api/customer/owners/{ownerId}/pets … · runtime configuration in the config repository
+>
+> every claim cites the code: 70/70 cited lines re-checked at `1d76b00`
 
-What the extra layers catch that imports cannot:
+The run's **summary page** has the full brief:
+- a checklist per screen;
+- a "Why" fold on every case, with each step linked to the exact line;
+- the safe-to-skip table with proof;
+- every changed file, accounted for.
 
-| Hidden by | Example |
-|---|---|
-| Dependency injection | `register('price', …)` / `resolve('price')` |
-| String registries | `handlers['invoice.render']` read as `handlers[name]` |
-| Event buses | `emit('order.paid')` / `on('order.paid')` |
-| CSS | `.price-tag` in a stylesheet, `class="price-tag"` in a component |
-| Database columns | a migration renames it, a raw query selects it |
-| Translations | `t('cart.total')` against a JSON bundle |
-| Generated code | a client built from `openapi.yaml` |
-| Shared tables | one endpoint writes `orders`, another reads it — no code edge exists |
-| Lockfiles | a transitive major bump with zero source files changed |
+The same files are kept as a run artifact.
 
-## Four invariants
+## Set it up (GitHub Actions)
 
-Enforced by tests that fail the build, not by intent.
+Copy [`examples/teslon.yml`](examples/teslon.yml) to
+`.github/workflows/teslon.yml` in the repository you test. That is all.
 
-- **I1 — Unknown widens, never narrows.** A file no parser understood, an
-  unresolved import, a missing adapter: all treated as affected.
-- **I2 — Narrowing needs confirmed evidence.** Only an import edge confirmed
-  by runtime coverage can remove anything from a test run.
-- **I3 — Determinism.** Same repository, same commit pair, byte-identical
-  result.
-- **I4 — Every edge carries its reason.** No edge exists without the signal
-  and evidence that produced it, at every hop.
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr: { description: Pull request number (open or merged), required: true }
 
-A fifth rule has no test but governs the design: Teslon never guesses a change
-set. If the merge base cannot be resolved it fails loudly rather than
-reporting a confident wrong answer.
+permissions:
+  contents: read
+  pull-requests: write
 
-### The one place the invariants reverse
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: abhijeet1771/teslon@main   # pin a commit SHA in production
+        with:
+          pr: ${{ github.event.pull_request.number || inputs.pr }}
+```
 
-I1 and I2 are about the **radius**: doubt widens it, because a file left out is
-a file nobody tests. They are not about **claims**. When Teslon says "this
-endpoint is affected" or "this event fires", doubt has to do the opposite and
-stay quiet, because a fabricated endpoint sends a tester to a page that does
-not exist and discredits every true row beside it.
+- **Every PR** gets the comment when it is opened, updated or marked ready for
+  review.
+- **Any PR, by hand, including merged ones**: Actions → Teslon → *Run
+  workflow* → type the number.
+- **Fork PRs**: GitHub gives them a read-only token, so there is no comment;
+  the summary page and artifact still have everything.
+- **GitHub Enterprise Server** works as is (`GITHUB_API_URL`).
 
-So a surface is only asserted when the file reads as something that declares
-it. Nothing is dropped from the radius by that rule — the file keeps its band
-and its tier — and every withheld claim is counted in `limitations`. The rule
-was written after running Teslon on its own source, which reported an endpoint
-`GET /x` that was a string inside a parser, and the events `gt`, `gte`, `min`,
-`max` and `length`, which were the keys of a lookup table.
-
-## Confidence and priority are two different things
-
-A **band** says how sure Teslon is that a file is affected: `certain`,
-`likely`, `possible`, `look`, and `unknown` — which ranks *above* `likely`,
-because a file we failed to analyse is more dangerous than one we merely
-inferred.
-
-A **tier** says what to open first. They come apart constantly: a `possible`
-change to an untested payment endpoint has to be tested before a `certain`
-change to a comment in a well-covered helper. Ranking work by confidence alone
-inverts the order a lead actually needs, so both are reported.
-
-| Tier | Label | Means |
+| Input | Default | |
 |---|---|---|
-| 1 | Test first — directly impacted | changed, or breaking, or writes state with no test |
-| 2 | Test next — moderately impacted | close, exposed, or unanalysable |
-| 3 | Smoke — lightly impacted | downstream with some cover |
-| 4 | Eyes on — could not be ruled out | **not** "unaffected" |
+| `pr` | the triggering PR | PR number |
+| `base` | the PR's base branch | |
+| `comment` | `true` | post or update the PR comment |
+| `minutes-per-case` | — | your team's average; adds an hours estimate. Teslon never invents one |
+| `working-directory` | `.` | where the repository is checked out |
 
-The tier is a score, and every row shows the factors that produced it, summing
-to the score exactly. A lead who cannot see why a file is Tier 1 will either
-ignore the tier or test everything, and both waste the analysis.
+The Action's outputs are `to-test`, `skipped`, `not-visible` and `dir`, so a
+later step can gate on them.
 
-## What the result says about itself
-
-Every run reports a `completeness` block: which of the fifteen signals
-contributed, a counterfactual measuring how many files each signal found that
-nothing else did, which signals are not wired up in this build and why, which
-files no signal can read, and a verdict written to be quoted —
-
-> Treat this list as "at least these", never as "only these".
-
-The dangerous failure of an impact analyser is not being wrong. It is being
-confidently incomplete: a radius printed with no caveat reads as "the impact is
-exactly this", and a lead who believes that ships untested code.
-
-## Try it
+## Run it locally
 
 ```bash
-npm install
-npx tsc -b packages/core packages/cli
+git clone https://github.com/abhijeet1771/teslon && cd teslon
+npm ci && npm run build
 
-TESLON_ROOT=fixtures/torture node packages/cli/dist/cli.js analyze src/services/PriceService.ts
+cd ~/code/your-app                     # a clone with history
+node ~/teslon/packages/cli/dist/cli.js pr 559              # or a PR URL
+node ~/teslon/packages/cli/dist/cli.js pr 559 --out ./teslon-559   # comment.md, summary.md, report.json
 ```
 
-```
-changed: src/services/PriceService.ts
-radius:  10 file(s) reached of 33
+With `GITHUB_TOKEN` set, it reads the PR's title and base branch, and
+`--comment` posts the comment. Without a token it works from git alone.
 
-  hop 1  src/pages/CheckoutPage.ts        import: imports ../services/PriceService
-  hop 2  src/handlers/InvoiceHandler.ts   name: shares the name "price"       (through bootstrap.ts)
-  hop 2  src/handlers/PaymentHandler.ts   name: shares the name "order.paid"  (through ReceiptEmail.ts)
-  hop 4  src/services/jobRunner.ts        import: imports ../handlers/registry (through registry.ts)
-```
-
-The two `name:` rows are a dependency-injection key and an event topic. No
-import graph can reach either.
-
-```bash
-TESLON_ROOT=fixtures/api node packages/cli/dist/cli.js profile api/cancelOrder.ts
-```
-
-```
-┌─ api/cancelOrder.ts
-│ endpoint     POST /api/orders/:orderId/cancel
-│ nature       mutating  ← treated as state-changing
-│ writes       orders, refunds
-│ effects      sends email, emits event order.cancelled, touches payments
-│ auth         none declared
-└─ errors      —
-```
-
-Extracted, not guessed — every field comes from something the code declares.
-No model is involved.
-
-## Commands
-
-| Command | Does |
+| Command | |
 |---|---|
-| `teslon pr [base] [head]` | Analyse a branch against its merge base |
-| `teslon merged <sha> [from..to]` | Recover an already-merged pull request and analyse it |
-| `teslon ui [head] [base]` | The local app, in your browser. Loopback only |
-| `teslon analyze <file…>` | Blast radius for specific files |
-| `teslon profile <file…>` | What a file does: endpoint, reads, writes, effects, auth, flags |
+| `teslon pr [<number \| url \| branch>]` | a PR, open or merged, against its base branch |
+| `teslon impact <base>..<head>` | the same for any two commits |
 
-| Flag | Does |
+| Flag | |
 |---|---|
-| `--json` | The whole `TeslonResult`, which is the contract every other surface renders |
-| `--junit <file>` | Gaps and untested surfaces as JUnit failures; limitations as *skipped* |
-| `--fail-on a,b` | Gate the build. `tier1-untested`, `breaking`, `untested-surface`, `undeclared-owner`. Exit 5 means the analysis worked and the policy said no |
+| `--out <dir>` | write `comment.md`, `summary.md`, `report.json`, `report.txt` |
+| `--comment` | post or update the one Teslon comment on the PR |
+| `--summary` | append the brief to the GitHub Actions run summary |
+| `--base <branch>`, `--base-sha <sha>` | when the base cannot be read from the PR or from git |
+| `--evidence` | print every step of every chain |
+| `--json` | the report (`teslon.impact/1`) |
 
-## The local app
+Exit codes:
+- **0**: done.
+- **2**: Teslon could not run (it says why).
+- **3**: some evidence did not re-check. The report names the lines. Please
+  report it, because it is a Teslon bug.
 
-`teslon ui` opens the report in a browser for anyone who would rather not read
-a terminal: keep one clone, type a branch name, and read the answer. The branch
-does not need to be checked out — it is read from a temporary worktree and your
-working tree is never touched.
+## Which commits it compares
 
-It is built to the same rules as the engine:
+QA tests `main`, not the developer's branch, so a PR is checked where it
+lands:
 
-- **Loopback only.** There is no host option to widen it, because the page can
-  start analyses that read your code.
-- **Nothing leaves the machine.** No CDN, no web fonts from anywhere, no
-  analytics. The display face (Barlow Condensed, SIL OFL) is served by the
-  local server, and a strict CSP holds the page to that server even if escaping
-  ever failed. Every repository string is set with `textContent`.
-- **Refs are hostile until checked.** A "branch" of `--upload-pack=…` is an
-  argument to git, not a ref; it is refused before git sees it.
-- **The honesty footer cannot be dismissed.** "At least these, never only
-  these" stays on screen on every view.
+| The PR | Compared |
+|---|---|
+| merged with a merge commit | that merge against its first parent |
+| rebase-merged | the commits it landed as, found by patch-id |
+| squash-merged | the one commit that carries its whole diff |
+| open | GitHub's test merge: the PR merged into today's `main` |
+| open, with conflicts | its own branch; the report says how far behind `main` it is |
 
-The design follows Nike's digital language because the report's heroes are a
-handful of numbers. One colour, Volt, means exactly one thing — *you can act
-here* — and is never used for "safe": Tier 4 means "could not be ruled out",
-and a yellow-green Tier 4 would say the opposite. Motion explains causality or
-does not happen: a score assembles from its reasons in the order they were
-counted, and a proof route draws hop by hop because impact travels hop by hop.
-`prefers-reduced-motion` gets the final frame at once.
+The first line of every report says which case it was.
 
-## What a lead and a manager get
+## How it decides
 
-**Who to ask.** `CODEOWNERS` is a declaration; git history is evidence. The
-declaration wins where it exists, the evidence fills the gaps, and each
-assignment says which it came from — because a manager chasing the wrong person
-because a tool guessed confidently is worse off than one told "nobody has
-declared this."
+- **Each changed line ends up in one of three places**:
+  - **explained**: a typed change such as "now refuses future dates";
+  - **followed**: traced to the APIs, jobs and screens that run it;
+  - **named**: a status saying why it has no app effect, or that it was not
+    followed.
+  The ledger lists every changed file.
+- **"Safe to skip" is strict.** A place is only skipped when:
+  - every changed line was followed;
+  - its screen's code was read completely;
+  - nothing reaches it through data Teslon cannot read.
+  Otherwise it is "could not be ruled out", never "safe".
+- **Not visible is a result, not a silence.** Other repositories, production
+  data, flags in a flag service, mobile clients and partner callers are listed
+  with how to check them.
+- **Your code stays on your runner.** No Teslon server, no model, no upload.
+  The engine package makes no network calls; a test fails the build if it
+  ever does. The only call out is to your own GitHub, to read the PR and post
+  the comment.
 
-**How much testing.** Counted in **cases**, never in hours. Converting cases to
-a duration needs velocity, familiarity and how much setup already exists, none
-of which is in the repository; a tool printing "about 3.5 hours" has invented
-two thirds of it, and that number ends up quoted in a planning meeting. Each
-case traces to something counted: a new branch is two cases, a `min(3)` names
-exactly 2 and 3, a surface with no test is at least one.
+## What it reads today
 
-`pr` and `analyze` take `--json` and emit the whole `TeslonResult`, which is
-the contract every other surface renders: the brief, the tiers with their
-score factors, the surfaces with their test coverage, the tests to run, the
-gaps, the limitations and the completeness block.
+| | |
+|---|---|
+| Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven |
+| Front end | Vue: routes, templates, forms, fields, components, the calls each screen makes. Angular, AngularJS and React code is detected and named under "could not see" until its reader ships |
+| Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, `pom.xml`, `package.json`, resources under `src/main/resources` |
+
+The next stacks, in order, are Angular, React / Next.js, Node (Express,
+NestJS), .NET and Python. A stack Teslon does not read yet is reported under
+"could not see", so it is never silently skipped. See
+[research/DECISIONS-2026-11-03.md](research/DECISIONS-2026-11-03.md) and
+[ROADMAP.md](ROADMAP.md).
+
+## Measured
+
+- **Real history.** On 60 real commits of spring-petclinic-microservices:
+  - 36 got places to test;
+  - 20 were correctly "nothing to test in the app";
+  - 0 cited lines failed to re-check
+  ([research/coverage](research/coverage)).
+- **Bench.** On the labelled bench ([bench/](bench)):
+  - 0 silent misses;
+  - 0 wrong skips;
+  - every miss is named under "could not see".
 
 ## Layout
 
 ```
-packages/core   the engine — deterministic, offline, no globals
-packages/cli    the commands
-fixtures/       the repositories the measurements were taken on
+packages/core   the engine: deterministic, offline
+packages/cli    teslon pr / impact, and the GitHub comment
+action.yml      the GitHub Action
+examples/       the workflow to copy
+bench/          labelled cases the engine is scored on
+research/       decisions, reviews, measurements
 ```
-
-`core` making a network call fails the test suite. Your code stays on your
-machine.
-
-## Tests
 
 ```bash
 npm run build && npm test
 ```
 
-## What is coming
-
-See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the pipeline from a PR link to the report, and [ROADMAP.md](ROADMAP.md). In short: the evidence from a real repository and
-from public postmortems says QA needs pages, features, APIs, data and deploy
-order — not files — so the engine is moving to a typed impact graph built on
-framework rules, with every claim verified against git and accuracy earned per
-failure pattern on a labelled corpus of real cases
-([research/](research/)).
+The first engine (file radius, bands and tiers) is still available as
+`teslon legacy <command>`; see [docs/legacy-engine.md](docs/legacy-engine.md).
 
 ## Honest limits
 
-Teslon is built to be **safe**, not **minimal**. It aims never to call an
-affected area unaffected. It cannot promise the smallest possible list, and
-any tool claiming otherwise is not measuring itself.
+Teslon is built to be **safe**, not minimal. It aims never to call an
+affected place unaffected. When it cannot tell, it says so instead of
+guessing.

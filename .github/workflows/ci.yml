@@ -51,3 +51,16 @@ jobs:
           node-version: '22'
       - run: npm ci
       - run: npm audit --audit-level=high
+
+  # The Action itself, end to end on this PR: build, place the PR on main,
+  # write the summary and artifact. No comment on Teslon's own PRs.
+  action:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          comment: 'false'

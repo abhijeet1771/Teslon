@@ -162,7 +162,7 @@ export function followChanges(ctx: WhereCtx): void {
       const global = ui.globals.find((g) => g.file === c.file || ctx.closure(g.file).has(c.file));
       if (global) {
         const sid = `widget:${global.tag}`;
-        ctx.surface({ id: sid, kind: 'widget', name: `<${global.tag}>`, where: 'every screen', tier: 'test-next' });
+        ctx.surface({ id: sid, kind: 'widget', name: global.tag.replace(/^[a-z]+-/, (m) => (/^(app|jhi|ng|v)-$/.test(m) ? '' : m)).replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase()), where: `every screen · <${global.tag}>`, tier: 'test-next' });
         ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-next', do: `Use <${global.tag}> for what calls ${e.verb} ${ext}.`, expect: `Works as before: ${why}.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived', hops: [...chain, apiHop, ...gwHop, callHop, { label: 'On every screen', file: global.root, line: global.line, quote: `<${global.tag}`, rule: `<${global.tag}> is drawn beside <router-view>` }] });
         n++;
       }

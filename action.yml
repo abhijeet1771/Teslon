@@ -1,0 +1,123 @@
+name: Teslon impact
+description: >-
+  What a pull request impacts, how to test it, and what it leaves untouched
+  (safe to skip, with proof). Posts one PR comment and a run summary.
+  Runs on your runner; your code never leaves it.
+author: Teslon
+branding:
+  icon: crosshair
+  color: gray-dark
+
+inputs:
+  pr:
+    description: The pull request number. Defaults to the PR that triggered the run.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  base:
+    description: The base branch. Defaults to the PR's own base branch.
+    required: false
+    default: ''
+  comment:
+    description: Post (or update) the PR comment. Needs `pull-requests write` on the token.
+    required: false
+    default: 'true'
+  minutes-per-case:
+    description: >-
+      Your team's average minutes per test case. When set, the comment shows an
+      estimate in hours; Teslon never invents one.
+    required: false
+    default: ''
+  working-directory:
+    description: Where the repository is checked out (with history, `fetch-depth 0`).
+    required: false
+    default: '.'
+  token:
+    description: Token used to read the PR and post the comment.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  dir:
+    description: Folder with report.json, summary.md, comment.md and report.txt.
+    value: ${{ steps.run.outputs.dir }}
+  to-test:
+    description: How many places to test (test first + test next).
+    value: ${{ steps.run.outputs.to-test }}
+  skipped:
+    description: How many places were skipped with proof.
+    value: ${{ steps.run.outputs.skipped }}
+  not-visible:
+    description: How many things Teslon could not see.
+    value: ${{ steps.run.outputs.not-visible }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check Node
+      id: node
+      shell: bash
+      run: |
+        major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+        if [ "$major" -ge 20 ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+    # Only when the runner has no Node 20+, so the job's own Node is left alone.
+    - if: steps.node.outputs.ok != 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build Teslon
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        npm ci --no-audit --no-fund --loglevel=error
+        npm run build --silent
+
+    - name: Check the pull request
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        TESLON_PR: ${{ inputs.pr }}
+        TESLON_BASE: ${{ inputs.base }}
+        TESLON_COMMENT: ${{ inputs.comment }}
+        TESLON_MINUTES_PER_CASE: ${{ inputs.minutes-per-case }}
+        TESLON_CLI: ${{ github.action_path }}/packages/cli/dist/cli.js
+      run: |
+        if [ -z "$TESLON_PR" ]; then
+          echo "::error::No PR number. Run on a pull_request event, or pass the 'pr' input."
+          exit 2
+        fi
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::notice::Shallow checkout; fetching history so the PR can be placed on its base branch."
+          git fetch --quiet --unshallow --no-tags origin || true
+        fi
+        out="$RUNNER_TEMP/teslon"
+        echo "dir=$out" >> "$GITHUB_OUTPUT"
+        args=(pr "$TESLON_PR" --out "$out" --summary)
+        [ -n "$TESLON_BASE" ] && args+=(--base "$TESLON_BASE")
+        [ "$TESLON_COMMENT" = "true" ] && args+=(--comment)
+        code=0
+        node "$TESLON_CLI" "${args[@]}" || code=$?
+        if [ -f "$out/report.json" ]; then
+          node -e '
+            const r = require(process.argv[1]);
+            const n = (t) => r.surfaces.filter((s) => s.tier === t).length;
+            const o = [`to-test=${n("test-first") + n("test-next")}`, `skipped=${n("skip")}`, `not-visible=${r.unseen.length}`];
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, o.join("\n") + "\n");
+          ' "$out/report.json"
+        fi
+        if [ "$code" = "3" ]; then
+          echo "::error::Teslon could not re-check some of its own evidence. The report says which lines; please report it."
+        fi
+        exit $code
+
+    - name: Keep the report
+      if: always() && steps.run.outputs.dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: teslon-pr-${{ inputs.pr }}
+        path: ${{ steps.run.outputs.dir }}
+        if-no-files-found: ignore
+        retention-days: 30
