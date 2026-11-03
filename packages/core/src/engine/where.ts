@@ -84,7 +84,7 @@ function reachFrom(f: SpringFacts, start: string): Reach[] {
 }
 
 /** Browser calls that land on an endpoint, through the gateway when there is one. */
-function browserCalls(f: SpringFacts, ui: FrontendFacts, e: Endpoint): ApiCall[] {
+export function browserCalls(f: SpringFacts, ui: FrontendFacts, e: Endpoint): ApiCall[] {
   return ui.calls.filter((c) => {
     if (!c.verbs.includes(e.verb)) return false;
     const route = f.gateway.find((r) => c.tpl === r.prefix || c.tpl.startsWith(r.prefix + '/') || c.tpl.startsWith(r.prefix + '{'));
@@ -95,7 +95,7 @@ function browserCalls(f: SpringFacts, ui: FrontendFacts, e: Endpoint): ApiCall[]
 }
 
 /** The import chain from a screen's component to a file it runs, as hops. */
-function importChain(ui: FrontendFacts, from: string, to: string): Hop[] | null {
+export function importChain(ui: FrontendFacts, from: string, to: string): Hop[] | null {
   if (from === to) return [];
   const prev = new Map<string, string>();
   const queue = [from];
@@ -124,7 +124,7 @@ function importChain(ui: FrontendFacts, from: string, to: string): Hop[] | null 
   return null;
 }
 
-function screenTitle(comp: Component | undefined, route: string): string {
+export function screenTitle(comp: Component | undefined, route: string): string {
   const h = comp?.elements.find((e) => /^h[1-3]$/.test(e.tag) && e.text && !e.text.includes('{{'));
   return h?.text ?? route;
 }

@@ -164,7 +164,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
   const dtos = new Map<string, Dto>();
   for (const { file, t } of allTypes) {
     if (t.kind !== 'record' && t.kind !== 'class') continue;
-    const fields: DtoField[] = t.fields.filter((fl) => !/\bstatic\b/.test(fl.type)).map((fl) => {
+    const fields: DtoField[] = t.fields.filter((fl) => !/\bstatic\b/.test(fl.type) && !fl.mods?.includes('static')).map((fl) => {
       const jp = hasAnn(fl.annotations, 'JsonProperty');
       const jf = hasAnn(fl.annotations, 'JsonFormat');
       const pattern = jf ? annPairs(jf).get('pattern')?.replace(/^"|"$/g, '') : undefined;
@@ -207,7 +207,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
     if (!hasAnn(t.annotations, 'Entity')) continue;
     const ta = hasAnn(t.annotations, 'Table');
     const table = (ta && (annPairs(ta).get('name')?.replace(/^"|"$/g, '') ?? annStrings(ta)[0])) || t.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-    const columns = t.fields.filter((fl) => !/\bstatic\b/.test(fl.type)).map((fl) => {
+    const columns = t.fields.filter((fl) => !/\bstatic\b/.test(fl.type) && !fl.mods?.includes('static')).map((fl) => {
       const c = hasAnn(fl.annotations, 'Column', 'JoinColumn');
       const column = (c && annPairs(c).get('name')?.replace(/^"|"$/g, '')) || fl.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
       return { field: fl.name, column, explicit: !!c, file, line: c ? c.line : fl.line };

@@ -35,6 +35,8 @@ export interface JVar {
 export interface JField extends JVar {
   /** Tokens after `=`, if the field is initialised. */
   readonly init: readonly Tok[];
+  /** Modifiers as written: `private`, `static`, `transient`. */
+  readonly mods?: readonly string[];
 }
 
 export interface JMethod {
@@ -129,14 +131,15 @@ export function readJavaFile(path: string, src: string): JavaFile {
     return [{ name, line, args }, j];
   };
 
-  const readPrefix = (k: number): [JAnnotation[], number] => {
+  const readPrefix = (k: number): [JAnnotation[], number, string[]] => {
     const anns: JAnnotation[] = [];
+    const mods: string[] = [];
     for (;;) {
       const t = toks[k]?.t;
       if (t === '@' && toks[k + 1]?.t !== 'interface') { const [a, n] = readAnnotation(k); anns.push(a); k = n; continue; }
-      if (t !== undefined && MODIFIERS.has(t)) { k++; continue; }
+      if (t !== undefined && MODIFIERS.has(t)) { mods.push(t); k++; continue; }
       if (t === 'non' && toks[k + 1]?.t === '-' && toks[k + 2]?.t === 'sealed') { k += 3; continue; }
-      return [anns, k];
+      return [anns, k, mods];
     }
   };
 
@@ -220,7 +223,7 @@ export function readJavaFile(path: string, src: string): JavaFile {
       const t = toks[j]!.t;
       if (t === ';') { j++; continue; }
       if (t === '{') { j = close(toks, j, '{', '}') + 1; continue; } // initialiser
-      const [manns, k2] = readPrefix(j);
+      const [manns, k2, mmods] = readPrefix(j);
       const t2 = toks[k2]?.t;
       if (t2 === 'class' || t2 === 'interface' || t2 === 'enum' || (t2 === '@' && toks[k2 + 1]?.t === 'interface') || (t2 === 'record' && isIdent(toks[k2 + 1]?.t) && (toks[k2 + 2]?.t === '(' || toks[k2 + 2]?.t === '<'))) {
         j = readType(k2, manns, qualified);
@@ -280,7 +283,7 @@ export function readJavaFile(path: string, src: string): JavaFile {
           init = toks.slice(r + 1, e);
           r = e;
         }
-        if (isIdent(nameTok.t)) fields.push({ name: nameTok.t, type: typeToks, line: nameTok.line, annotations: manns, init });
+        if (isIdent(nameTok.t)) fields.push({ name: nameTok.t, type: typeToks, line: nameTok.line, annotations: manns, init, mods: mmods });
         if (toks[r]?.t === ',' && isIdent(toks[r + 1]?.t)) { q = r + 1; continue; }
         j = r + 1;
         break;

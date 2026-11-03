@@ -42,7 +42,7 @@ These are the owner's answers, and the co-owner's calls where the owner said
 or Vue front end.
 
 1. Spring + Vue (done).
-2. Spring + Angular (screens, routes, resolvers, service calls: done; field-level reads next).
+2. Spring + Angular (screens, routes, resolvers, service calls, and typed field-level reads: done).
 3. React / Next.js.
 4. Node (Express, NestJS).
 5. .NET.

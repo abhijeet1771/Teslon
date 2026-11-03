@@ -1,4 +1,4 @@
-import type { ImpactReport, Surface, Case, Hop, Tier } from './model.js';
+import { isTyped, type ImpactReport, type Surface, type Case, type Hop, type Tier } from './model.js';
 
 /**
  * Markdown for where QA already looks: a short PR comment, and the full brief
@@ -91,7 +91,7 @@ function step(c: Case): string {
 export function broadDeltas(r: ImpactReport): Map<string, Set<string>> {
   const byDelta = new Map<string, Set<string>>();
   for (const c of r.cases) if (c.tier === 'test-next') { if (!byDelta.has(c.delta)) byDelta.set(c.delta, new Set()); byDelta.get(c.delta)!.add(c.surface); }
-  return new Map([...byDelta].filter(([id, ss]) => ss.size > 4 && !r.deltas.find((d) => d.id === id)?.kind.startsWith('request-rules')));
+  return new Map([...byDelta].filter(([id, ss]) => ss.size > 4 && !isTyped(r.deltas.find((d) => d.id === id)?.kind ?? 'code-changed')));
 }
 
 export interface Counts { places: number; cases: number }

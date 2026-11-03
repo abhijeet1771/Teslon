@@ -26,6 +26,7 @@ const item = (json) => `package com.acme.shop;
 
 public class Item {
   private Long id;
+  @jakarta.validation.constraints.NotNull
 ${json ? '  @com.fasterxml.jackson.annotation.JsonProperty("title")\n' : ''}  private String name;
 }
 `;
@@ -47,6 +48,43 @@ public class ItemResource {
 
   @GetMapping("/items/{id}")
   public Item one(@PathVariable Long id) {
+    return null;
+  }
+
+  @PutMapping("/items/{id}")
+  public Item update(@PathVariable Long id, @jakarta.validation.Valid @RequestBody Item item) {
+    return null;
+  }
+}
+`,
+  [`${J}/Order.java`]: `package com.acme.shop;
+
+public class Order {
+  private Long id;
+  private Item item;
+}
+`,
+  [`${J}/Tag.java`]: `package com.acme.shop;
+
+public class Tag {
+  private Long id;
+  @com.fasterxml.jackson.annotation.JsonIgnoreProperties(value = { "name" }, allowSetters = true)
+  private Item item;
+}
+`,
+  [`${J}/OrderResource.java`]: `package com.acme.shop;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class OrderResource {
+  @GetMapping("/api/orders/{id}")
+  public Order one(@PathVariable Long id) {
+    return null;
+  }
+
+  @GetMapping("/api/tags/{id}")
+  public Tag tag(@PathVariable Long id) {
     return null;
   }
 }
@@ -128,6 +166,13 @@ const itemRoutes: Routes = [
     loadComponent: () => import('./list/item-list').then(m => m.ItemList),
   },
   {
+    path: ':id/edit',
+    loadComponent: () => import('./update/item-update').then(m => m.ItemUpdate),
+    resolve: {
+      item: ItemResolve,
+    },
+  },
+  {
     path: ':id/view',
     loadComponent: () => import('./detail/item-detail').then(m => m.ItemDetail),
     resolve: {
@@ -156,6 +201,10 @@ export class ItemService {
   query() {
     return this.http.get<IItem[]>(this.resourceUrl);
   }
+
+  update(item: IItem) {
+    return this.http.put<IItem>(\`\${this.resourceUrl}/\${item.id}\`, item);
+  }
 }
 `,
   [`${A}/items/item.resolve.ts`]: `import { inject } from '@angular/core';
@@ -163,15 +212,17 @@ import { ItemService } from './item.service';
 
 export const ItemResolve = (route: { params: { id: number } }) => inject(ItemService).find(route.params.id);
 `,
-  [`${A}/items/list/item-list.ts`]: `import { Component, inject } from '@angular/core';
+  [`${A}/items/list/item-list.ts`]: `import { Component, inject, signal } from '@angular/core';
 import { ItemService } from '../item.service';
+import { IItem } from '../item.model';
 
 @Component({
   selector: 'app-item-list',
   templateUrl: './item-list.html',
 })
 export class ItemList {
-  private readonly items = inject(ItemService);
+  readonly items = signal<IItem[]>([]);
+  private readonly service = inject(ItemService);
 }
 `,
   [`${A}/items/list/item-list.html`]: `<h2>
@@ -193,6 +244,33 @@ import { IItem } from '../item.model';
 export class ItemDetail {
   readonly item = input<IItem | null>(null);
 }
+`,
+  [`${A}/items/update/item-form.ts`]: `import { FormControl, FormGroup } from '@angular/forms';
+import { IItem } from '../item.model';
+
+type ItemFormContent = {
+  id: FormControl<IItem['id']>;
+  name: FormControl<IItem['name']>;
+};
+export type ItemFormGroup = FormGroup<ItemFormContent>;
+`,
+  [`${A}/items/update/item-update.ts`]: `import { Component, inject } from '@angular/core';
+import { ItemService } from '../item.service';
+import { ItemFormGroup } from './item-form';
+
+@Component({
+  selector: 'app-item-update',
+  templateUrl: './item-update.html',
+})
+export class ItemUpdate {
+  protected readonly service = inject(ItemService);
+  editForm!: ItemFormGroup;
+}
+`,
+  [`${A}/items/update/item-update.html`]: `<form [formGroup]="editForm">
+  <label for="field_name">Name</label>
+  <input id="field_name" formControlName="name" />
+</form>
 `,
   [`${A}/shared/badge.ts`]: `import { Component, input } from '@angular/core';
 
@@ -219,7 +297,7 @@ test.after(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
 test('Angular: lazy route files become screens, with their full paths', () => {
   const f = readAngular(snapshot(setup(), 'HEAD'));
-  assert.deepEqual(f.routes.map((r) => r.path).sort(), ['/', '/items', '/items/:id/view']);
+  assert.deepEqual(f.routes.map((r) => r.path).sort(), ['/', '/items', '/items/:id/edit', '/items/:id/view']);
   const list = f.routes.find((r) => r.path === '/items');
   assert.equal(list.component, `${A}/items/list/item-list.ts`);
   assert.equal(list.file, `${A}/items/items.routes.ts`);
@@ -230,7 +308,7 @@ test('Angular: lazy route files become screens, with their full paths', () => {
 test('Angular: service calls with URLs built from an unresolved base, a const in another file and this.resourceUrl', () => {
   const f = readAngular(snapshot(setup(), 'HEAD'));
   const calls = f.calls.map((c) => `${c.verbs.join('/')} ${c.tpl}${c.baseAssumed ? ' *' : ''} <${c.resultType ?? ''}>`).sort();
-  assert.deepEqual(calls, ['GET /api/items * <IItem[]>', 'GET /api/items/{*} * <IItem>', 'GET /api/ping <string>']);
+  assert.deepEqual(calls, ['GET /api/items * <IItem[]>', 'GET /api/items/{*} * <IItem>', 'GET /api/ping <string>', 'PUT /api/items/{*} * <IItem>']);
 });
 
 test('Angular: a screen includes its template, the components it draws by selector, and its route\'s resolver', () => {
@@ -251,10 +329,37 @@ test('Angular: a change to what an API returns reaches the screens that load it,
   const r = impact({ repo: setup(), base: 'HEAD~1', head: 'HEAD' });
   const screens = r.surfaces.filter((s) => s.kind === 'screen');
   const reached = screens.filter((s) => s.tier !== 'skip').map((s) => s.where).sort();
-  assert.deepEqual(reached, ['/items', '/items/:id/view']);
+  assert.deepEqual(reached, ['/items', '/items/:id/edit', '/items/:id/view']);
   assert.deepEqual(screens.filter((s) => s.tier === 'skip').map((s) => s.where), ['/'], 'home calls only /api/ping');
   assert.equal(r.verification.failed.length, 0, JSON.stringify(r.verification.failed));
   assert.ok(!r.unseen.some((u) => /Angular/.test(u.what)), 'the Angular front end is read, not reported as unseen');
-  const viaResolver = r.cases.find((c) => c.surface === 'screen:/items/:id/view');
-  assert.ok(viaResolver.hops.some((h) => h.file === `${A}/items/items.routes.ts` && /uses item\.resolve\.ts/.test(h.rule)));
+  // the detail page gets its data from the route's resolver; its own inline template reads the field
+  const detail = r.cases.find((c) => c.surface === 'screen:/items/:id/view');
+  assert.ok(detail.hops.some((h) => h.label === 'The page reads it' && h.file === `${A}/items/detail/item-detail.ts`));
+});
+
+test('a JSON rename reaches the exact column, value and form field that read the old name, with the save that now fails', () => {
+  const r = impact({ repo: setup(), base: 'HEAD~1', head: 'HEAD' });
+  const d = r.deltas.find((x) => x.kind === 'response-shape-changed');
+  assert.equal(d.title, 'Item: JSON field "name" is now "title"');
+  assert.equal(r.ledger.find((l) => l.file.endsWith('Item.java')).status, 'explained');
+  const of = (sid) => r.cases.filter((c) => c.surface === sid && c.delta === d.id);
+  // list: {{ item.name }} inside a link, typed as IItem.name through items()
+  assert.match(of('screen:/items')[0].expect, /Risk: blank, because the API now sends "title" and this page reads "name"/);
+  // detail: <dt>Name</dt><dd>{{ item()?.name }}</dd>, data from the route's resolver
+  const det = of('screen:/items/:id/view');
+  assert.equal(det[0].field, 'Name');
+  // edit: formControlName="name" holds FormControl<IItem['name']>, and PUT now requires "title"
+  const edit = of('screen:/items/:id/edit');
+  assert.deepEqual(edit.map((c) => c.field), ['Name', 'Name']);
+  assert.match(edit[0].expect, /Filled with the saved name\. Risk: empty/);
+  assert.match(edit[1].expect, /rejected.*requires "title"/);
+  for (const c of [...of('screen:/items'), ...det, ...edit]) assert.equal(c.tier, 'test-first');
+  // the API itself, and a type that holds Item; one that leaves "name" out of Item is not touched
+  assert.match(of('api:GET /api/items/{id}')[0].expect, /"title" now/);
+  assert.ok(of('api:GET /api/orders/{id}').some((c) => c.field === 'item.name' && c.tier === 'test-next'));
+  assert.equal(of('api:GET /api/tags/{id}').length, 0, '@JsonIgnoreProperties({"name"}) on Tag.item cuts the path');
+  assert.match(of('api:PUT /api/items/{id}').find((c) => /^Send/.test(c.do)).expect, /Rejected \(400\)/);
+  assert.equal(r.verification.failed.length, 0, JSON.stringify(r.verification.failed));
+  assert.ok(r.unseen.some((u) => /callers outside this repository/.test(u.what)));
 });

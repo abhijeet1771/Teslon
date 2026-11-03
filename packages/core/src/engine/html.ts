@@ -298,7 +298,7 @@ const SCRIPT = `
 export function renderHtml(r: ImpactReport, meta: PrMeta, opts: HtmlOptions = {}): string {
   const k = counts(r);
   const pr = meta.number ? `PR #${meta.number}` : 'This change';
-  const title = `${pr} test brief`;
+  const title = meta.number ? `${pr} test brief` : 'Test brief';
   const repoName = meta.repoUrl?.split('/').slice(-2).join('/') ?? r.repo.split('/').pop() ?? '';
   const broad = broadDeltas(r);
   const grouped = (c: Case): boolean => c.tier === 'test-next' && broad.has(c.delta);
@@ -308,7 +308,7 @@ export function renderHtml(r: ImpactReport, meta: PrMeta, opts: HtmlOptions = {}
 
   // ---- header and verdict
   B.push(`<header class="top"><span class="eyebrow">Teslon · what to test${repoName ? ` · ${x(repoName)}` : ''}</span>
-<h1>${meta.title ? `${x(pr)}: ${x(meta.title)}` : `What ${x(pr.toLowerCase() === 'this change' ? 'this change' : pr)} asks QA to test`}</h1>
+<h1>${meta.title ? (meta.number ? `${x(pr)}: ${x(meta.title)}` : x(meta.title)) : `What ${meta.number ? x(pr) : 'this change'} asks QA to test`}</h1>
 <div class="facts"><code>${x(r.base.slice(0, 7))}..${x(r.head.slice(0, 7))}</code><span class="chip">${meta.state === 'merged' ? 'merged' : 'open'}</span><span>${plural(r.ledger.length, 'file')} changed</span><span>base <code>${x(meta.baseRef)}</code></span>${meta.author ? `<span>by ${x(meta.author)}</span>` : ''}${meta.url && /^https?:\/\//.test(meta.url) ? `<a href="${x(meta.url)}" target="_blank" rel="noopener noreferrer">open the PR</a>` : ''}</div>
 <p class="how">${x(meta.how)}</p></header>`);
 
@@ -349,7 +349,8 @@ ${tile('unseen', 'unseen', k.unseen.places, k.unseen.places === 1 ? 'thing, said
     if (broad.size) idx.push(`<a class="h" href="#regression">Regression lists · ${broad.size}</a>`);
     for (const { t, list } of tiers) {
       if (!list.length) continue;
-      idx.push(`<a class="h" href="#${t}">${TIER[t].glyph} ${TIER[t].title}</a><ol>${list.map((s) => `<li><a href="#${pid(s)}"><span class="nm">${x(s.name)}</span><span class="k">${r.cases.filter((c) => c.surface === s.id && !grouped(c) && c.tier !== 'skip').length}</span></a></li>`).join('')}</ol>`);
+      const dup = (s: Surface): boolean => r.surfaces.filter((o) => o.name === s.name).length > 1;
+      idx.push(`<a class="h" href="#${t}">${TIER[t].glyph} ${TIER[t].title}</a><ol>${list.map((s) => `<li><a href="#${pid(s)}"><span class="nm">${x(s.name)}${dup(s) && s.where !== s.name ? ` <code>${x(s.where)}</code>` : ''}</span><span class="k">${r.cases.filter((c) => c.surface === s.id && !grouped(c) && c.tier !== 'skip').length}</span></a></li>`).join('')}</ol>`);
     }
     if (k.skip.places) idx.push(`<a class="h" href="#skip">✓ Safe to skip · ${k.skip.places}</a>`);
     if (r.unseen.length) idx.push(`<a class="h" href="#unseen">? Could not see · ${r.unseen.length}</a>`);

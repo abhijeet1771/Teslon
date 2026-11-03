@@ -42,6 +42,33 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   6 of 6 screens, where it found 0 before. The bench is now 18 of 18, with 0
   silent misses and 0 wrong skips.
 
+- Response shape, typed end to end. A Java field whose JSON name changes
+  (`@JsonProperty`), or that leaves the JSON (`@JsonIgnore`, `transient`, a
+  class-level `@JsonIgnoreProperties`, or deleted), is followed to:
+  - the APIs that return or take its type, and those of every type that
+    holds it, unless a field-level `@JsonIgnoreProperties` on the path leaves
+    it out;
+  - the front-end type the page declares for that API (`http.get<IBankAccount>`);
+  - each template read of the old name.
+  The reads are typed by the TypeScript checker over a type-check block built
+  from each Angular template, the way Angular's own compiler checks them. So
+  `operation.bankAccount?.name` resolves through
+  `Pick<IBankAccount, 'id' | 'name'>`, and `formControlName="name"` through
+  `FormControl<IBankAccount['name']>`. Each case names the column, value,
+  form field or dropdown, with "Before" and the risk, and a save case when
+  the field is required.
+
+  On the JHipster rename it finds:
+  - the six places the crawl found;
+  - the create screens;
+  - the API cases.
+
+  The Labels pages drop out, because `Label.operations` leaves `bankAccount`
+  out of its JSON. A screen that loads a changed API with no typed read is
+  still listed to check, never dropped.
+- Java fields keep their modifiers, so `static` and `transient` fields are
+  no longer taken as part of the JSON.
+
 ### Fixed
 - A route whose component belongs to another framework was listed as a
   screen and could be skipped. It is now that framework's, named under

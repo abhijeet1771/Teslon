@@ -1,4 +1,4 @@
-import type { ImpactReport, Surface, Case, Hop, Tier } from './model.js';
+import { isTyped, type ImpactReport, type Surface, type Case, type Hop, type Tier } from './model.js';
 
 /**
  * Plain text for a terminal or a PR comment. One block per place to test,
@@ -57,8 +57,8 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
     L.push('');
   } else {
     L.push('WHAT CHANGED');
-    const typed = r.deltas.filter((d) => d.kind.startsWith('request-rules'));
-    const followed = r.deltas.filter((d) => !d.kind.startsWith('request-rules'));
+    const typed = r.deltas.filter((d) => isTyped(d.kind));
+    const followed = r.deltas.filter((d) => !isTyped(d.kind));
     typed.forEach((d, i) => {
       L.push(` ${i + 1}. ${d.title}`);
       if (d.endpoint) L.push(`    ${d.endpoint}`);
@@ -75,7 +75,7 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
   // a change that many places run is one regression list, not one block per place
   const byDelta = new Map<string, Set<string>>();
   for (const c of r.cases) if (c.tier === 'test-next') { if (!byDelta.has(c.delta)) byDelta.set(c.delta, new Set()); byDelta.get(c.delta)!.add(c.surface); }
-  const broad = new Set([...byDelta].filter(([id, ss]) => ss.size > 4 && !r.deltas.find((d) => d.id === id)?.kind.startsWith('request-rules')).map(([id]) => id));
+  const broad = new Set([...byDelta].filter(([id, ss]) => ss.size > 4 && !isTyped(r.deltas.find((d) => d.id === id)?.kind ?? 'code-changed')).map(([id]) => id));
   const grouped = (c: Case): boolean => c.tier === 'test-next' && broad.has(c.delta);
   if (broad.size) {
     L.push('REGRESSION (changed code that many places run; check each still works)');
@@ -150,7 +150,7 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
     L.push(` ${l.status === 'not-modelled' ? '!' : '·'} ${tag.padEnd(17)} ${l.file}${l.lines.length ? `  lines ${l.lines.slice(0, 12).join(', ')}${l.lines.length > 12 ? ' …' : ''}` : ''}${l.reason && l.status !== 'explained' ? `  (${l.reason})` : ''}`);
   }
   L.push('');
-  L.push(`Typed end to end: request rules (Bean Validation). Followed to where they run: changed Java methods and types, front-end files, dependencies, deployment files. Not typed yet: ${r.notModelled.join('; ')}.`);
+  L.push(`Typed end to end: request rules (Bean Validation), JSON field names of what APIs send and read (Jackson). Followed to where they run: changed Java methods and types, front-end files, dependencies, deployment files. Not typed yet: ${r.notModelled.join('; ')}.`);
   if (r.verification.failed.length) {
     L.push('');
     L.push('EVIDENCE THAT FAILED RE-READING');

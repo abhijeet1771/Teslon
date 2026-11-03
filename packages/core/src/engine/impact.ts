@@ -3,7 +3,8 @@ import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, t
 import { targetsRoute, routeQuote, type Component } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
-import { followChanges } from './where.js';
+import { followChanges, type WhereCtx } from './where.js';
+import { responseShape } from './shape.js';
 import { fileKind, noAppEffect } from './kinds.js';
 import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage } from './model.js';
 
@@ -184,17 +185,22 @@ export function impact(opts: ImpactOptions): ImpactReport {
     }
   }
 
-  /* ---------- 1b. everything else that changed: where it lands ---------- */
   const touched = new Set<Endpoint>();
   const noEffectFiles = new Map<string, string>();
   const touchedUi = new Set<string>();
-  followChanges({
+  const whereCtx: WhereCtx = {
     B, H, fb, fh, ui, ub, changes, deltas, unseen,
     surface: (x) => surface(x), addCase, closure,
     explained: (file, line) => explainedLines.get(file)?.has(line) ?? false,
     follow, touched, touchedUi,
     noEffect: (file, reason) => noEffectFiles.set(file, reason),
-  });
+  };
+
+  /* ---------- 1a. response shape: JSON fields renamed, removed or retyped ---------- */
+  responseShape({ ...whereCtx, explain });
+
+  /* ---------- 1b. everything else that changed: where it lands ---------- */
+  followChanges(whereCtx);
 
   function propagate(d: Delta, e: Endpoint): void {
     const writerScreens = new Set<string>();
@@ -522,7 +528,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const comp = ui.components.get(r.component);
     const files = closure(r.component);
     const own = ui.calls.filter((c) => files.has(c.file));
-    if ([...files].some((f) => touchedUi.has(f)) || own.some(hitsTouched)) { notRuledOut.push(`${r.path} (runs changed code)`); continue; }
+    const hit = own.find(hitsTouched);
+    if (hit) { notRuledOut.push(`${r.path} (calls ${hit.verbs.join('/')} ${hit.tpl}, which changed)`); continue; }
+    if ([...files].some((f) => touchedUi.has(f))) { notRuledOut.push(`${r.path} (runs changed code)`); continue; }
     const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
     if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); continue; }
     const ro = readsOnly.get(r.path);
@@ -538,7 +546,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     });
   }
   if (held) unseen.push({ what: `${held} screen${held === 1 ? '' : 's'} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no screen can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen' });
-  if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'their data goes through code this build does not follow (stores, injected services, URLs built elsewhere)', resolve: 'check these screens by hand' });
+  if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'each runs changed code or calls a changed API, but nothing on it was traced to a visible change', resolve: 'open each one and check it works as before' });
   for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue and Angular front ends, not ${u.framework} yet, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
 
   /* ---------- 4. what could not be seen ---------- */
@@ -562,7 +570,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
 
   const notModelled = [
     'what changed code does (it is followed to where it runs, not typed)',
-    'response shape changes (fields renamed, removed or retyped in what an API returns)',
+    'response shapes changed by custom serializers, getters or naming strategies (fields are read as written)',
     'database schema and migrations',
     'messages and events between services',
     'configuration keys and feature flags',

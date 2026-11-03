@@ -163,6 +163,17 @@ The first line of every report says which case it was.
   - **named**: a status saying why it has no app effect, or that it was not
     followed.
   The ledger lists every changed file.
+- **A renamed or removed JSON field is followed to each place that reads it.**
+  A rename in Java is invisible to the Java build and to its tests: every
+  screen that reads the old name just goes blank. For example,
+  `@JsonProperty("title")` on `BankAccount.name` leads to:
+  - the APIs that send or take it, including types that hold it, unless a
+    `@JsonIgnoreProperties` on the way leaves it out;
+  - the front-end type the page declares for that API;
+  - each template read of `name`, typed by the TypeScript checker.
+  Each case names the exact place: "Bank Accounts › Name column: blank",
+  "Edit › Name field: empty, and Save is rejected because the name is
+  required".
 - **"Safe to skip" is strict.** A place is only skipped when:
   - every changed line was followed;
   - its screen's code was read completely;
@@ -180,8 +191,8 @@ The first line of every report says which case it was.
 
 | | |
 |---|---|
-| Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven |
-| Front end | **Vue**: routes, templates, forms, fields, components, the calls each screen makes. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls. React and AngularJS code is detected and named under "could not see" until its reader ships |
+| Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven. The JSON each type sends and reads, as Jackson writes it (`@JsonProperty`, `@JsonIgnore`, `transient`, `@JsonIgnoreProperties`) |
+| Front end | **Vue**: routes, templates, forms, fields, components, the calls each screen makes. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls, and every template read typed by the TypeScript checker (the column, the value, the form field, the dropdown). React and AngularJS code is detected and named under "could not see" until its reader ships |
 | Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, `pom.xml`, `package.json`, resources under `src/main/resources` |
 
 The next stacks, in order, are React / Next.js, Node (Express, NestJS), .NET

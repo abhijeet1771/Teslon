@@ -61,7 +61,12 @@ export type DeltaKind =
   /** A screen's own template or script changed. */
   | 'ui-changed'
   | 'dependency-changed'
-  | 'deploy-changed';
+  | 'deploy-changed'
+  /** A field of what an API sends or reads is renamed, removed or retyped in its JSON. */
+  | 'response-shape-changed';
+
+/** Deltas whose behaviour change is typed, not only followed to where it runs. */
+export const isTyped = (k: DeltaKind): boolean => k.startsWith('request-rules') || k === 'response-shape-changed';
 
 export interface Delta {
   readonly id: string;

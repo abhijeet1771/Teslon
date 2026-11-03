@@ -16,7 +16,7 @@ import type { TplElement, TplShow, TplLink } from './vue-template.js';
  */
 
 const SKIP = /(^|\/)(node_modules|dist|build|target|coverage|e2e|cypress|\.angular)\//;
-const isNgFile = (f: string): boolean => /\.ts$/.test(f) && !/\.(spec|test|d)\.ts$/.test(f) && !SKIP.test(f);
+export const isNgFile = (f: string): boolean => /\.ts$/.test(f) && !/\.(spec|test|d)\.ts$/.test(f) && !SKIP.test(f);
 
 interface FileIndex {
   readonly sf: ts.SourceFile;
@@ -51,14 +51,14 @@ function readPaths(snap: Snapshot): { pattern: string; targets: string[]; dir: s
   return out.sort((a, b) => b.pattern.replace('*', '').length - a.pattern.replace('*', '').length);
 }
 
-const join = (a: string, b: string): string => (a ? `${a}/${b}` : b);
-function norm(p: string): string {
+export const join = (a: string, b: string): string => (a ? `${a}/${b}` : b);
+export function norm(p: string): string {
   const parts: string[] = [];
   for (const s of p.split('/')) { if (s === '..') parts.pop(); else if (s && s !== '.') parts.push(s); }
   return parts.join('/');
 }
 
-function makeResolver(snap: Snapshot): (from: string, spec: string) => string | null {
+export function makeResolver(snap: Snapshot): (from: string, spec: string) => string | null {
   const files = new Set(snap.files);
   const paths = readPaths(snap);
   const tryFile = (base: string): string | null => {
@@ -147,7 +147,7 @@ function toPath(tpl: string): { path: string; baseAssumed: boolean } | null {
   return { path: t.replace(/\/+$/, '') || '/', baseAssumed };
 }
 
-function decoratorArgs(n: ts.ClassDeclaration, name: string): ts.ObjectLiteralExpression | null {
+export function decoratorArgs(n: ts.ClassDeclaration, name: string): ts.ObjectLiteralExpression | null {
   for (const d of ts.getDecorators(n) ?? []) {
     if (ts.isCallExpression(d.expression) && ts.isIdentifier(d.expression.expression) && d.expression.expression.text === name) {
       const a = d.expression.arguments[0];
@@ -156,11 +156,11 @@ function decoratorArgs(n: ts.ClassDeclaration, name: string): ts.ObjectLiteralEx
   }
   return null;
 }
-const prop = (o: ts.ObjectLiteralExpression, name: string): ts.Expression | null => {
+export const prop = (o: ts.ObjectLiteralExpression, name: string): ts.Expression | null => {
   for (const p of o.properties) if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === name) return p.initializer;
   return null;
 };
-const str = (e: ts.Expression | null): string | null => (e && (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) ? e.text : null);
+export const str = (e: ts.Expression | null): string | null => (e && (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) ? e.text : null);
 
 /** `() => import('./x').then(m => m.Y)` or `() => import('./x')`: the module and the export taken. */
 function lazyImport(e: ts.Expression | null): { spec: string; name: string | null } | null {
