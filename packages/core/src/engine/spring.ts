@@ -29,6 +29,8 @@ export interface DtoField extends Located {
   readonly type: string;
   readonly constraints: readonly Constraint[];
   readonly jsonFormat?: Located & { readonly pattern: string };
+  /** @Valid on the field or its element type: the rules of the type it holds are enforced too */
+  readonly valid?: boolean;
 }
 
 export interface Dto extends Located { readonly name: string; readonly module: string; readonly fields: readonly DtoField[] }
@@ -36,7 +38,7 @@ export interface Dto extends Located { readonly name: string; readonly module: s
 export interface Entity extends Located {
   readonly name: string;
   readonly table: string;
-  readonly columns: readonly (Located & { readonly field: string; readonly column: string; readonly explicit: boolean })[];
+  readonly columns: readonly (Located & { readonly field: string; readonly column: string; readonly explicit: boolean; /** false for @Transient: JPA neither saves nor loads it */ readonly stored?: false })[];
 }
 
 /** An HTTP call made from Java to another service. */
@@ -53,7 +55,11 @@ export interface JavaCall extends Located {
   readonly module: string;
 }
 
-export interface CallEdge extends Located { readonly from: string; readonly to: string }
+export interface CallEdge extends Located {
+  readonly from: string; readonly to: string;
+  /** What the line shows when it is not the callee's name: an event published to a listener. */
+  readonly quote?: string; readonly how?: string;
+}
 
 /** A method an AI model can call: `@Tool`, or a `@Bean` function handed to a chat client by name. */
 export interface Tool extends Located { readonly cls: string; readonly method: string; readonly mark: string }
@@ -62,6 +68,8 @@ export interface Listener extends Located {
   readonly kind: string; readonly cls: string; readonly method: string; readonly mentions: readonly string[];
   /** Simple types of its parameters: for an @EventListener, the event it takes. */
   readonly takes: readonly string[];
+  /** @Async: it runs on another thread, and the request that started it does not wait for it. */
+  readonly async?: boolean;
 }
 export interface Timed extends Located { readonly metric: string; readonly cls: string; readonly method?: string }
 export interface GatewayRoute extends Located { readonly service: string; readonly prefix: string; readonly strip: number }
@@ -177,6 +185,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
         json: (jp && (annPairs(jp).get('value')?.replace(/^"|"$/g, '') ?? annStrings(jp)[0])) || fl.name,
         constraints: fl.annotations.filter((a) => CONSTRAINTS.has(a.name)).map((a) => ({ file, line: a.line, rule: annText(a), name: a.name })),
         ...(jf && pattern ? { jsonFormat: { file, line: jf.line, pattern } } : {}),
+        ...(hasAnn(fl.annotations, 'Valid') || /@((jakarta|javax)\.validation\.)?Valid(?![a-z0-9_])/.test(fl.type) ? { valid: true } : {}),
       };
     });
     const simple = t.name.split('.').pop()!;
@@ -214,7 +223,8 @@ export function readSpring(snap: Snapshot): SpringFacts {
     const columns = t.fields.filter((fl) => !/\bstatic\b/.test(fl.type) && !fl.mods?.includes('static')).map((fl) => {
       const c = hasAnn(fl.annotations, 'Column', 'JoinColumn');
       const column = (c && annPairs(c).get('name')?.replace(/^"|"$/g, '')) || fl.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-      return { field: fl.name, column, explicit: !!c, file, line: c ? c.line : fl.line };
+      const tr = hasAnn(fl.annotations, 'Transient');
+      return { field: fl.name, column, explicit: !!c, file, line: tr ? tr.line : c ? c.line : fl.line, ...(tr || fl.mods?.includes('transient') ? { stored: false as const } : {}) };
     });
     entities.push({ name: t.name.split('.').pop()!, table, file, line: ta ? ta.line : t.line, columns });
   }
@@ -234,6 +244,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
   const tools: Tool[] = [];
   const wiring: ToolWiring[] = [];
   const listeners: Listener[] = [];
+  const published: { from: string; type: string; file: string; line: number }[] = [];
   const timed: Timed[] = [];
   const functionRefs: { name: string; holder: string; file: string; line: number; call: string }[] = [];
   const entityNames = new Set(entities.map((e) => e.name));
@@ -267,7 +278,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
       const la = m.annotations.find((a) => LISTENERS.has(a.name));
       if (la) {
         const words = new Set(m.body.map((x) => x.t));
-        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e) || m.params.some((p) => p.type.replace(/<.*$/, '').split('.').pop() === e)), takes: m.params.map((p) => p.type.replace(/<.*$/, '').split('.').pop()!) });
+        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e) || m.params.some((p) => p.type.replace(/<.*$/, '').split('.').pop() === e)), takes: m.params.map((p) => p.type.replace(/<.*$/, '').split('.').pop()!), ...(hasAnn(m.annotations, 'Async') || hasAnn(t.annotations, 'Async') ? { async: true } : {}) });
       }
       const locals = new Map<string, string>(m.params.map((p) => [p.name, p.type.replace(/<.*$/, '')]));
       const body = m.body;
@@ -282,6 +293,11 @@ export function readSpring(snap: Snapshot): SpringFacts {
           const type = ft.get(x.t) ?? locals.get(x.t);
           if (x.t === 'this' && own.has(body[k + 2]!.t)) edge(`${cls}.${body[k + 2]!.t}`, body[k + 2]!.line);
           else if (type && fieldTypes.has(type)) edge(`${type}.${body[k + 2]!.t}`, body[k + 2]!.line);
+        }
+        // events: publishEvent(new OrderPlacedEvent(…)), or a local or parameter of the event's type
+        if (x.t === 'publishEvent' && body[k + 1]?.t === '(') {
+          const a = body[k + 2]?.t === 'new' ? body[k + 3]?.t : locals.get(body[k + 2]?.t ?? '')?.split('.').pop();
+          if (a && /^[A-Z]/.test(a)) published.push({ from: `${cls}.${m.name}`, type: a, file, line: x.line });
         }
         // calls inside the class: helper(…), and to static methods: Other.helper(…)
         if (/^[a-z]\w*$/.test(x.t) && body[k + 1]?.t === '(' && body[k - 1]?.t !== '.' && body[k - 1]?.t !== 'new' && own.has(x.t)) edge(`${cls}.${x.t}`, x.line);
@@ -385,6 +401,11 @@ export function readSpring(snap: Snapshot): SpringFacts {
   }
   const supertypes = new Map<string, string[]>();
   for (const { t } of allTypes) supertypes.set(t.name.split('.').pop()!, t.supertypes.map((x) => x.split('.').pop()!.replace(/<.*$/, '')));
+  // an in-process listener that is not @Async runs inside the call that publishes: the request waits for it, and its failure is the request's
+  for (const p of published) for (const l of listeners) {
+    if (l.async || !/^@(EventListener|TransactionalEventListener)$/.test(l.kind) || !l.takes.includes(p.type)) continue;
+    callEdges.push({ from: p.from, to: `${l.cls}.${l.method}`, file: p.file, line: p.line, quote: 'publishEvent', how: `${p.from}() publishes ${p.type}, and ${l.cls}.${l.method}() (${l.kind}) runs inside that call` });
+  }
   return { services, javaFiles, unreadable, endpoints, dtos, entities, calls, callEdges, tools, wiring, listeners, timed, gateway, gatewayService, configRepos, supertypes, moduleOf, serviceOf, dto };
 }
 

@@ -259,10 +259,15 @@ const NG_OPAQUE = /(?:^|\.)(?:store|_store)\.(?:select|dispatch|pipe)$|^(?:creat
  * or constructor parameter), `inject(OrderService).get(…)`, a local `const s = inject(X)`, and `orders.x` in the
  * component's template. Also each class member's span, and the members of its own class it uses through `this.`.
  */
-function memberUse(fi: FileIndex, template: string): { uses: string[]; injects: string[]; members: { cls: string; name: string; start: number; end: number; eager: boolean }[]; edges: Map<string, string[]> } {
+function memberUse(fi: FileIndex, template: string): { uses: string[]; injects: string[]; escapes: string[]; members: { cls: string; name: string; start: number; end: number; eager: boolean }[]; edges: Map<string, string[]> } {
   const { sf } = fi;
   const uses = new Set<string>();
   const injects = new Set<string>();
+  const escapes = new Set<string>();
+  // an instance used other than as `x.member`: handed on, copied, indexed
+  const memberOf = (n: ts.Node): boolean => !!n.parent && ts.isPropertyAccessExpression(n.parent) && n.parent.expression === n;
+  // the injection itself (`x = inject(S)`) and a declared name are not uses; `const s = this.service` is: the alias is not followed
+  const declares = (n: ts.Node): boolean => !!n.parent && ((ts.isVariableDeclaration(n.parent) || ts.isPropertyDeclaration(n.parent)) && n.parent.initializer === n && ts.isCallExpression(n) || (ts.isVariableDeclaration(n.parent) || ts.isParameter(n.parent) || ts.isPropertyDeclaration(n.parent)) && n.parent.name === n);
   const members: { cls: string; name: string; start: number; end: number; eager: boolean }[] = [];
   const edges = new Map<string, string[]>();
   const appClass = (name: string): boolean => fi.imports.has(name) || fi.classProps.has(name);
@@ -293,11 +298,19 @@ function memberUse(fi: FileIndex, template: string): { uses: string[]; injects: 
         if (self.length) edges.set(`${n.name.text}.${name}`, [...new Set(self)]);
         walk(m, own, n.name.text, name);
       }
-      // the template uses the component's fields: `orders.list()`, `products.products.value()`
-      if (template) for (const [field, t] of own) for (const mm of template.matchAll(new RegExp(`\\b${field}\\.(\\w+)`, 'g'))) uses.add(`${t}.${mm[1]}`);
+      // the template uses the component's fields: `orders.list()`, `products.products.value()`; a bare field is handed on
+      if (template) for (const [field, t] of own) {
+        for (const mm of template.matchAll(new RegExp(`\\b${field}\\??\\.(\\w+)`, 'g'))) uses.add(`${t}.${mm[1]}`);
+        if (new RegExp(`(?<![\\w.$])${field}(?![\\w$]|\\s*\\??\\.)`).test(template)) escapes.add(t);
+      }
       return;
     }
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) { const t = injected(n.initializer); if (t) { vars.set(n.name.text, t); injects.add(t); } }
+    {
+      const held = ts.isPropertyAccessExpression(n) && n.expression.kind === ts.SyntaxKind.ThisKeyword ? fields.get(n.name.text)
+        : ts.isIdentifier(n) && !(n.parent && ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) ? vars.get(n.text) ?? fields.get(n.text) : injected(n as ts.Expression);
+      if (held && !memberOf(n) && !declares(n)) escapes.add(held);
+    }
     if (ts.isPropertyAccessExpression(n)) {
       const r = n.expression;
       // this.orders.list / orders.list / inject(OrderService).get
@@ -311,7 +324,7 @@ function memberUse(fi: FileIndex, template: string): { uses: string[]; injects: 
     ts.forEachChild(n, (x) => walk(x, fields, cls, member));
   };
   walk(sf, new Map(), null, null);
-  return { uses: [...uses], injects: [...injects], members, edges };
+  return { uses: [...uses], injects: [...injects], escapes: [...escapes], members, edges };
 }
 
 export function readAngular(snap: Snapshot): FrontendFacts | null {
@@ -538,7 +551,7 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
     if (!fi || !c0) continue;
     const u = memberUse(fi, templateOf.get(f) ? snap.read(templateOf.get(f)!.file) ?? '' : '');
     for (const [k, v] of u.edges) memberCalls.set(k, v);
-    components.set(f, { ...c0, uses: u.uses, injects: u.injects });
+    components.set(f, { ...c0, uses: u.uses, injects: u.injects, ...(u.escapes.length ? { escapes: u.escapes } : {}) });
     for (let i = 0; i < calls.length; i++) {
       const c = calls[i]!;
       if (c.file !== f) continue;
@@ -607,6 +620,8 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
     const queue = [f];
     while (queue.length) {
       const cur = queue.shift()!;
+      // what a routes file imports (guards, resolvers, eager screens) runs for the routes that name it, not before every screen
+      if (cur !== f && rawRoutes.has(cur)) continue;
       const c = components.get(cur);
       for (const d of c?.deps ?? []) {
         if (shell.has(d) || !components.has(d) && !/\.(html|s?css|less)$/.test(d)) continue;

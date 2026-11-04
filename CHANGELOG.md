@@ -93,6 +93,57 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 - Cases on a route's collection read "a saved customers"; they now read "a
   saved customer".
 
+### Fixed (the API-contract and hardest scenarios: `bench/probes/catalog-contracts.mjs`, `catalog-hardest.mjs`)
+There are 134 new probes. In each, no page is named, and what breaks is two
+or three hops from the changed line. They found:
+- **A listener that runs inside the request.** A change to a plain
+  `@EventListener` (the order e-mail, the invoice) reached its job, but not
+  the page whose request publishes the event. If that listener fails, the
+  order fails. A publish now runs its in-process listeners, except `@Async`
+  ones, and the publish line is the evidence. Before, the order form could
+  be called safe to skip.
+- **A dropped or renamed column, and the screens that join it.** A column
+  dropped, or renamed in the database only, that the entity still maps
+  reached only the APIs returning that entity. Now it reaches every API
+  whose code loads the entity. That includes going through an eager
+  `@ManyToOne`: dropping `customer.phone` breaks the order list, the
+  dashboard and the daily report. A lazy collection counts only where it is
+  serialized or walked. Before, the order detail was called safe.
+- **An entity mapped to a column that does not exist.** `@Column(name)` or
+  `@Table(name)` changed with no migration: every screen using the entity
+  is test first ("fails (500)").
+- **A field made `@Transient`.** It reads back empty. The APIs that return
+  it or call its getter are listed; one that never reads it is not.
+- **A parent route that moves** (`path: 'products'` → `'catalog'` with
+  `loadChildren`): every child screen, old and new, is listed. So is every
+  link left behind. Before, Teslon said nothing.
+- **Request rules on a nested `@Valid` type**, such as
+  `lines[].quantity @Max(20)`, are the rules of the API that takes the outer
+  type. A type-use `List<@Valid T>` is read too.
+
+### Changed (precision from the same probes)
+- **A new getter that Jackson calls and no code names** adds a JSON field.
+  The APIs are listed and no page is. If the getter can fail, it is test
+  first. If the app refuses unknown fields (`fail-on-unknown-properties`),
+  the pages that send back what they loaded are test first.
+- **Imports a service, but never calls the changed member.** Such a screen is
+  now skipped, with what it calls as the proof. That holds only when every
+  use of the service on that screen is a member Teslon read: none hands the
+  instance on, and the route's own resolvers are counted. Held screens fell
+  from 10% to 3%.
+- **Security rules:**
+  - a `requestMatchers(...)` change reaches only the endpoints its patterns
+    match;
+  - a CSRF change reaches only `POST`, `PUT`, `PATCH` and `DELETE`.
+- **Client settings** reach only the code that uses the client they
+  configure: `spring.mail.*` (JavaMailSender), RabbitMQ, the Kafka producer
+  and Redis.
+- **A route's guard, resolver, title or data** belongs to that route, not
+  to the app shell.
+- **A screen whose type-checked reads of a response never touch the
+  changed field** is skipped with those reads as proof ("reads only orders,
+  revenue, top of it, not day").
+
 ### Added
 - **Perfection rules and the probe catalog.**
   `research/PERFECTION-RULES-2026-11-04.md` defines perfect as measurable

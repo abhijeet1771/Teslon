@@ -75,6 +75,8 @@ export interface Component {
   /** Members of app classes this file uses (`OrderService.list`), and the app classes it injects. */
   readonly uses?: readonly string[];
   readonly injects?: readonly string[];
+  /** App classes whose instance this file hands on whole (an argument, a copy, a template binding): its members are not all seen. */
+  readonly escapes?: readonly string[];
 }
 
 export interface Global {
@@ -130,6 +132,24 @@ export function callMadeBy(ui: FrontendFacts, files: ReadonlySet<string>, c: Api
     for (const n of ui.memberCalls?.get(u) ?? []) if (!seen.has(n)) { seen.add(n); queue.push(n); }
   }
   return false;
+}
+
+/** Every use of `owner` on these files is a member access Teslon read: none hands the instance on. */
+export function usesSeen(ui: FrontendFacts, files: ReadonlySet<string>, owner: string, ownerFile: string): boolean {
+  for (const f of files) {
+    const k = ui.components.get(f);
+    if (k?.escapes?.includes(owner)) return false;
+    // a file that imports the owner's file but injects no instance of it reaches it some other way: a subclass, a token, a type
+    if (f !== ownerFile && k?.deps.includes(ownerFile) && !k.injects?.includes(owner)) return false;
+  }
+  return true;
+}
+
+/** Members of `owner` used on these files. */
+export function membersUsed(ui: FrontendFacts, files: ReadonlySet<string>, owner: string): string[] {
+  const out = new Set<string>();
+  for (const f of files) for (const u of ui.components.get(f)?.uses ?? []) if (u.startsWith(`${owner}.`)) out.add(u.slice(owner.length + 1));
+  return [...out].sort();
 }
 
 const HTTP_CALL = /^(fetch|axios(\.(get|post|put|patch|delete|request))?|http\.(get|post|put|patch|delete)|\$http\.(get|post|put|patch|delete)|api\.(get|post|put|patch|delete))$/;

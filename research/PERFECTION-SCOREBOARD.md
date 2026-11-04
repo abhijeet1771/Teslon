@@ -16,6 +16,9 @@ measures it.
 | 4 | ✓ | ✓ (2 wrong skips found, fixed) | ✓ | ✓ | ✓ | 39 / 39 | **2.4%** ✓ | **6.2%** ✓ | 39 |
 | 5 | ✓ | ✓ (2 wrong skips found, fixed) | ✓ (1 citation bug found on each history, fixed) | ✓ | ✓ | 44 / 44 | 2.1% ✓ | 6.6% ✓ | 42 |
 | 6: a real microservices app | ✓ | ✓ (1 found, fixed) | ✓ | ✓ | ✓ | 9 / 9 on spring-petclinic-microservices | 1.2% ✓ | 0.0% ✓ | 10 |
+| 7a: 92 API-contract probes written | ✓ | **1 wrong skip** (h10) | ✓ | ✓ | ✓ | 91 / 92 | 7.2% | 10.3% | 19 |
+| 7b: 42 hardest probes written | ✓ | **5 wrong skips** (z28, z29, z32, z33, z42 silent) | ✓ | ✓ | **3 misses** (z42) | 37 / 42 | 21.4% | 16.3% | 22 |
+| 7c: all fixed | ✓ | ✓ (3 more found by the new skip rule, fixed) | ✓ | ✓ | ✓ | **178 / 178** | **4.4%** ✓ | **2.9%** ✓ | 70 |
 
 ## What each iteration found and fixed
 
@@ -129,6 +132,99 @@ What they found:
 - **A shared front-end file**, the HTTP client, reaches the chat box drawn
   on every screen as an area of its own.
 
+### Iteration 7: API contracts, and the hardest PRs (`catalog-contracts.mjs`, `catalog-hardest.mjs`)
+
+These 134 probes ask the lead's question: "which functionality, on which
+page?" The PR names no page, and often no API.
+- **The contract map** is written by hand from every template and form. It
+  records who reads and who sends each JSON field of Customer, Product,
+  Order, OrderItem, OrderSummaryDto, DailySalesDto and TopProduct.
+- **From the map:** 62 rename and drop probes, and 6 request-rule probes.
+- **24 hard contract probes:**
+  - an enum's JSON value;
+  - date formats;
+  - `Page` instead of `List`;
+  - renamed and required query parameters;
+  - PUT → PATCH;
+  - XML;
+  - lazy relations;
+  - `@Transient`;
+  - a column renamed without a migration;
+  - front-end payloads;
+  - a trailing slash;
+  - `NON_NULL`;
+  - `@JsonIgnoreProperties` on an embedded type;
+  - a removed nested `@Valid`;
+  - a 204;
+  - a path variable's type;
+  - a computed getter.
+- **42 hardest probes:**
+  - security rules, CSRF, a Bearer token, a dropped interceptor;
+  - guards and role checks;
+  - a discount, a line total, the last unit in stock, a cancel rule, sort
+    order, the report's time zone;
+  - a shared `findAll` with a filter;
+  - page size;
+  - a dropped column the entity still maps;
+  - a NOT NULL column with no default;
+  - mail settings and listeners inside the request;
+  - an after-commit listener;
+  - cron and thresholds;
+  - a service URL;
+  - form limits;
+  - shared widgets;
+  - resolvers;
+  - a route title;
+  - a parent route that moves.
+
+**Wrong skips and silences, all fixed:**
+- **h10.** An entity `@Column(name)` changed with no migration. The report
+  page was safe; now every user of the entity is test first.
+- **z32 and z33.** A plain `@EventListener` runs inside the request that
+  publishes its event, and the order form was safe. A publish is now a call.
+- **z28 and z29.** A dropped or renamed column reached only the APIs
+  returning the entity. The order detail joins customer eagerly and was
+  safe. Now every API that loads the entity is reached, through eager
+  relations, and through lazy ones where serialized or walked.
+- **z42.** A parent route moving left Teslon silent. Every child screen,
+  old and new, is now listed, with the links left behind.
+- **Found by the new member-level skip (3).**
+  - A route's inline resolver calls the service for the edit page. The
+    route file is now counted.
+  - `@Transient` dropped a stored field, and the order list was safe. A
+    field no longer stored now reaches the APIs that read it back.
+
+**Precision:**
+- a screen that imports a service but never calls the changed member is
+  skipped with proof;
+- security path rules and CSRF are scoped;
+- `spring.mail.*` and the other client settings reach their client's code;
+- a guard or a title belongs to its route, not the app shell;
+- a new getter is a JSON field, not a code change on every screen;
+- nested `@Valid` rules are request rules.
+
+Extra screens went from 21.4% to 4.4%, and held screens from 16.3% to 2.9%.
+
+The other suites are unchanged:
+
+| Suite | Result |
+|---|---|
+| Unit tests | 189 pass (11 new, one per rule above) |
+| spring-petclinic-microservices probes | 9 / 9 |
+| Proving ground | 33 / 33, ideal 16 / 16 |
+| Bench | 18 / 18, no silent misses, no wrong skips |
+| 60-commit history scans, spm and JHipster | 0 citation failures, 0 crashes |
+
+On JHipster, held areas went from 445 to 435.
+
+**Truth corrections (Teslon was right):**
+- a plain listener runs inside order creation (j11, c04);
+- an eager `@ManyToOne` means the order list and the report break when a
+  customer column is dropped (z28, z29);
+- an interceptor and a navbar role check are on every screen (z12, z14);
+- the navbar link to a moved route is on every screen (z42);
+- an open product API is reached from every page that calls it (z10).
+
 ### Truth corrections
 
 All are marked in the catalog. In each case Teslon was right, and the truth
@@ -155,8 +251,10 @@ written first had missed something:
   - Feign clients and the gateway on a microservice app;
   - Vue screens.
 - **Precision still to gain:**
-  - member-level skips: a screen that imports a service but does not call
-    the changed method is held, not skipped;
+  - framework JSON settings (`spring.jackson.*`) still reach every screen,
+    not only the screens that read dates or nulls;
+  - a changed getter on an entity reaches every screen of that entity, not
+    only those that read the field;
   - field-level data holds;
   - exception handlers reach only the endpoints that throw the exception
     they handle.

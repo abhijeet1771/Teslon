@@ -1,7 +1,7 @@
 import type { Hop, Delta } from './model.js';
 import type { SpringFacts, Endpoint } from './spring.js';
 import { exposedAs } from './spring.js';
-import { hasAnn, annStrings, type JType, type JField } from './java.js';
+import { hasAnn, annStrings, type JType, type JField, type JMethod } from './java.js';
 import { routeQuote, callMadeBy, type ApiCall } from './vue.js';
 import { browserCalls, importChain, screenTitle, type WhereCtx } from './where.js';
 import { angularReads, type TypedRead } from './ngtypes.js';
@@ -161,6 +161,41 @@ function readsOf(ctx: WhereCtx): TypedRead[] {
  * the build passes, and the page shows nothing. Only reads this PR introduced are reported, on types the page
  * gets straight from a Java API.
  */
+/**
+ * A getter added to a JSON type that no Java code names: Jackson calls it on every response, and it adds one
+ * field to the JSON. `safe` when its body only reads fields and literals, so it cannot throw. Null for anything more.
+ */
+export function addedJsonGetter(fh: SpringFacts, fb: SpringFacts, file: string, t: JType, m: JMethod): { prop: string; safe: boolean } | null {
+  if (t.kind !== 'class' || !/^(get|is)[A-Z]/.test(m.name) || m.params.length || m.returnType === 'void') return null;
+  if (m.annotations.some((a) => /^(JsonIgnore|JsonProperty|JsonGetter|JsonValue|JsonAnyGetter|JsonSerialize|Transient|Id|EmbeddedId|Column|Formula|PrePersist|PreUpdate|PostLoad|Bean|Override)$/.test(a.name))) return null;
+  const name = t.name.split('.').pop()!;
+  if (![...fh.dtos.values()].some((d) => d.file === file && d.name === name)) return null;
+  const bt = fb.javaFiles.get(file)?.types.find((x) => x.name === t.name);
+  if (!bt || bt.methods.some((x) => x.name === m.name)) return null;
+  const prop = m.name.replace(/^(get|is)/, '').replace(/^./, (c) => c.toLowerCase());
+  // a getter for a field that is already sent changes nothing in the JSON
+  if (t.fields.some((fl) => fl.name === prop)) return null;
+  // JPA property access (@Id on a getter): a new getter is a new column
+  if (t.methods.some((x) => x.annotations.some((a) => a.name === 'Id' || a.name === 'EmbeddedId'))) return null;
+  // a call or method reference anywhere in Java: it is more than a JSON field
+  for (const jf of fh.javaFiles.values()) for (const ty of jf.types) for (const mm of ty.methods) if (mm !== m && mm.body.some((x) => x.t === m.name)) return null;
+  const fields = new Map((t.fields as readonly JField[]).filter((fl) => !fl.mods?.includes('static')).map((fl) => [fl.name, fl.type]));
+  const PLAIN = /^(String|int|long|short|byte|char|boolean|double|float)$/;
+  const body = m.body.map((x) => x.t);
+  const first = body[body[0] === 'return' ? 1 : 0] ?? '';
+  // left-to-right +: a string first makes the whole expression a string join, which cannot fail on a null
+  const joins = /^"/.test(first) || (fields.get(first) === 'String') || (first === 'this' && fields.get(body[3] ?? '') === 'String');
+  let safe = body[0] === 'return';
+  for (let i = 0; i < body.length && safe; i++) {
+    const tok = body[i]!;
+    if (/^("|'|\d)/.test(tok) || /^(return|null|true|false|\+|;|this)$/.test(tok)) continue;
+    if (tok === '.') { safe = body[i - 1] === 'this'; continue; }
+    if (fields.has(tok)) { safe = PLAIN.test(fields.get(tok)!) || joins; continue; }
+    safe = false;
+  }
+  return { prop, safe };
+}
+
 export function contractCheck(ctx: ShapeCtx): void {
   const { fh, ui } = ctx;
   const changed = new Map(ctx.changes.filter((c) => c.status !== 'deleted').map((c) => [c.path, new Set(c.headLines)]));
@@ -201,6 +236,71 @@ export function contractCheck(ctx: ShapeCtx): void {
   }
 }
 
+/** Is Jackson set to refuse JSON fields a type cannot take? Spring Boot's default is to ignore them. */
+function strictJson(ctx: ShapeCtx): { file: string; line: number; quote: string } | null {
+  for (const f of ctx.H.files) {
+    if (/application[^/]*\.(ya?ml|properties)$/.test(f)) {
+      const lines = (ctx.H.read(f) ?? '').split('\n');
+      const i = lines.findIndex((l) => /fail-on-unknown-properties\s*[:=]\s*true/i.test(l));
+      if (i >= 0) return { file: f, line: i + 1, quote: 'fail-on-unknown-properties' };
+    } else if (f.endsWith('.java') && !/\/src\/test\//.test(f)) {
+      const t = ctx.H.read(f) ?? '';
+      if (!/FAIL_ON_UNKNOWN_PROPERTIES/.test(t)) continue;
+      const lines = t.split('\n');
+      const i = lines.findIndex((l) => /(enable|configure)\s*\(\s*DeserializationFeature\.FAIL_ON_UNKNOWN_PROPERTIES\s*(,\s*true\s*)?\)|featuresToEnable\s*\([^)]*FAIL_ON_UNKNOWN_PROPERTIES/.test(l));
+      if (i >= 0) return { file: f, line: i + 1, quote: 'FAIL_ON_UNKNOWN_PROPERTIES' };
+    }
+  }
+  return null;
+}
+
+/** New getters Jackson will call: the JSON gains a field. Pages that do not read it are unchanged. */
+function gainedFields(ctx: ShapeCtx, changedJava: ReadonlySet<string>): void {
+  const { fb, fh } = ctx;
+  for (const [key, dto] of fh.dtos) {
+    if (!changedJava.has(dto.file) || !fb.dtos.has(key)) continue;
+    const t = findType(fh, dto.file, dto.name);
+    const shape = shapeOf(fh, key);
+    if (!t || !shape) continue;
+    for (const m of t.methods) {
+      const g = addedJsonGetter(fh, fb, dto.file, t, m);
+      if (!g) continue;
+      const id = `shape:${dto.name}.+${g.prop}`;
+      const cause: Hop = { label: 'JSON field added', file: dto.file, line: m.line, quote: m.name, rule: `${dto.name}.${m.name}() is a getter no Java code calls: Jackson calls it, so every ${dto.name} in the JSON now has "${g.prop}"${g.safe ? '; it only reads fields, so it cannot fail' : ''}` };
+      ctx.deltas.push({ id, kind: 'response-shape-changed', title: `${dto.name}: the JSON now also has "${g.prop}" (${m.name}())`, endpoint: '', rules: [], causes: [cause] });
+      // a body that cannot fail is this change in full; anything more is also followed as code
+      if (g.safe) for (let l = m.line; l <= m.endLine; l++) ctx.explain(dto.file, l);
+      const apis: string[] = [];
+      for (const c of carriers(fh, shape, g.prop)) for (const e of fh.endpoints.filter((x) => x.module === dto.module && ids(x.returns).includes(c.type))) {
+        const exp = exposedAs(fh, e);
+        const ext = exp ? exp.path : e.path;
+        const aid = `api:${e.verb} ${ext}`;
+        const path = c.path.join('.');
+        ctx.surface({ id: aid, kind: 'api', name: `${e.verb} ${ext}`, where: `${e.service ?? ''} ${e.verb} ${e.path}`.trim(), tier: g.safe ? 'test-next' : 'test-first' });
+        ctx.addCase({ surface: aid, delta: id, tier: g.safe ? 'test-next' : 'test-first', field: path, do: `Call ${e.verb} ${ext} and read ${path}.`, expect: g.safe ? `"${g.prop}" is there; every other field is as before.` : `It answers 200 with "${g.prop}". Risk: ${m.name}() runs for every ${dto.name} in the response, and if it throws the whole call fails (500).`, before: `no "${g.prop}"`, after: `"${g.prop}" added`, proof: 'derived', hops: [cause, { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} returns ${e.returns}` }] });
+        apis.push(`${e.verb} ${ext}`);
+      }
+      if (apis.length) ctx.unseen.push({ what: `callers outside this repository of ${[...new Set(apis)].slice(0, 3).join(', ')}${apis.length > 3 ? ` and ${apis.length - 3} more` : ''}`, why: `the JSON gains "${g.prop}"; a client that refuses unknown fields (a strict mobile or partner parser) fails on it`, resolve: 'check that outside clients ignore unknown JSON fields', files: [dto.file] });
+      // the API refuses unknown fields: a page that sends back what it loaded now sends "prop", and is refused
+      const strict = strictJson(ctx);
+      if (strict) for (const e of fh.endpoints.filter((x) => x.module === dto.module && x.body && ids(x.body.type).includes(dto.name) && /^(POST|PUT|PATCH)$/.test(x.verb))) {
+        const exp = exposedAs(fh, e);
+        const ext = exp ? exp.path : e.path;
+        const strictHop: Hop = { label: 'Refuses unknown fields', file: strict.file, line: strict.line, quote: strict.quote, rule: 'Jackson fails on a JSON field the type cannot take' };
+        const apiHop: Hop = { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} takes ${e.body!.type}` };
+        ctx.surface({ id: `api:${e.verb} ${ext}`, kind: 'api', name: `${e.verb} ${ext}`, where: `${e.service ?? ''} ${e.verb} ${e.path}`.trim(), tier: 'test-first' });
+        ctx.addCase({ surface: `api:${e.verb} ${ext}`, delta: id, tier: 'test-first', field: g.prop, do: `Send ${e.verb} ${ext} with the ${dto.name} JSON as the API returns it now, "${g.prop}" included.`, expect: `Accepted. Risk: HTTP 400, because "${g.prop}" has no setter and unknown fields are refused.`, before: 'Accepted.', after: 'May be refused.', proof: 'derived', hops: [cause, strictHop, apiHop] });
+        for (const c of browserCalls(fh, ctx.ui, e)) for (const rt of ctx.ui.routes.filter((x) => callMadeBy(ctx.ui, ctx.closure(x.component), c))) {
+          const sid = `screen:${rt.path}`;
+          const title = screenTitle(ctx.ui.components.get(rt.component), rt.path);
+          ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
+          ctx.addCase({ surface: sid, delta: id, tier: 'test-first', do: `On ${title}, save a ${words(dto.name)} the page loaded.`, expect: `It saves. Risk: refused (400) if the page sends back "${g.prop}", which the API now returns and refuses to take.`, before: 'Saved.', after: 'May be refused.', proof: 'derived', hops: [cause, strictHop, apiHop, { label: 'The page calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}` }, { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }] });
+        }
+      }
+    }
+  }
+}
+
 export function responseShape(ctx: ShapeCtx): void {
   const { fb, fh, ui, H } = ctx;
   const changedJava = new Set(ctx.changes.filter((c) => c.path.endsWith('.java') && c.status !== 'deleted' && !/\/src\/test\//.test(c.path)).map((c) => c.path));
@@ -215,6 +315,7 @@ export function responseShape(ctx: ShapeCtx): void {
     }
     changes.push(...diff(b, h));
   }
+  gainedFields(ctx, changedJava);
   if (!changes.length) return;
   const naming = H.files.filter((f) => /application[^/]*\.(ya?ml|properties)$/.test(f)).find((f) => /property-naming-strategy|propertyNamingStrategy/.test(H.read(f) ?? ''));
   if (naming) ctx.unseen.push({ what: `a JSON naming strategy in ${fileName(naming)}`, why: 'it renames every JSON field; the names below are as written in the Java code', resolve: 'check one response of each changed API by hand', files: [naming] });
@@ -281,6 +382,20 @@ export function responseShape(ctx: ShapeCtx): void {
     const tsNames = new Set([...links].filter(([, v]) => v.java === T.name).map(([k]) => k));
     for (const cand of [`I${T.name}`, T.name, `${T.name}Model`, `${T.name}Dto`, `${T.name}DTO`]) if (!links.has(cand)) tsNames.add(cand);
     const hits = typedReads().filter((r) => r.prop === old && tsNames.has(r.type));
+    /**
+     * Can a screen's reads of this type be trusted as complete? Only when the type checker typed reads of it there,
+     * and nothing in the screen's code hands the value on whole: a form filled by name, a copy, keys read in a loop.
+     */
+    const readsComplete = (component: string, names: Set<string> | null): boolean => {
+      if (!names) return false;
+      const closure = ctx.closure(component);
+      if (!typedReads().some((x) => closure.has(x.component) && names.has(x.type))) return false;
+      for (const f of closure) {
+        const t = ctx.H.read(f) ?? '';
+        if (/\b(patchValue|setValue|reset)\(|JSON\.stringify\(|Object\.(keys|entries|values|assign|fromEntries)\(|structuredClone\(|\[\s*[a-z]\w*\s*\](?!\s*[:=])|\.\.\.\s*[a-z]/.test(t) && !/\.(html)$/.test(f)) return false;
+      }
+      return true;
+    };
     const done = new Set<string>();
     const reached = new Set<string>();
     for (const r of hits) {
@@ -354,6 +469,12 @@ export function responseShape(ctx: ShapeCtx): void {
             if (shows.length) {
               ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
               for (const sh of shows) ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: sh.label || sh.expr, do: `Open ${title} and look at ${sh.label || sh.expr}.`, expect: `It shows the ${noun}'s ${old}. Risk: ${blank}, because ${risk}.`, before: 'Shown.', after: 'Blank.', proof: 'derived', hops: [...chain, { label: 'The page reads it', file: sh.file, line: sh.line, quote: old, rule: `${sh.expr} (read by name; its type is not checked)` }] });
+            } else if (readsComplete(rt.component, c0.type === T.name ? tsNames : null)) {
+              // the checker typed every read this screen makes of the type, and none is the changed field: it does not depend on it
+              const closure = ctx.closure(rt.component);
+              const sib = typedReads().filter((x) => closure.has(x.component) && tsNames.has(x.type));
+              const props = [...new Set(sib.map((x) => x.prop))];
+              ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'skip', reason: `loads ${e.verb} ${ext}, and reads only ${props.slice(0, 6).join(', ')} of it, not ${old}`, evidence: [callHop, { label: 'Reads', file: sib[0]!.file, line: sib[0]!.line, quote: sib[0]!.prop, rule: `${sib[0]!.expr}: every read of ${sib[0]!.type} here is typed, and none is ${old}` }] });
             } else {
               ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-next' });
               ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Open ${title} and use what loads ${e.verb} ${ext}.`, expect: `Works as before. It loads ${c0.path.join('.')}, which ${ch.kind === 'renamed' ? `is now "${c0.path.slice(0, -1).concat(neu!).join('.')}"` : ch.kind === 'removed' ? 'is gone' : `is now ${ch.now!.type}`}; nothing on this screen was found reading it.`, before: 'As released.', after: 'Loads changed JSON.', proof: 'derived', hops: chain });

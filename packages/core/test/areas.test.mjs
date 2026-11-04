@@ -60,12 +60,14 @@ test('every screen and job of the app gets exactly one answer, grouped by module
       assert.ok(a.why && !/ of $/.test(a.why), `${a.id}: ${a.why}`);
       assert.ok(a.evidence.length, a.id);
     }
-    // a screen that calls the changed API but shows nothing traced is unclear, with why, not dropped into a sentence
-    const unclear = b.areas.filter((a) => a.state === 'unclear');
-    assert.ok(unclear.length);
-    for (const a of unclear) assert.match(a.why, /traced|follow/);
+    // a screen that imports the order service but only lists orders never calls cancel: skipped, with that as the proof
+    const list = b.areas.find((a) => a.id === 'screen:/orders');
+    assert.equal(list?.state, 'skip', list?.why);
+    assert.match(list.why, /never calls OrderService\.cancel\(\)/);
+    assert.match(list.why, /uses only list/);
+    // anything still unclear says why, and is on the map, not repeated in "could not see"
+    for (const a of b.areas.filter((x) => x.state === 'unclear')) assert.match(a.why, /traced|follow/);
     assert.ok(!b.unseen.some((u) => /could not be ruled out/.test(u.what)), 'the map shows them, so "could not see" does not repeat them');
-    assert.ok(r.unseen.some((u) => /could not be ruled out/.test(u.what)), 'the report itself still says it');
     // removed endpoint: proven, not guessed
     assert.equal(b.changes.find((c) => c.id.startsWith('api-gone:'))?.known, 'proven');
   } finally { rmSync(d, { recursive: true, force: true }); }

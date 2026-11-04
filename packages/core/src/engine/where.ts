@@ -99,6 +99,37 @@ function pointcutTargets(f: SpringFacts, aspect: JType): string[] | null {
   return [...out];
 }
 
+/** Does a Spring path pattern (/api/reports/** or /api/{x}/items) match an endpoint path (/api/reports/{id})? */
+function antMatch(pattern: string, path: string): boolean {
+  const re = pattern.replace(/[.+?^$()|[\]\\]/g, '\\$&').replace(/\{[^}]*\}/g, '[^/]+').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\/\u0000/g, '(/.*)?').replace(/\u0000/g, '.*');
+  return new RegExp(`^${re}/?$`).test(path.replace(/\{[^}]*\}/g, 'x'));
+}
+
+/** Framework settings that configure one client bean, and the types that bean is injected as. */
+const CLIENT_KEYS: [RegExp, RegExp][] = [
+  [/^spring\.mail\./, /^(JavaMailSender|MailSender|JavaMailSenderImpl)$/],
+  [/^spring\.rabbitmq\./, /^(RabbitTemplate|AmqpTemplate|RabbitOperations)$/],
+  [/^spring\.kafka\.producer\./, /^(KafkaTemplate|KafkaOperations)$/],
+  [/^spring\.(data\.)?redis\./, /^(RedisTemplate|StringRedisTemplate|ReactiveRedisTemplate|RedisConnectionFactory)$/],
+];
+
+/** Line ranges of every `{ … }` in a source text, strings and comments skipped. */
+function objectSpans(text: string): { from: number; to: number }[] {
+  const out: { from: number; to: number }[] = [];
+  const stack: number[] = [];
+  let line = 1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '\n') { line++; continue; }
+    if (c === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; i--; continue; }
+    if (c === '/' && text[i + 1] === '*') { const e = text.indexOf('*/', i + 2); const end = e < 0 ? text.length : e + 1; for (let k = i; k < end; k++) if (text[k] === '\n') line++; i = end; continue; }
+    if (c === '"' || c === "'" || c === '`') { let k = i + 1; while (k < text.length && text[k] !== c) { if (text[k] === '\\') k++; else if (text[k] === '\n') line++; k++; } i = k; continue; }
+    if (c === '{') stack.push(line);
+    else if (c === '}' && stack.length) out.push({ from: stack.pop()!, to: line });
+  }
+  return out;
+}
+
 /** Innermost type and method that hold a line. */
 function locate(types: readonly JType[], line: number): { type: JType; method: JMethod | null } | null {
   let best: JType | null = null;
@@ -131,7 +162,7 @@ function reachFrom(f: SpringFacts, start: string): Reach[] {
     if (f.listeners.some((l) => l.cls === cls && l.method === method)) out.push({ kind: 'listener', at, hops });
     for (const name of asCalled(at)) {
       for (const e of f.callEdges.filter((x) => x.to === name)) {
-        walk(e.from, [...hops, { label: 'Called by', file: e.file, line: e.line, quote: method, rule: `${e.from}() calls ${name}()` }], depth + 1);
+        walk(e.from, [...hops, { label: e.how ? 'Runs inside' : 'Called by', file: e.file, line: e.line, quote: e.quote ?? method, rule: e.how ?? `${e.from}() calls ${name}()` }], depth + 1);
       }
     }
   };
@@ -368,6 +399,60 @@ function savesEntity(f: SpringFacts, e: Endpoint, entity: string): boolean {
   return visit(`${e.cls}.${e.method}`, 0);
 }
 
+/**
+ * Entities whose rows bring this one along: an eager @ManyToOne or @OneToOne (JPA's default) joins it into
+ * every query, and a collection Jackson writes loads it. Order → Customer, OrderItem → Product.
+ */
+function holders(f: SpringFacts, entity: string, written: boolean): Set<string> {
+  const names = new Set(f.entities.map((e) => e.name));
+  const edges: [string, string][] = [];
+  for (const en of f.entities) {
+    const t = f.javaFiles.get(en.file)?.types.find((x) => simple(x.name) === en.name);
+    for (const fl of t?.fields ?? []) {
+      const target = (fl.type.match(/[A-Z]\w*/g) ?? []).find((x) => names.has(x) && x !== en.name);
+      if (!target) continue;
+      const rel = fl.annotations.find((a) => /^(ManyToOne|OneToOne|OneToMany|ManyToMany|ElementCollection)$/.test(a.name));
+      if (!rel) continue;
+      const text = rel.args.map((x) => x.t).join(' ');
+      const lazy = /^(OneToMany|ManyToMany|ElementCollection)$/.test(rel.name) ? !/\bEAGER\b/.test(text) : /\bLAZY\b/.test(text);
+      // a lazy relation loads only when something reads it: Jackson, when the entity is what the API returns
+      if (!lazy || (written && !fl.annotations.some((a) => a.name === 'JsonIgnore'))) edges.push([en.name, target]);
+    }
+  }
+  const out = new Set([entity]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [from, to] of edges) if (out.has(to) && !out.has(from)) { out.add(from); grew = true; }
+  }
+  return out;
+}
+
+/** Does an endpoint load rows of this entity: it returns or takes it, or its code (or what it calls) uses it or its repository, directly or through an entity that brings it along? */
+function loadsEntity(f: SpringFacts, e: Endpoint, entity: string): string | null {
+  for (const n of holders(f, entity, true)) if (ids(e.returns).includes(n) || (!!e.body && ids(e.body.type).includes(n))) return n;
+  // code that names an entity loads it and what it joins eagerly; a lazy collection it walks names the element type
+  const via = holders(f, entity, false);
+  const repos = new Map<string, string>();
+  for (const jf of f.javaFiles.values()) for (const t of jf.types) if (t.kind === 'interface') for (const n of via) if (t.supertypes.some((s) => new RegExp(`<\\s*${n}\\s*,`).test(s))) repos.set(simple(t.name), n);
+  const seen = new Set<string>();
+  const visit = (at: string, depth: number): string | null => {
+    if (seen.has(at) || depth > 4) return null;
+    seen.add(at);
+    const [cls, method] = at.split('.') as [string, string];
+    for (const jf of f.javaFiles.values()) for (const t of jf.types) {
+      if (simple(t.name) !== cls) continue;
+      const repoFields = new Map(t.fields.filter((x) => repos.has(simple(x.type))).map((x) => [x.name, repos.get(simple(x.type))!]));
+      for (const m of t.methods.filter((x) => x.name === method)) for (const tok of m.body) {
+        if (via.has(tok.t)) return tok.t;
+        if (repoFields.has(tok.t)) return repoFields.get(tok.t)!;
+      }
+    }
+    for (const x of f.callEdges.filter((y) => y.from === at)) { const r = visit(x.to, depth + 1); if (r) return r; }
+    return null;
+  };
+  return visit(`${e.cls}.${e.method}`, 0);
+}
+
 export function followChanges(ctx: WhereCtx): void {
   const { fh, fb, ui, ub, H, B } = ctx;
   const allScreens = (u: FrontendFacts): readonly Route[] => u.routes;
@@ -460,9 +545,29 @@ export function followChanges(ctx: WhereCtx): void {
   const isConfig = (t: JType): boolean => t.annotations.some((a) => /^(Configuration|SpringBootApplication|EnableWebSecurity|ControllerAdvice|RestControllerAdvice|EnableMethodSecurity|EnableScheduling|EnableAsync|EnableCaching|ConfigurationProperties)$/.test(a.name)) || t.supertypes.some((x) => /(Filter|WebMvcConfigurer|HandlerInterceptor|SecurityConfigurer)$/.test(x));
   const isBean = (t: JType): boolean => t.annotations.some((a) => /^(Service|Component|Repository|RestController|Controller|Configuration|SpringBootApplication)$/.test(a.name));
   const isAccessor = (m: JMethod): boolean => /^(get|set|is)[A-Z]\w*$|^(equals|hashCode|toString)$/.test(m.name);
+  /** Every changed line of a security filter chain is a path rule: `.requestMatchers("/api/reports/**").hasRole(…)`. */
+  const MATCHER = /\.\s*(requestMatchers|antMatchers|mvcMatchers|pathMatchers|regexMatchers)\s*\(([^)]*)\)/;
+  const securityScope = (g: { method: JMethod | null; lines: number[]; baseLines: number[] }): { patterns: string[]; verbs?: string[]; line: number; word: string; side?: 'base' } | null => {
+    if (!g.method || !/SecurityFilterChain|SecurityWebFilterChain/.test(g.method.returnType)) return null;
+    const lines = [...g.lines.map((n) => ({ n, text: H.line(fileOfGroup, n) ?? '', side: undefined as 'base' | undefined })), ...g.baseLines.map((n) => ({ n, text: B.line(fileOfGroup, n) ?? '', side: 'base' as const }))];
+    if (!lines.length) return null;
+    // CSRF protection only checks requests that change state
+    if (lines.every((l) => /\.\s*csrf\s*\(/.test(l.text))) return { patterns: ['/**'], verbs: ['POST', 'PUT', 'PATCH', 'DELETE'], line: lines[0]!.n, word: 'csrf', ...(lines[0]!.side ? { side: lines[0]!.side } : {}) };
+    const patterns: string[] = [];
+    for (const l of lines) {
+      const m = MATCHER.exec(l.text);
+      const lits = m ? [...m[2]!.matchAll(/"([^"]+)"/g)].map((x) => x[1]!) : [];
+      if (!m || !lits.length || m[1] === 'regexMatchers') return null;
+      patterns.push(...lits);
+    }
+    const first = lines[0]!;
+    return { patterns: [...new Set(patterns)], line: first.n, word: MATCHER.exec(first.text)![1]!, ...(first.side ? { side: first.side } : {}) };
+  };
+  let fileOfGroup = '';
 
   for (const cf of ctx.changes) {
     if (fileKind(cf.path) !== 'java') continue;
+    fileOfGroup = cf.path;
     const jh = fh.javaFiles.get(cf.path);
     const jbf = fb.javaFiles.get(cf.path);
     interface Group { type: JType; method: JMethod | null; lines: number[]; baseLines: number[]; gone: boolean }
@@ -522,6 +627,11 @@ export function followChanges(ctx: WhereCtx): void {
       if (advised && advised.length) {
         const note: Hop = { label: 'Runs around them', file: cf.path, line: g.type.annotations.find((a) => a.name === 'Aspect')!.line, quote: 'Aspect', rule: `${cls} is an @Aspect around ${advised.length} methods (${advised.slice(0, 3).join(', ')}${advised.length > 3 ? ', …' : ''})` };
         for (const at0 of advised) for (const r of reachFrom(fh, at0)) reached += entry(r, [changed, note, ...r.hops], id, why);
+      } else if (wide && securityScope(g)) {
+        // a security rule for some paths: the endpoints those paths match, and no other
+        const sc = securityScope(g)!;
+        const note: Hop = { label: 'Applies to', file: cf.path, line: sc.line, quote: sc.word, rule: sc.verbs ? `CSRF checks only ${sc.verbs.join(', ')} requests` : `this rule matches ${sc.patterns.join(', ')}`, ...(sc.side === 'base' ? { side: 'base' as const } : {}) };
+        for (const e of fh.endpoints.filter((x) => x.module === module && (!sc.verbs || sc.verbs.includes(x.verb)) && sc.patterns.some((p) => antMatch(p, x.path)))) reached += consumers(e, [changed, note], id, why);
       } else if (wide) {
         // configuration and beans: every request of the service goes through them
         const note: Hop = { label: 'Applies to the whole service', file: cf.path, line: g.type.line, quote: simple(g.type.name), rule: `${cls} configures ${fh.serviceOf(cf.path) ?? 'the service'}${g.method ? `: ${g.method.name}() is a @Bean` : ''}`, ...(g.gone ? { side: 'base' as const } : {}) };
@@ -728,7 +838,23 @@ export function followChanges(ctx: WhereCtx): void {
         ctx.deltas.push({ id, kind: 'code-changed', title: `${changed.rule}: nothing in this repository reads it`, endpoint: '', rules: [], causes: [changed, hop] });
         continue;
       }
-      if (/^(spring|server|management|logging)\./.test(key)) {
+      // framework settings that configure one client bean (mail, a message broker, a cache store): the code that uses that bean
+      const client = CLIENT_KEYS.find(([re]) => re.test(key));
+      const users: { at: string; lead: Hop[] }[] = [];
+      if (client) for (const [file, jf] of fh.javaFiles) {
+        if (fh.moduleOf(file) !== module) continue;
+        for (const t of jf.types) for (const fl of t.fields.filter((x) => client[1].test(simple(x.type).replace(/<.*$/, '')))) {
+          const ty = simple(fl.type).replace(/<.*$/, '');
+          const fieldHop: Hop = { label: 'Uses it', file, line: fl.line, quote: ty, rule: `${simple(t.name)}.${fl.name} is the ${ty} that ${key.split('.').slice(0, 2).join('.')} configures` };
+          for (const m of t.methods) {
+            const tok = m.body.find((x) => x.t === fl.name);
+            if (tok) users.push({ at: `${simple(t.name)}.${m.name}`, lead: [fieldHop, { label: 'Calls it', file, line: tok.line, quote: fl.name, rule: `${simple(t.name)}.${m.name}() uses ${fl.name}` }] });
+          }
+        }
+      }
+      if (users.length) {
+        for (const u of users) for (const r of reachFrom(fh, u.at)) reached += entry(r, [changed, ...u.lead, ...r.hops], id, why);
+      } else if (/^(spring|server|management|logging)\./.test(key)) {
         // framework settings: every request of the service goes through them
         const note: Hop = { label: 'Read by the framework', file: cf.path, line: lines[0]!, quote: snippet(atHead ? now : before), rule: `${key.split('.').slice(0, 2).join('.')} configures ${service ?? 'the service'} as a whole`, ...(atHead ? {} : { side: 'base' as const }) };
         for (const e of fh.endpoints.filter((x) => x.module === module)) reached += consumers(e, [changed, note], id, why);
@@ -809,14 +935,18 @@ export function followChanges(ctx: WhereCtx): void {
             : op.kind === 'retype' ? `${op.table}.${op.column} ${op.text.replace(/^changes \S+ /, 'becomes ')}, so a value that does not fit is refused or cut`
             : breaks === 'writes' ? `${ent.name} has no field for ${op.column}, so the database rejects every new ${ent.name} row` : `${ent.name}.${mapped!.field} still maps ${op.column}, which is ${op.kind === 'drop' ? 'dropped' : 'renamed'}`;
           if (mapped) did.push({ label: 'Still mapped', file: mapped.file, line: mapped.line, quote: mapped.field, rule: `${ent.name}.${mapped.field} → ${op.table}.${op.column}` });
+          // a column every query selects: whatever loads the entity, itself or through a relation that brings it along
+          const loaded = new Map<Endpoint, string>();
+          if (breaks === 'all') for (const e of fh.endpoints) { const v = loadsEntity(fh, e, ent.name); if (v) loaded.set(e, v); }
           const eps = fh.endpoints.filter((e) => breaks === 'all'
-            ? ids(e.returns).includes(ent.name) || (!!e.body && ids(e.body.type).includes(ent.name))
+            ? loaded.has(e)
             : /^(POST|PUT|PATCH)$/.test(e.verb) && ((!!e.body && ids(e.body.type).includes(ent.name)) || savesEntity(fh, e, ent.name)));
           for (const e of eps) {
             const exp = exposedAs(fh, e);
             const ext = exp ? exp.path : e.path;
             const aid = `api:${e.verb} ${ext}`;
-            const apiHop: Hop = { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} ${breaks === 'writes' ? 'writes' : 'uses'} ${ent.name}` };
+            const v = loaded.get(e);
+            const apiHop: Hop = { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} ${breaks === 'writes' ? 'writes' : 'uses'} ${ent.name}${v && v !== ent.name ? `, through ${v}, which loads it with every row` : ''}` };
             ctx.surface({ id: aid, kind: 'api', name: `${e.verb} ${ext}`, where: `${e.service ?? ''} ${e.verb} ${e.path}`.trim(), tier: 'test-first' });
             ctx.touched.add(e);
             ctx.addCase({ surface: aid, delta: id, tier: 'test-first', do: `Call ${e.verb} ${ext} with a valid ${words(ent.name)}.`, expect: `It works. Risk: the database rejects it (500): ${why}.`, before: 'Worked.', after: 'Database error.', proof: 'derived', hops: [opHop, entHop, ...did, apiHop] });
@@ -941,8 +1071,31 @@ export function followChanges(ctx: WhereCtx): void {
       ctx.noEffect(cf.path, 'only TypeScript types changed: they are erased when the app is built, and a mistake fails the build');
       continue;
     }
-    // routes this file defined at base that head no longer has: a deletion-only change has no head lines at all
-    if (atHead) for (const rb of ub.routes.filter((r: Route) => r.file === cf.path && !ui.routes.some((x) => x.path === r.path))) {
+    // routes this file defined at base that head no longer has: a deletion-only change has no head lines at all.
+    // A parent path that moves (path: 'products' → 'catalog') moves every child route its loadChildren file defines
+    const stem = (f: string): string => f.replace(/\.[cm]?[jt]sx?$/, '').split('/').slice(-2).join('/');
+    const definesUnder = (text: string, r: Route): boolean => r.file === cf.path || (r.file !== cf.path && text.includes(stem(r.file)));
+    const baseText = B.read(cf.path) ?? '';
+    const headText = atHead ? H.read(cf.path) ?? '' : '';
+    const segment = (path: string): string => path.split('/').filter(Boolean)[0] ?? '';
+    const movedLines = new Set<number>();
+    const parentLines = (r: Route, side: 'base' | 'head'): number[] => cf.hunks.flatMap((h) => (side === 'base' ? h.base : h.head).filter((n) => {
+      const seg = segment(r.path);
+      return !!seg && new RegExp(`['"\`]${seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`/]`).test((side === 'base' ? B : H).line(cf.path, n) ?? '');
+    }));
+    if (atHead) for (const rt of ui.routes.filter((r: Route) => r.file !== cf.path && definesUnder(headText, r) && !ub.routes.some((x) => x.path === r.path))) {
+      const at = parentLines(rt, 'head')[0];
+      if (!at) continue;
+      const sid = `screen:${rt.path}`;
+      const title = screenTitle(ui.components.get(rt.component), rt.path);
+      const movedHop: Hop = { label: 'Now at', file: cf.path, line: at, quote: snippet(H.line(cf.path, at)), rule: `${fileName(cf.path)} places ${fileName(rt.file)}'s routes under /${segment(rt.path)}` };
+      ctx.surface({ id: sid, kind: 'screen', name: `${title} (new address)`, where: rt.path, tier: 'test-first' });
+      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${rt.path} directly, and from the links that should lead to it.`, expect: 'The page opens at its new address and works as it did.', before: 'Not at this address.', after: `At ${rt.path}.`, proof: 'derived', hops: [movedHop, { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }] });
+      for (const n of parentLines(rt, 'head')) { ctx.follow(cf.path, n); movedLines.add(n); }
+    }
+    if (atHead) for (const rb of ub.routes.filter((r: Route) => definesUnder(baseText, r) && !ui.routes.some((x) => x.path === r.path))) {
+      if (rb.file !== cf.path && !parentLines(rb, 'base').length) continue;
+      for (const n of rb.file !== cf.path ? parentLines(rb, 'base') : []) ctx.follow(cf.path, n, 'base');
       const sid = `screen:${rb.path}`;
       const title = screenTitle(ub.components.get(rb.component), rb.path);
       ctx.surface({ id: sid, kind: 'screen', name: `${title} (route removed)`, where: rb.path, tier: 'test-first' });
@@ -965,6 +1118,36 @@ export function followChanges(ctx: WhereCtx): void {
       }
       if (!ctx.deltas.some((d) => d.id === `ui:${cf.path}`)) ctx.deltas.push({ id: `ui:${cf.path}`, kind: 'ui-changed', title: `${fileName(cf.path)}: route ${rb.path} removed`, endpoint: '', rules: [], causes: [removedHop] });
     }
+    // a line inside one route's own object (its title, guard, resolver, data): that screen, and no other
+    if (atHead && real.length && /\.[cm]?[jt]sx?$/.test(cf.path)) {
+      const own = ui.routes.filter((r) => r.file === cf.path);
+      const spans = own.length ? objectSpans(H.read(cf.path) ?? '') : [];
+      const handled = new Set<number>();
+      for (const n of real) {
+        const holding = spans.filter((sp) => sp.from <= n && n <= sp.to).sort((a, b) => (a.to - a.from) - (b.to - b.from));
+        let hit: Route | undefined;
+        for (const sp of holding) {
+          const inside = own.filter((r) => sp.from <= r.line && r.line <= sp.to);
+          if (inside.length === 1) hit = inside[0];
+          if (inside.length) break;
+        }
+        if (!hit || hit.line === n && !ub.routes.some((x) => x.path === hit!.path)) continue;
+        const sid = `screen:${hit.path}`;
+        const title = screenTitle(ui.components.get(hit.component), hit.path);
+        const text = (H.line(cf.path, n) ?? '').trim();
+        ctx.surface({ id: sid, kind: 'screen', name: title, where: hit.path, tier: 'test-first' });
+        ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${title} (${hit.path}) and check what its route now sets: ${text.slice(0, 80)}`, expect: 'It opens and behaves as the change intends; no other screen changes.', before: 'As released.', after: text.slice(0, 60), proof: 'derived', hops: [{ label: 'Route changed', file: cf.path, line: n, quote: snippet(H.line(cf.path, n)), rule: `a line of the ${hit.path} route changed` }, { label: 'Screen', file: hit.file, line: hit.line, quote: routeQuote(hit), rule: `route ${hit.path}` }] });
+        ctx.follow(cf.path, n);
+        handled.add(n);
+      }
+      if (handled.size) {
+        if (!ctx.deltas.some((d) => d.id === `ui:${cf.path}`)) ctx.deltas.push({ id: `ui:${cf.path}`, kind: 'ui-changed', title: `${fileName(cf.path)}: ${[...new Set(real.filter((n) => handled.has(n)).map((n) => (H.line(cf.path, n) ?? '').trim()))].slice(0, 2).join('; ')}`, endpoint: '', rules: [], causes: [{ label: 'Route changed', file: cf.path, line: [...handled][0]!, quote: snippet(H.line(cf.path, [...handled][0]!)), rule: `${fileName(cf.path)} changed a route` }] });
+        // base lines replaced by these are the same change
+        for (const h of cf.hunks) if (h.head.length && h.head.every((n) => handled.has(n) || trivial((H.line(cf.path, n) ?? '').trim()))) for (const n of h.base) ctx.follow(cf.path, n, 'base');
+        if (real.every((n) => handled.has(n))) continue;
+      }
+    }
+    if (atHead && real.length && real.every((n) => movedLines.has(n))) continue;
     if (!real.length) continue;
     ctx.touchedUi.add(cf.path);
     const changedHop: Hop = atHead

@@ -1,3 +1,5 @@
+import { contractProbes } from './catalog-contracts.mjs';
+import { hardestProbes } from './catalog-hardest.mjs';
 /**
  * The probe catalog: real developer pull requests on OrderDesk, one per kind
  * of change, each tagged with the engine logic it exercises. The truth was
@@ -120,7 +122,8 @@ export const probes = [
     id: 'j11-listener-body', logic: ['java.jobs', 'data.writes'],
     title: 'Invoice numbers get a slash',
     apply: (t) => t.edit(`${J}/service/InvoiceService.java`, '"INV-" + order.getId()', '"INV/" + order.getId()'),
-    truth: { test: ['job:InvoiceService.onOrderPlaced'] },
+    // truth corrected after a run: the listener is a plain @EventListener, so it runs inside order creation, and its failure fails the order
+    truth: { test: ['job:InvoiceService.onOrderPlaced'], reach: ['screen:/orders/new'] },
   },
   {
     id: 'j12-unparseable', logic: ['robust.unreadable'],
@@ -185,7 +188,8 @@ export const probes = [
     },
     apply: (t) => t.edit('src/main/resources/application.yml', '  mail-enabled: true\n', '  mail-enabled: false\n'),
     // the bean is gone: no order e-mail, no stock alert e-mail, and the stock alert job cannot start without it
-    truth: { notSkip: ['job:NotificationService.onOrderPlaced', 'job:StockAlertJob.alert'], reach: ['job:NotificationService.onOrderPlaced'] },
+    // truth corrected after a run: the order e-mail listener runs inside order creation, so the order form is reached too
+    truth: { notSkip: ['job:NotificationService.onOrderPlaced', 'job:StockAlertJob.alert'], reach: ['job:NotificationService.onOrderPlaced', 'screen:/orders/new'] },
   },
 
   {
@@ -382,4 +386,6 @@ export const probes = [
     // truth corrected after the first run: the framework under every endpoint moves, so every screen is reached
     truth: { every: true },
   },
+  ...contractProbes,
+  ...hardestProbes,
 ];

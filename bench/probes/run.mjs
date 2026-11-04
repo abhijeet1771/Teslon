@@ -27,6 +27,7 @@ const outMd = flag('--md');
 const app = flag('--app');
 const [appName, appPath] = app ? app.split('=') : ['orderdesk', null];
 const { probes, SCREENS } = appName === 'orderdesk' ? orderdesk : await import(`./catalog-${appName}.mjs`);
+const grep = flag('--grep');
 const only = new Set(args);
 const ENV = { ...process.env, GIT_AUTHOR_DATE: '2026-11-01T10:00:00Z', GIT_COMMITTER_DATE: '2026-11-01T10:00:00Z' };
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: ENV }).trim();
@@ -76,6 +77,7 @@ function score(p, r) {
 const rows = [];
 for (const p of probes) {
   if (only.size && !only.has(p.id)) continue;
+  if (grep && !new RegExp(grep).test(p.id)) continue;
   const d = mkdtempSync(join(tmpdir(), `probe-${p.id}-`));
   const t0 = Date.now();
   let res;

@@ -1,7 +1,8 @@
 import type { Hop } from './model.js';
 import type { SpringFacts, Endpoint } from './spring.js';
 import type { JType, JMethod, JavaFile } from './java.js';
-import type { WhereCtx } from './where.js';
+import { browserCalls, screenTitle, type WhereCtx } from './where.js';
+import { callMadeBy, routeQuote } from './vue.js';
 import { fileKind } from './kinds.js';
 
 /**
@@ -98,7 +99,9 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
         // the entity's own code: what it computes, initialises or does on save. Annotations are typed elsewhere
         if (entityFile && !/^@/.test(code) && code !== '}' && code !== '{') {
           const at = locate(jf.types, n);
-          if (at && simple(at.type.name) === entityFile.name) add({ entity: entityFile.name, field: '*', hop: { label: side === 'base' ? 'Entity code removed' : 'Entity code', file, line: n, quote: code.slice(0, 24), rule: `${entityFile.name} itself changed`, ...sideOf } });
+          // a line typed elsewhere as a JSON-only getter (read by Jackson, never by JPA) writes nothing
+          const jsonOnly = side !== 'base' && !!at?.method && ctx.explained(file, n) && /^(get|is)[A-Z]/.test(at.method.name) && !at.method.params.length;
+          if (at && !jsonOnly && simple(at.type.name) === entityFile.name) add({ entity: entityFile.name, field: '*', hop: { label: side === 'base' ? 'Entity code removed' : 'Entity code', file, line: n, quote: code.slice(0, 24), rule: `${entityFile.name} itself changed`, ...sideOf } });
         }
         for (const m of t.matchAll(/(\w+)\s*\.\s*set([A-Z]\w*)\s*\(/g)) {
           const field = lowerFirst(m[2]!);
@@ -232,7 +235,20 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
   const types = new Map<string, JType>();
   for (const jf of fh.javaFiles.values()) for (const t of jf.types) types.set(simple(t.name), t);
   const memo = new Map<string, boolean>();
-  const uses = (at: string, entity: string, depth: number, seenAt: Set<string>): boolean => {
+  function returnsEntity(e: Endpoint, entity: string): boolean {
+    const names = (t: string): string[] => t.match(/[A-Z]\w*/g) ?? [];
+    return names(e.returns).some((x) => x === entity || !!fh.dtos.get(`${e.module}|${x}`)?.fields.some((fl) => names(fl.type).includes(entity)));
+  }
+  function callsGetter(at: string, field: string, depth: number, seenAt: Set<string>): boolean {
+    if (seenAt.has(at) || depth > 5) return false;
+    seenAt.add(at);
+    const [cls, method] = at.split('.') as [string, string];
+    const cap = field[0]!.toUpperCase() + field.slice(1);
+    const t = types.get(cls);
+    if (t?.methods.some((x) => x.name === method && x.body.some((tok) => tok.t === `get${cap}` || tok.t === `is${cap}`))) return true;
+    return fh.callEdges.filter((x) => x.from === at).some((x) => callsGetter(x.to, field, depth + 1, seenAt));
+  }
+  function uses(at: string, entity: string, depth: number, seenAt: Set<string>): boolean {
     if (seenAt.has(at) || depth > 5) return false;
     seenAt.add(at);
     const [cls, method] = at.split('.') as [string, string];
@@ -247,7 +263,44 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
       }
     }
     return fh.callEdges.filter((x) => x.from === at).some((x) => uses(x.to, entity, depth + 1, seenAt));
-  };
+  }
+  // an entity mapped to a column or table the database does not have: every read and write of it fails
+  const migrationText = ctx.changes.filter((c) => c.status !== 'deleted' && fileKind(c.path) === 'data').map((c) => H.read(c.path) ?? '').join('\n');
+  for (const eh of fh.entities) {
+    const eb = fb.entities.find((x) => x.name === eh.name);
+    if (!eb || !ctx.changes.some((c) => c.path === eh.file)) continue;
+    const moved: { what: string; from: string; to: string; line: number; quote: string; unstored?: boolean }[] = [];
+    if (eb.table.toLowerCase() !== eh.table.toLowerCase()) moved.push({ what: 'table', from: eb.table, to: eh.table, line: eh.line, quote: eh.table });
+    for (const ch of eh.columns) {
+      const cb = eb.columns.find((x) => x.field === ch.field);
+      if (cb && cb.stored !== false && ch.stored === false) moved.push({ what: `${eh.name}.${ch.field}`, from: cb.column, to: '', line: ch.line, quote: 'Transient', unstored: true });
+      else if (cb && ch.stored !== false && cb.column.toLowerCase() !== ch.column.toLowerCase()) moved.push({ what: `${eh.name}.${ch.field}`, from: cb.column, to: ch.column, line: ch.line, quote: ch.column });
+    }
+    for (const m of moved) {
+      // a migration in this PR that names the new column or table takes care of it (and is followed on its own)
+      if (!m.unstored && new RegExp('["\'\\s(]' + m.to + '["\'\\s,;)]', 'i').test(migrationText)) continue;
+      const hop: Hop = m.unstored
+        ? { label: 'No longer stored', file: eh.file, line: m.line, quote: m.quote, rule: `${m.what} is @Transient now: JPA no longer saves it to ${eb.table}.${m.from} or loads it back` }
+        : { label: 'Mapped to', file: eh.file, line: m.line, quote: m.quote, rule: `${m.what} is now mapped to ${m.to}, and was ${m.from}; no migration in this PR creates ${m.to}` };
+      const why = m.unstored ? `${m.what} is no longer saved or loaded, so it reads back empty for every row` : `${m.what === 'table' ? `${eh.name} is now stored in ${m.to}` : `${m.what} is now the column ${m.to}`}, which the database does not have`;
+      if (m.unstored) ctx.unseen.push({ what: `${eb.table}.${m.from} in every environment`, why: `${why}; the column stays, and keeps the values written before this change`, resolve: `say whether ${m.from} should still be filled, or drop it with a migration` });
+      else ctx.unseen.push({ what: `the ${eb.table} table in every environment`, why: `${why}: every query on ${eh.name} fails until a migration renames ${m.from} to ${m.to}`, resolve: `add a migration that renames ${m.from} to ${m.to}, or keep the old name` });
+      add({ entity: eh.name, field: m.unstored ? m.what.split('.')[1]! : '*', hop });
+      for (const e of fh.endpoints) {
+        if (!uses(`${e.cls}.${e.method}`, eh.name, 0, new Set())) continue;
+        // a field no longer stored shows where it is read back: an API that returns the entity, or code that calls its getter
+        if (m.unstored && !(e.verb === 'GET' && returnsEntity(e, eh.name)) && !callsGetter(`${e.cls}.${e.method}`, m.what.split('.')[1]!, 0, new Set())) continue;
+        for (const c of browserCalls(fh, ctx.ui, e)) for (const rt of ctx.ui.routes.filter((x) => callMadeBy(ctx.ui, ctx.closure(x.component), c))) {
+          const sid = `screen:${rt.path}`;
+          const title = screenTitle(ctx.ui.components.get(rt.component), rt.path);
+          ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
+          ctx.addCase({ surface: sid, delta: `map:${eh.name}`, tier: 'test-first', do: `Open ${title} and use what calls ${c.verbs.join('/')} ${c.tpl}.`, expect: m.unstored ? `It shows what it showed. Risk: ${m.what} is blank or wrong, because ${why}.` : `It works. Risk: it fails (500), because ${why}.`, before: 'Worked.', after: m.unstored ? 'Not stored.' : 'Mapping broken.', proof: 'derived', hops: [hop, { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} reads or writes ${eh.name}` }, { label: 'The page calls it', file: c.file, line: c.line, quote: c.code.slice(0, 24).trim(), rule: `${c.verbs.join('/')} ${c.tpl}` }, { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }] });
+        }
+      }
+      if (!ctx.deltas.some((d) => d.id === `map:${eh.name}`)) ctx.deltas.push({ id: `map:${eh.name}`, kind: 'code-changed', title: `${eh.name}: ${why}`, endpoint: '', rules: [], causes: [hop] });
+    }
+  }
+
   return {
     written,
     readsEntity(e, entity) {

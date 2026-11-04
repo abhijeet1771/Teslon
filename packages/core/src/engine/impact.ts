@@ -1,6 +1,6 @@
 import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
-import { targetsRoute, routeQuote, callMadeBy, type Component, type Route } from './vue.js';
+import { targetsRoute, routeQuote, callMadeBy, usesSeen, membersUsed, type Component, type Route } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
 import { followChanges, browserCalls, type WhereCtx } from './where.js';
@@ -48,11 +48,30 @@ function bounds(name: string, rule: string): { min: number; max: number } | null
   return null;
 }
 
+const TYPE_USE_ANN = /@(?:[a-z]\w*\.)*(?:Valid|NotNull|NotBlank|NotEmpty|Nullable|NonNull|Size|Min|Max|Positive|PositiveOrZero|Pattern|Email)(?![a-z0-9_])(?:\([^)]*\))?\s*/g;
+
 function enforced(f: SpringFacts, e: Endpoint): { field: DtoField; rule: string; name: string; line: number; file: string }[] {
   if (!e.body?.valid) return [];
-  const d = f.dto(e.module, e.body.type);
-  if (!d) return [];
-  return d.fields.flatMap((fl) => fl.constraints.map((c) => ({ field: fl, rule: c.rule, name: c.name, line: c.line, file: c.file })));
+  const out: { field: DtoField; rule: string; name: string; line: number; file: string }[] = [];
+  // a field marked @Valid carries the rules of the type it holds: lines[].quantity
+  const walk = (type: string, prefix: string, namePrefix: string, depth: number, seen: Set<string>): void => {
+    const d = f.dto(e.module, type);
+    if (!d || seen.has(d.name) || depth > 4) return;
+    seen.add(d.name);
+    for (const fl of d.fields) {
+      const field: DtoField = prefix ? { ...fl, json: `${prefix}${fl.json}`, name: `${namePrefix}${fl.name}` } : fl;
+      for (const c of fl.constraints) out.push({ field, rule: c.rule, name: c.name, line: c.line, file: c.file });
+      if (!fl.valid) continue;
+      // the Java reader glues a type-use annotation to its type: List<@ValidOrderLineRequest>
+      const bare = fl.type.replace(TYPE_USE_ANN, '').trim();
+      const many = /^(List|Set|Collection|Iterable)\s*</.test(bare) || /\[\]$/.test(bare);
+      const inner = (bare.match(/<\s*([\w.]+)\s*>/)?.[1] ?? bare.replace(/\[\]$/, '')).split('.').pop()!;
+      walk(inner, `${field.json}${many ? '[]' : ''}.`, `${field.name}${many ? '[]' : ''}.`, depth + 1, seen);
+    }
+    seen.delete(d.name);
+  };
+  walk(e.body.type, '', '', 0, new Set());
+  return out;
 }
 
 /** The model expression a payload value reads: `pet.name.trim()` → `pet.name`. */
@@ -148,6 +167,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     return seen;
   };
   const screensUsing = (file: string) => ui.routes.filter((r) => closure(r.component).has(file));
+  const opaqueOf = (files: ReadonlySet<string>): string[] => [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
   const addCase = (c: Case): void => {
     if (cases.some((x) => x.surface === c.surface && x.delta === c.delta && x.do === c.do)) return;
     cases.push(c);
@@ -432,7 +452,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
       const [cls, method] = at.split('.');
       if (fh.tools.some((t) => t.cls === cls && t.method === method)) out.push({ kind: 'tool', at, hops });
       if (fh.endpoints.some((x) => x.cls === cls && x.method === method)) out.push({ kind: 'endpoint', at, hops });
-      for (const e of fh.callEdges.filter((x) => x.to === at)) walk(e.from, [...hops, { label: 'Called by', file: e.file, line: e.line, quote: method ?? '', rule: `${e.from}() calls ${at}()` }], depth + 1);
+      for (const e of fh.callEdges.filter((x) => x.to === at)) walk(e.from, [...hops, { label: e.how ? 'Runs inside' : 'Called by', file: e.file, line: e.line, quote: e.quote ?? method ?? '', rule: e.how ?? `${e.from}() calls ${at}()` }], depth + 1);
     };
     walk(start, [], 0);
     return out;
@@ -609,6 +629,17 @@ export function impact(opts: ImpactOptions): ImpactReport {
       hold(r, `shows ${shows.e.entities.join(', ')} data, and this PR changes what is written to ${shows.e.entities.map(writeWords).join('; ')}`);
       heldScreens.at(-1)!.evidence.unshift(writeOf(shows.e.entities[0]!));
       heldScreens.at(-1)!.evidence.push({ label: 'Calls', file: shows.c.file, line: shows.c.line, quote: callText(shows.c), rule: `${shows.c.verbs.join('/')} ${shows.c.tpl} → ${shows.e.e.verb} ${shows.e.e.path} reads ${shows.e.entities.join(', ')}` });
+      continue;
+    }
+    // it imports the service, and every use of it here is a member Teslon read, none of them the changed call: safe
+    // the route's own file counts: an inline resolver or guard there calls the service for this screen
+    const withRoute = new Set([...files, r.file]);
+    const routeRead = ui.components.get(r.file)?.uses !== undefined;
+    const unused = routeRead && hits.length && hits.every((c) => c.owner && c.member && !c.eager && usesSeen(ui, withRoute, c.owner, c.file) && !callMadeBy(ui, withRoute, c)) ? hits : null;
+    if (unused && !opaqueOf(files).length && ![...files].some((f) => touchedUi.has(f))) {
+      const c = unused[0]!;
+      const used = membersUsed(ui, withRoute, c.owner!);
+      surfaces.set(id, { id, kind: 'screen', name: screenName(comp, r.path), where: r.path, tier: 'skip', reason: `imports ${fileName(c.file)} but never calls ${[...new Set(unused.map((x) => `${x.owner}.${x.member}()`))].join(', ')}, the changed call${used.length ? `; it uses only ${used.slice(0, 5).join(', ')}` : ''}`, evidence: unused.slice(0, 2).map((x) => ({ label: 'Not called here', file: x.file, line: x.line, quote: callText(x), rule: `${x.verbs.join('/')} ${x.tpl} is made in ${x.owner}.${x.member}(), and no file of this screen calls ${x.member}()` })) });
       continue;
     }
     const imported = hits[0];
