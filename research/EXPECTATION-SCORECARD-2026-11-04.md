@@ -129,6 +129,9 @@ Pinia. 79 PRs, truth written first.
 
 ## What is pending, most valuable first
 
+The research behind each item, and the plan for it, is in
+[RND-PLAN-2026-11-04.md](RND-PLAN-2026-11-04.md).
+
 1. **React and Next.js.** This is the most used front end, and today Teslon
    only says it cannot read it.
 2. **Several repositories.** A Kafka consumer, a Feign client or a page in
