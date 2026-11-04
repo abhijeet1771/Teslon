@@ -55,12 +55,14 @@ export interface PrInfo {
   readonly baseRef: string;
   readonly headSha: string;
   readonly merged: boolean;
+  /** The PR description, as the developer wrote it. */
+  readonly body: string;
 }
 
 export async function prInfo(ctx: GhContext, n: number): Promise<PrInfo | null> {
   if (!ctx.repo) return null;
-  const p = await call<{ number: number; title: string; html_url: string; user?: { login: string }; base: { ref: string }; head: { sha: string }; merged?: boolean }>(ctx, 'GET', `/repos/${ctx.repo}/pulls/${n}`);
-  return { number: p.number, title: p.title, url: p.html_url, author: p.user?.login ?? '', baseRef: p.base.ref, headSha: p.head.sha, merged: !!p.merged };
+  const p = await call<{ number: number; title: string; html_url: string; user?: { login: string }; base: { ref: string }; head: { sha: string }; merged?: boolean; body?: string | null }>(ctx, 'GET', `/repos/${ctx.repo}/pulls/${n}`);
+  return { number: p.number, title: p.title, url: p.html_url, author: p.user?.login ?? '', baseRef: p.base.ref, headSha: p.head.sha, merged: !!p.merged, body: p.body ?? '' };
 }
 
 /** Post the comment, or update Teslon's earlier one on the same PR so there is only ever one. */

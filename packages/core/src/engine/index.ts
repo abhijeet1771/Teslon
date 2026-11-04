@@ -9,7 +9,9 @@ export type {
   Unseen as ImpactUnseen,
   LedgerEntry as ImpactLedgerEntry,
   Tier as ImpactTier,
+  Held as ImpactHeld,
 } from './model.js';
 export { prRange, type PrRange } from './pr-range.js';
 export { renderComment, renderSummary, COMMENT_MARKER, type PrMeta } from './markdown.js';
 export { renderHtml, type HtmlOptions } from './html.js';
+export { brief, known, unnamed, SKIP_RULE, type Area, type Module as AreaModule, type Brief, type State as AreaState, type Known } from './areas.js';

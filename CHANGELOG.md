@@ -4,6 +4,33 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 
 ## Unreleased
 
+### Changed
+- **The report is built around the decision QA makes.** The cockpit, the PR
+  comment, the run summary and the terminal all lead with the same brief:
+  - Test · Skip · Unclear, counted in areas of the application;
+  - how sure Teslon is, in words (High, Partial or Not proven);
+  - what the PR changes, each change marked Proven or Followed;
+  - what the developer said, and the modules it leaves out;
+  - the application map: every screen and job, grouped by module, each with
+    exactly one answer.
+
+  The cockpit goes from the map to a module, an area, and its cases or its
+  proof. Skips get the same weight as tests. See
+  `research/REPORT-CHECKLIST-2026-11-04.md`.
+- The engine reports the screens it neither lists nor skips (`held`), each
+  with why, so a report can show them as areas.
+- Without GitHub, the first commit's subject titles the brief, and the commit
+  messages stand in for the PR description.
+
+### Fixed
+- A job was skipped when some changed lines had not been followed. It is now
+  held, like a screen, and confidence says Partial.
+- The "not followed by this build" list said that migrations and
+  configuration keys were not followed, although both are.
+- A job's skip reason could end in "uses none of" with nothing after it.
+- Cases on a route's collection read "a saved customers"; they now read "a
+  saved customer".
+
 ### Added
 - The OrderDesk proving ground: a Spring Boot + Angular app
   (`fixtures/orderdesk`) and 25 developer PRs whose truth was written before

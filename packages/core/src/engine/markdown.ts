@@ -1,9 +1,11 @@
-import { isTyped, type ImpactReport, type Surface, type Case, type Hop, type Tier } from './model.js';
+import type { ImpactReport, Case, Hop } from './model.js';
+import { brief, known, unnamed, SKIP_RULE, KNOWN_WORD, type Area, type Brief, type State } from './areas.js';
 
 /**
  * Markdown for where QA already looks: a short PR comment, and the full brief
- * for the run's summary page. Both are built from the same report as the
- * terminal text; nothing here decides anything.
+ * for the run's summary page. Both lead with the same decision as the
+ * cockpit (test, skip, unclear, how sure, and the application map), built
+ * from the same brief; nothing here decides anything.
  *
  * The comment is capped: a 400-file PR gets the same short comment as a
  * 3-file PR, with the detail one click away. Every evidence line links to the
@@ -27,14 +29,15 @@ export interface PrMeta {
   readonly version: string;
   /** How people call the repository, when there is no repository URL to take it from. */
   readonly repoName?: string;
+  /** What the developer said the PR does: its description, or its commit messages when there is none. */
+  readonly says?: string;
+  readonly saysFrom?: 'pr' | 'commits';
+  /** When the brief was made (ISO time), for the audit line. */
+  readonly at?: string;
 }
 
 export const COMMENT_MARKER = '<!-- teslon:impact -->';
 
-/** The order a tester works in: pages, then what sits behind them. */
-export const KIND_ORDER: Readonly<Record<string, number>> = { screen: 0, widget: 1, 'test-plan': 2, data: 3, api: 4, job: 5, dashboard: 6, module: 7, deploy: 8 };
-
-const TIER_TITLE: Record<Exclude<Tier, 'skip'>, string> = { 'test-first': 'Test first', 'test-next': 'Test next', watch: 'Watch after release' };
 const fileName = (p: string): string => p.split('/').pop() ?? p;
 /**
  * Text from the repository, made inert in a comment: no markup, no table
@@ -72,170 +75,127 @@ function link(h: Hop, r: ImpactReport, meta: PrMeta): string {
   return `[${label}](${meta.repoUrl}/blob/${sha}/${h.file.split('/').map(encodeURIComponent).join('/')}#L${h.line})`;
 }
 
-function place(s: Surface): string {
-  if (s.kind === 'screen') return s.name === s.where ? code(s.where) : `**${esc(s.name)}** ${code(s.where)}`;
-  if (s.kind === 'widget') return `**${esc(s.name)}** (on every screen)`;
-  if (s.kind === 'api') return `API ${code(s.name)}`;
-  if (s.kind === 'data') return `Data: **${esc(s.name)}**`;
-  if (s.kind === 'module') return `Service **${esc(s.name)}**`;
-  if (s.kind === 'job') return `Job ${code(s.name)}`;
-  if (s.kind === 'dashboard') return `Dashboard **${esc(s.name)}**`;
-  if (s.kind === 'deploy') return `**${esc(s.name)}**`;
-  return `**${esc(s.name)}**`;
-}
-
 function step(c: Case): string {
   const field = [c.section, c.field].filter(Boolean).join(' › ');
   return `${field ? `**${esc(field)}**: ` : ''}${esc(c.do)} → **Expect** ${esc(c.expect)}${c.before && c.before !== '—' ? ` _Before: ${esc(c.before)}_` : ''}${c.hole ? ' (still lets this through)' : ''}`;
 }
 
-/** Surfaces a broad change reaches, so they render as one regression list. */
-export function broadDeltas(r: ImpactReport): Map<string, Set<string>> {
-  const byDelta = new Map<string, Set<string>>();
-  for (const c of r.cases) if (c.tier === 'test-next') { if (!byDelta.has(c.delta)) byDelta.set(c.delta, new Set()); byDelta.get(c.delta)!.add(c.surface); }
-  return new Map([...byDelta].filter(([id, ss]) => ss.size > 4 && !isTyped(r.deltas.find((d) => d.id === id)?.kind ?? 'code-changed')));
+const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? '' : 's'}`;
+const STATE_MARK: Record<State, string> = { test: '🔵', skip: '✅', unclear: '⚠️' };
+
+/** An area, named the way a tester finds it. */
+function areaName(a: Area): string {
+  if (a.kind === 'screen') return a.name === a.where || a.id === 'screen:*' ? `**${esc(a.name)}**` : `**${esc(a.name)}** ${code(a.where)}`;
+  if (a.kind === 'api' || a.kind === 'job') return code(a.name);
+  if (a.kind === 'widget') return `**${esc(a.name)}** (on every screen)`;
+  return `**${esc(a.name)}**`;
 }
 
-export interface Counts { places: number; cases: number }
-
-export function counts(r: ImpactReport): Record<Tier | 'unseen', Counts> {
-  const out = { 'test-first': { places: 0, cases: 0 }, 'test-next': { places: 0, cases: 0 }, watch: { places: 0, cases: 0 }, skip: { places: 0, cases: 0 }, unseen: { places: r.unseen.length, cases: 0 } };
-  for (const s of r.surfaces) out[s.tier].places++;
-  for (const c of r.cases) if (c.tier !== 'skip') out[c.tier].cases++;
-  return out;
-}
-
-/** The cases to run first: one per place, riskiest first. */
-export function startHere(r: ImpactReport, n: number): { s: Surface; c: Case }[] {
-  const order = KIND_ORDER;
-  const rank: Record<Tier, number> = { 'test-first': 0, 'test-next': 1, watch: 2, skip: 3 };
-  const picks: { s: Surface; c: Case }[] = [];
-  const surfaces = [...r.surfaces].filter((s) => s.tier !== 'skip').sort((a, b) => rank[a.tier] - rank[b.tier] || (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
-  for (const s of surfaces) {
-    const c = r.cases.find((x) => x.surface === s.id && x.tier !== 'skip');
-    if (c) picks.push({ s, c });
-    if (picks.length >= n) break;
-  }
-  return picks;
-}
-
-function header(r: ImpactReport, meta: PrMeta): string[] {
-  const k = counts(r);
+/** The decision, the same in the comment and the summary: test, skip and unclear, and how sure. */
+function header(r: ImpactReport, b: Brief, meta: PrMeta, full: boolean): string[] {
   const L: string[] = [];
   const pr = meta.number ? `PR #${meta.number}` : 'This change';
-  L.push(`### Teslon · what ${pr} changes for QA`);
+  L.push(`### Teslon · ${pr} test brief`);
   const files = r.ledger.length;
-  L.push(`${meta.title ? `**${esc(meta.title)}** · ` : ''}\`${r.base.slice(0, 7)}..${r.head.slice(0, 7)}\` · ${files} file${files === 1 ? '' : 's'} · ${meta.state === 'merged' ? 'merged' : 'open'} · ${esc(meta.how)}`);
+  L.push(`${meta.title ? `**${esc(meta.title)}** · ` : ''}\`${r.base.slice(0, 7)}..${r.head.slice(0, 7)}\` · ${plural(files, 'file')} · ${meta.state === 'merged' ? 'merged' : 'open'} · ${esc(meta.how)}`);
   L.push('');
-  if (r.triage.appEffect === 'none') {
-    L.push(`**Nothing to test in the app.** ${esc(r.triage.summary)}`);
+  if (b.none) {
+    L.push(`✅ **Nothing to test in the app.** ${esc(r.triage.summary)}`);
     return L;
   }
-  const cases = k['test-first'].cases + k['test-next'].cases + k.watch.cases;
-  const effort = meta.minutesPerCase ? ` (about ${Math.max(1, Math.round((cases * meta.minutesPerCase) / 6) / 10)} h at ${meta.minutesPerCase} min a case)` : '';
-  L.push('| Test first | Test next | Watch after release | Safe to skip | Teslon could not see |');
-  L.push('|---|---|---|---|---|');
-  const n = (x: number, w: string): string => `${x} ${w}${x === 1 ? '' : 's'}`;
-  L.push(`| **${n(k['test-first'].places, 'place')}** · ${n(k['test-first'].cases, 'case')} | ${n(k['test-next'].places, 'place')} · ${n(k['test-next'].cases, 'case')} | ${n(k.watch.places, 'place')} | ${n(k.skip.places, 'place')}, each with proof | ${n(k.unseen.places, 'thing')} |`);
+  const checks = b.cases + b.unclear;
+  const effort = meta.minutesPerCase ? ` · about ${Math.max(0.1, Math.round((checks * meta.minutesPerCase) / 6) / 10)} h at ${meta.minutesPerCase} min each` : '';
+  const unfollowed = r.ledger.some((l) => l.status === 'not-modelled');
+  L.push('| | Areas | |', '|---|---|---|');
+  L.push(`| ${STATE_MARK.test} **Test** | **${b.test}** | ${b.test ? `${plural(b.cases, 'case')}${b.first ? `, ${b.first} first` : ''}${effort}` : 'nothing to run'} |`);
+  L.push(`| ${STATE_MARK.skip} **Safe to skip** | **${b.skip}** | ${b.skip ? 'each with proof' : unfollowed ? 'none until every changed line is followed' : 'nothing could be ruled out'} |`);
+  L.push(`| ${STATE_MARK.unclear} **Unclear** | **${b.unclear}** | ${b.unclear ? 'not ruled out: open each once' : 'none'} |`);
   L.push('');
-  L.push(`${cases} case${cases === 1 ? '' : 's'} in all${effort}.${r.triage.appEffect === 'unknown' ? ` Some changed lines were not followed, so nothing outside the places below is ruled out (see "Could not see").` : ''}`);
+  L.push(`**${b.confidence.level === 'low' ? 'Not proven' : `${b.confidence.title} confidence`}.** ${esc(b.confidence.detail)}`);
+  const said = `${meta.title ?? ''} ${meta.says ?? ''}`.trim();
+  const missing = said ? unnamed(b, said) : [];
+  if (missing.length) L.push('', `> ⚠️ **Not named in the PR:** ${esc(missing.join(', '))}. This change reaches ${missing.length === 1 ? 'it' : 'them'} too.`);
+
+  // the application map: one line per module
+  const max = full ? b.modules.length : 12;
+  L.push('', '**Application map**', '', '| Module | Test | Unclear | Safe to skip |', '|---|---|---|---|');
+  for (const m of b.modules.slice(0, max)) {
+    const cases = m.areas.reduce((n, a) => n + a.cases.length, 0);
+    L.push(`| ${esc(m.name)} | ${m.test ? `**${m.test}**${cases ? ` · ${plural(cases, 'case')}` : ''}` : '—'} | ${m.unclear || '—'} | ${m.skip || '—'} |`);
+  }
+  if (b.modules.length > max) L.push(`| …${b.modules.length - max} more | | | |`);
   return L;
 }
 
-/** The PR comment: verdict, where to start, what is safe to skip, what was not seen, and the link. */
+function startRows(b: Brief, n: number): string[] {
+  const rank = (a: Area): number => (a.tier === 'test-first' ? 0 : a.tier === 'watch' ? 2 : 1);
+  return b.areas.filter((a) => a.state === 'test' && a.cases.length).sort((p, q) => rank(p) - rank(q)).slice(0, n)
+    .map((a, i) => `${i + 1}. ${esc(a.module)} › ${areaName(a)}: ${step(a.cases[0]!)}`);
+}
+
+/** The PR comment: the decision, the map, where to start, and the link to the rest. */
 export function renderComment(r: ImpactReport, meta: PrMeta): string {
-  const L: string[] = [COMMENT_MARKER, ...header(r, meta)];
-  if (r.triage.appEffect !== 'none') {
-    const picks = startHere(r, 5);
-    if (picks.length) {
+  const b = brief(r);
+  const L: string[] = [COMMENT_MARKER, ...header(r, b, meta, false)];
+  if (!b.none) {
+    const picks = startRows(b, 5);
+    if (picks.length) L.push('', '**Start here**', ...picks);
+    if (b.unseen.length) {
       L.push('');
-      L.push('**Start here**');
-      picks.forEach(({ s, c }, i) => L.push(`${i + 1}. ${place(s)}: ${step(c)}`));
-    }
-    const broad = broadDeltas(r);
-    if (broad.size) {
-      L.push('');
-      for (const [id, ss] of [...broad].slice(0, 3)) {
-        const d = r.deltas.find((x) => x.id === id);
-        const screens = [...ss].map((x) => r.surfaces.find((s) => s.id === x)!).filter((s) => s?.kind === 'screen').length;
-        L.push(`**Regression:** ${esc(d?.title ?? id)}, reaching ${ss.size} places${screens ? ` (${screens} screens)` : ''}.`);
-      }
-    }
-    const skips = r.surfaces.filter((s) => s.tier === 'skip');
-    if (skips.length) {
-      L.push('');
-      L.push(`**Safe to skip** (${skips.length}): ${skips.slice(0, 10).map((s) => (s.kind === 'screen' ? `${esc(s.name)} ${code(s.where)}` : esc(s.name))).join(' · ')}${skips.length > 10 ? ' · …' : ''}`);
-    }
-    if (r.unseen.length) {
-      L.push('');
-      L.push(`**Teslon could not see** (${r.unseen.length}): ${r.unseen.slice(0, 3).map((u) => esc(u.what.length > 90 ? `${u.what.slice(0, 87)}…` : u.what)).join(' · ')}${r.unseen.length > 3 ? ' · …' : ''}`);
+      L.push(`**Teslon could not see** (${b.unseen.length}): ${b.unseen.slice(0, 3).map((u) => esc(u.what.length > 90 ? `${u.what.slice(0, 87)}…` : u.what)).join(' · ')}${b.unseen.length > 3 ? ' · …' : ''}`);
     }
   }
   L.push('');
   const ok = r.verification.hops - r.verification.failed.length;
-  L.push(`${meta.runUrl ? `[Full report](${meta.runUrl}) · ` : ''}every claim cites the code: ${ok}/${r.verification.hops} cited lines re-checked at \`${r.head.slice(0, 7)}\`${r.verification.failed.length ? ' · **some evidence failed**' : ''} · Teslon ${meta.version}`);
+  L.push(`${meta.runUrl ? `[Open the full brief](${meta.runUrl}) (the cockpit is in the run's artifacts) · ` : ''}every claim cites the code: ${ok}/${r.verification.hops} cited lines re-checked at \`${r.head.slice(0, 7)}\`${r.verification.failed.length ? ' · **some evidence failed**' : ''} · Teslon ${meta.version}`);
   // GitHub refuses comments over 65,536 characters; bytes are a safe bound
-  return fit(L.join('\n'), 60_000, `…cut to fit a comment.${meta.runUrl ? ` [Full report](${meta.runUrl})` : ''}`);
+  return fit(L.join('\n'), 60_000, `…cut to fit a comment.${meta.runUrl ? ` [Full brief](${meta.runUrl})` : ''}`);
 }
 
-/** The full brief for the run's summary page. */
+/** The full brief for the run's summary page: the decision, then every module, area by area. */
 export function renderSummary(r: ImpactReport, meta: PrMeta): string {
-  const L: string[] = [...header(r, meta)];
-  if (r.triage.appEffect === 'none') return L.join('\n');
+  const b = brief(r);
+  const L: string[] = [...header(r, b, meta, true)];
+  if (b.none) return L.join('\n');
   const why = (hs: readonly Hop[]): string => hs.map((h) => `${link(h, r, meta)} ${esc(h.label.toLowerCase())}: ${esc(h.rule)}${h.verified === false ? ' **(did not re-check)**' : ''}`).join('<br>');
 
-  const picks = startHere(r, 5);
-  if (picks.length) {
-    L.push('', '## Start here', '');
-    picks.forEach(({ s, c }, i) => L.push(`${i + 1}. ${place(s)}: ${step(c)}`));
-  }
+  const picks = startRows(b, 5);
+  if (picks.length) L.push('', '## Start here', '', ...picks);
 
-  const broad = broadDeltas(r);
-  const grouped = (c: Case): boolean => c.tier === 'test-next' && broad.has(c.delta);
-  if (broad.size) {
-    L.push('', '## Regression lists', '', 'Changed code that many places run. Check each still works as before.', '');
-    for (const [id, ss] of broad) {
-      const d = r.deltas.find((x) => x.id === id);
-      const list = [...ss].map((x) => r.surfaces.find((s) => s.id === x)!).filter(Boolean);
-      L.push(`<details><summary><b>${esc(d?.title ?? id)}</b>: ${list.length} places</summary>`, '');
-      for (const kind of ['screen', 'widget', 'api', 'job', 'module'] as const) {
-        const of = list.filter((s) => s.kind === kind);
-        if (of.length) L.push(`- ${kind === 'screen' ? 'Screens' : kind === 'widget' ? 'On every screen' : kind === 'api' ? 'APIs' : kind === 'job' ? 'Jobs' : 'Services'}: ${of.map((s) => (kind === 'screen' ? `${esc(s.name)} ${code(s.where)}` : code(s.name))).join(', ')}`);
+  for (const m of b.modules) {
+    L.push('', `## ${esc(m.name)}`, '');
+    for (const a of m.areas.filter((y) => y.state === 'test')) {
+      const tier = a.tier === 'test-first' ? 'test first' : a.tier === 'watch' ? 'watch after release' : 'test';
+      if (a.cover) { L.push(`- ${STATE_MARK.test} ${areaName(a)}: ${tier}, covered by the Every screen cases`); continue; }
+      L.push(`#### ${STATE_MARK.test} ${areaName(a)} · ${tier}`, '');
+      for (const c of a.cases) {
+        L.push(`- [ ] ${step(c)} _(${KNOWN_WORD[known(r, c)].word})_`);
+        L.push(`  <details><summary>How Teslon knows (${c.hops.length} steps)</summary>${why(c.hops)}</details>`);
       }
-      if (d?.causes[0]) L.push(`- Because: ${link(d.causes[0], r, meta)} ${esc(d.causes[0].rule)}`);
-      L.push('', '</details>', '');
+      for (const c of a.notes) L.push(`- ~~${esc([c.section, c.field].filter(Boolean).join(' › ') || c.do)}~~ unchanged: ${esc(c.expect)}`);
+      L.push('');
     }
-  }
-
-  for (const tier of ['test-first', 'test-next', 'watch'] as const) {
-    // screens first: a tester starts from a page, then the APIs behind it
-    const list = r.surfaces.filter((s) => s.tier === tier && r.cases.some((c) => c.surface === s.id && !grouped(c))).sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9));
-    if (!list.length) continue;
-    L.push('', `## ${TIER_TITLE[tier]}`, '');
-    for (const s of list) {
-      const cs = r.cases.filter((c) => c.surface === s.id && !grouped(c));
-      L.push(`#### ${place(s)}`, '');
-      for (const c of cs.filter((x) => x.tier !== 'skip')) {
-        L.push(`- [ ] ${step(c)}`);
-        L.push(`  <details><summary>Why (${c.hops.length} steps)</summary>${why(c.hops)}</details>`);
-      }
-      for (const c of cs.filter((x) => x.tier === 'skip')) L.push(`- ~~${esc([c.section, c.field].filter(Boolean).join(' › '))}~~ not affected: ${esc(c.expect)}`);
+    const unclear = m.areas.filter((y) => y.state === 'unclear');
+    if (unclear.length) {
+      L.push('| Unclear | Why it is not ruled out | Check |', '|---|---|---|');
+      for (const a of unclear) L.push(`| ${STATE_MARK.unclear} ${areaName(a)} | ${esc(a.why ?? '')} | open it once and check it works as before |`);
+      L.push('');
+    }
+    const skips = m.areas.filter((y) => y.state === 'skip');
+    if (skips.length) {
+      L.push('| Safe to skip | Why | Proof |', '|---|---|---|');
+      for (const a of skips) L.push(`| ${STATE_MARK.skip} ${areaName(a)} | ${esc(a.why ?? '')} | ${a.evidence.slice(0, 3).map((h) => link(h, r, meta)).join(' ')} |`);
       L.push('');
     }
   }
-
-  const skips = r.surfaces.filter((s) => s.tier === 'skip');
-  if (skips.length) {
-    L.push('', '## Safe to skip, with proof', '', '| Place | Why it is not affected | Proof |', '|---|---|---|');
-    for (const s of skips) L.push(`| ${place(s)} | ${esc(s.reason ?? '')} | ${(s.evidence ?? []).slice(0, 3).map((h) => link(h, r, meta)).join(' ')} |`);
-  }
-  if (r.unseen.length) {
+  L.push('', `_The skip rule: ${esc(SKIP_RULE)}_`);
+  if (b.unseen.length) {
     L.push('', '## Teslon could not see', '');
-    for (const u of r.unseen) L.push(`- **${esc(u.what)}**: ${esc(u.why)}. _To close it: ${esc(u.resolve)}._`);
+    for (const u of b.unseen) L.push(`- **${esc(u.what)}**: ${esc(u.why)}. _To close it: ${esc(u.resolve)}._`);
   }
-  if (r.deltas.length) {
+  if (b.changes.length) {
     L.push('', '<details><summary><b>What changed in behaviour</b></summary>', '');
-    for (const d of r.deltas) L.push(`- ${esc(d.title)}${d.causes[0] ? ` (${link(d.causes[0], r, meta)})` : ''}`);
+    for (const c of b.changes) L.push(`- ${esc(c.title)} _(${KNOWN_WORD[c.known].word})_${c.cause ? ` (${link(c.cause, r, meta)})` : ''}`);
     L.push('', '</details>');
   }
   L.push('', '<details><summary><b>Every changed file, accounted for</b></summary>', '', '| File | Status | |', '|---|---|---|');
@@ -245,7 +205,7 @@ export function renderSummary(r: ImpactReport, meta: PrMeta): string {
   }
   L.push('', '</details>', '');
   const ok = r.verification.hops - r.verification.failed.length;
-  L.push(`Every claim cites the code: ${ok}/${r.verification.hops} cited lines re-checked at \`${r.head.slice(0, 7)}\`. Not typed yet: ${esc(r.notModelled.join('; '))}. Teslon ${meta.version}.`);
+  L.push(`Every claim cites the code: ${ok}/${r.verification.hops} cited lines re-checked at \`${r.head.slice(0, 7)}\`. Not followed by this build: ${esc(r.notModelled.join('; '))}. Teslon ${meta.version} · ${r.schema}${meta.at ? ` · ${meta.at}` : ''}.`);
   // the step summary takes up to 1 MiB
   return fit(L.join('\n'), 1_000_000, '…cut to fit the summary page; the run artifact has everything.');
 }

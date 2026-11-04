@@ -143,21 +143,31 @@ test('the PR comment: marker first, verdict, start here, link to the full report
 
     const c = renderComment(r, meta);
     assert.ok(c.startsWith(COMMENT_MARKER), 'the marker lets the next run update this comment instead of adding one');
-    assert.match(c, /\| Test first \| Test next \| Watch after release \| Safe to skip \| Teslon could not see \|/);
-    assert.match(c, /\*\*Start here\*\*\n1\. API `POST \/things`/);
-    assert.match(c, /\[Full report\]\(https:\/\/github\.com\/acme\/things\/actions\/runs\/1\)/);
+    // the decision first: test, skip and unclear in equal weight, then how sure, then the map
+    assert.match(c, /\| 🔵 \*\*Test\*\* \| \*\*1\*\* \| 1 case, 1 first \|/);
+    assert.match(c, /\| ✅ \*\*Safe to skip\*\* \| \*\*\d+\*\* \|/);
+    assert.match(c, /\| ⚠️ \*\*Unclear\*\* \| \*\*0\*\* \| none \|/);
+    assert.match(c, /\*\*High confidence\.\*\* Every changed line is accounted for/);
+    assert.match(c, /\*\*Application map\*\*\n\n\| Module \| Test \| Unclear \| Safe to skip \|/);
+    assert.match(c, /\| Things \| \*\*1\*\* · 1 case \|/, 'an API is grouped under the module its path names');
+    assert.match(c, /\*\*Start here\*\*\n1\. Things › `POST \/things`/);
+    assert.match(c, /\[Open the full brief\]\(https:\/\/github\.com\/acme\/things\/actions\/runs\/1\)/);
     assert.match(c, /cited lines re-checked/);
     assert.doesNotMatch(c, /\bh at\b/, 'no hours unless the team gave its minutes per case');
-    assert.match(renderComment(r, { ...meta, minutesPerCase: 10 }), /about [\d.]+ h at 10 min a case/);
+    assert.match(renderComment(r, { ...meta, minutesPerCase: 10 }), /about [\d.]+ h at 10 min each/);
+    // what the developer said, against what Teslon found
+    assert.doesNotMatch(c, /Not named in the PR/, 'the title names things');
+    assert.match(renderComment(r, { ...meta, title: 'Tidy the controller', says: 'Small refactor.' }), /Not named in the PR:\*\* Things\. This change reaches it too\./);
 
     const s = renderSummary(r, meta);
-    assert.match(s, /## Test first/);
+    assert.match(s, /## Things\n\n#### 🔵 `POST \/things` · test first/);
+    assert.match(s, /_\(Proven\)_/, 'each case says how it is known');
+    assert.match(s, /_The skip rule: An area is skipped only when/);
     assert.match(s, /- \[ \] /, 'cases are a checklist');
     assert.match(s, new RegExp(`\\(https://github\\.com/acme/things/blob/${head}/src/main/java/a/C\\.java#L\\d+\\)`), 'evidence links to the line at the commit it was read from');
     assert.match(s, /Every changed file, accounted for/);
     assert.doesNotMatch(c + s, /(^|[^`\w])@(NotBlank|Valid)\b/, 'an annotation must not ping a GitHub user');
     assert.match(s, /`@(NotBlank|Valid|jakarta[\w.]*)`/);
-    assert.match(c, /\*\*1 place\*\* · 1 case \|/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -232,11 +242,19 @@ test('the cockpit is one offline file: complete without its script, nothing load
     assert.doesNotMatch(data[1], /</);
     const parsed = JSON.parse(data[1]);
     assert.equal(parsed.head, head);
-    assert.ok(parsed.cases.length >= 1);
-    // static and complete: the case, its proof, and a Pass/Fail per case are in the markup
-    assert.match(h, /id="test-first"/);
+    assert.ok(parsed.items.length >= 1);
+    // static and complete: the decision, the map, the case, its proof, and a Pass/Fail per case are in the markup
+    assert.match(h, /<a class="v v-test" href="#test"><span class="w">[\s\S]*?Test<\/span><span class="n">1<\/span>/);
+    assert.match(h, /<a class="v v-skip[^"]*" href="#skip">/);
+    assert.match(h, /<a class="v v-unclear zero" href="#unclear">/);
+    assert.match(h, /High confidence/);
+    assert.match(h, /<h2>Application map<\/h2>/);
+    assert.match(h, /<a class="tile" href="#m-[a-z0-9]+"><span class="tn">Things/);
+    assert.match(h, /<span class="kn kn-proven"[^>]*>Proven<\/span>/);
     assert.match(h, /<span class="lbl">Do<\/span>Send POST \/things/);
-    assert.equal((h.match(/<button type="button" data-v="pass"/g) ?? []).length, parsed.cases.length);
+    assert.equal((h.match(/<button type="button" data-v="pass"/g) ?? []).length, parsed.items.length);
+    assert.match(h, /id="how" data-view/);
+    assert.match(h, /This build passed the Teslon proving ground/);
     assert.match(h, new RegExp(`href="https://github\\.com/acme/things/blob/${head}/src/main/java/a/C\\.java#L\\d+"`));
     assert.match(h, /id="ledger"/);
 

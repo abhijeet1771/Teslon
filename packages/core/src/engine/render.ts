@@ -1,4 +1,5 @@
 import { isTyped, type ImpactReport, type Surface, type Case, type Hop, type Tier } from './model.js';
+import { brief } from './areas.js';
 
 /**
  * Plain text for a terminal or a PR comment. One block per place to test,
@@ -48,7 +49,13 @@ export function renderText(r: ImpactReport, opts: { evidence?: boolean; repoName
 
   L.push(`Teslon impact  ${r.base.slice(0, 7)}..${r.head.slice(0, 7)}${opts.repoName ? `  ${opts.repoName}` : ''}`);
   L.push(r.triage.appEffect === 'none' ? `✓ ${r.triage.summary} Nothing to test in the app.` : r.triage.summary);
-  L.push(`${r.deltas.length} behaviour change${r.deltas.length === 1 ? '' : 's'} · ${active.length} to test · ${skipped.length} skipped with proof · ${r.unseen.length} not visible · evidence ${ok}/${r.verification.hops} lines re-read at head${r.verification.failed.length ? '  ✗ SOME EVIDENCE FAILED' : ''}`);
+  // the same decision the comment and the cockpit lead with
+  const b = brief(r);
+  if (!b.none) {
+    L.push(`TEST ${b.test} area${b.test === 1 ? '' : 's'} (${b.cases} case${b.cases === 1 ? '' : 's'}) · SKIP ${b.skip} with proof · UNCLEAR ${b.unclear} · confidence ${b.confidence.title.toLowerCase()}`);
+    L.push(`  ${b.modules.filter((m) => m.test || m.unclear).map((m) => `${m.name} ${[m.test ? `${m.test} test` : '', m.unclear ? `${m.unclear} unclear` : ''].filter(Boolean).join(', ')}`).join(' · ') || 'no area to test'}`);
+  }
+  L.push(`${r.deltas.length} behaviour change${r.deltas.length === 1 ? '' : 's'} · ${r.unseen.length} not visible · evidence ${ok}/${r.verification.hops} lines re-read at head${r.verification.failed.length ? '  ✗ SOME EVIDENCE FAILED' : ''}`);
   if (notModelled.length) L.push(`⚠ ${notModelled.length} changed file${notModelled.length === 1 ? '' : 's'} with lines no rule explains — see LEDGER`);
   L.push('');
 

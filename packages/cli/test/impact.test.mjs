@@ -86,8 +86,9 @@ test('teslon pr <n>: fetches the PR from origin, checks it where it lands, and w
     assert.match(open.stderr, /could not post the comment/, 'no token or repository: it says so and carries on');
     const comment = readFileSync(join(out, 'comment.md'), 'utf8');
     assert.ok(comment.startsWith('<!-- teslon:impact -->'));
-    assert.match(comment, /API `POST \/things`/);
-    assert.match(readFileSync(summary, 'utf8'), /## Test first/);
+    assert.match(comment, /`POST \/things`/);
+    assert.match(comment, /\*\*Application map\*\*/);
+    assert.match(readFileSync(summary, 'utf8'), /🔵 \*\*Test\*\*/);
     const report = JSON.parse(readFileSync(join(out, 'report.json'), 'utf8'));
     assert.equal(report.meta.number, 7);
     assert.equal(report.verification.failed.length, 0);

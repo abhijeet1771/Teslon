@@ -543,10 +543,17 @@ switch (command) {
       const report = impact({ repo: root, base: range.base, head: range.head, linked });
       const mpc = Number(parsed.flags.get('--minutes-per-case') ?? process.env.TESLON_MINUTES_PER_CASE ?? NaN);
       const runUrl = process.env.GITHUB_RUN_ID && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL ?? 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : undefined;
+      // what the developer said: the PR description, or the commit messages when there is none
+      const body = (info?.body ?? '').replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim();
+      let subjects: string[] = [];
+      try { subjects = execFileSync('git', ['log', '--no-merges', '--format=%s', '-n', '20', `${range.base}..${range.head}`], { cwd: root, encoding: 'utf8' }).trim().split('\n').filter(Boolean).reverse(); } catch { /* no history to read */ }
+      const commits = body ? '' : subjects.join('. ');
       const meta: PrMeta = {
-        baseRef: baseBranch, state: info?.merged ? 'merged' : range.state, how: range.how, version: VERSION,
+        baseRef: baseBranch, state: info?.merged ? 'merged' : range.state, how: range.how, version: VERSION, at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+        ...(body ? { says: body, saysFrom: 'pr' as const } : commits ? { says: commits, saysFrom: 'commits' as const } : {}),
         ...(Number.isFinite(n) ? { number: n } : {}),
-        ...(info ? { title: info.title, url: info.url, author: info.author } : {}),
+        // without GitHub, the first commit's subject is the nearest thing to a title
+        ...(info ? { title: info.title, url: info.url, author: info.author } : subjects[0] ? { title: subjects[0] } : {}),
         ...(gh.repo ? { repoUrl: `${gh.server}/${gh.repo}` } : {}),
         ...(runUrl ? { runUrl } : {}),
         ...(Number.isFinite(mpc) && mpc > 0 ? { minutesPerCase: mpc } : {}),

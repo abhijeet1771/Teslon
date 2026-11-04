@@ -83,6 +83,25 @@ export interface Unseen {
   readonly resolve: string;
   /** Files this covers, when it is about specific code (an unread front end, an unreached method). */
   readonly files?: readonly string[];
+  /** Held screens this note is about (ids in `held`), so a report can show them as areas, not only as a sentence. */
+  readonly areas?: readonly string[];
+}
+
+/**
+ * A screen (or job) the change may reach that is neither listed to test nor skipped:
+ * nothing on it was traced to a visible change, or some changed lines were
+ * not followed, so it cannot be ruled out. With `cover`, the change reaches
+ * every screen and that surface holds the cases.
+ */
+export interface Held {
+  readonly id: string;
+  /** A screen unless said: a job is held the same way when changed lines were not followed. */
+  readonly kind?: 'screen' | 'job';
+  readonly name: string;
+  readonly where: string;
+  readonly why: string;
+  readonly cover?: string;
+  readonly evidence: Hop[];
 }
 
 export interface LedgerEntry {
@@ -121,6 +140,8 @@ export interface ImpactReport {
   readonly deltas: readonly Delta[];
   readonly surfaces: readonly Surface[];
   readonly cases: readonly Case[];
+  /** Screens neither listed nor skipped, each with why. Absent in reports from before 0.4. */
+  readonly held?: readonly Held[];
   readonly unseen: readonly Unseen[];
   readonly ledger: readonly LedgerEntry[];
   readonly verification: { readonly hops: number; readonly failed: readonly Hop[] };

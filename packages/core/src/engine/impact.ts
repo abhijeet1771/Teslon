@@ -1,12 +1,12 @@
 import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
-import { targetsRoute, routeQuote, callMadeBy, type Component } from './vue.js';
+import { targetsRoute, routeQuote, callMadeBy, type Component, type Route } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
 import { followChanges, type WhereCtx } from './where.js';
 import { responseShape, contractCheck } from './shape.js';
 import { fileKind, noAppEffect } from './kinds.js';
-import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage } from './model.js';
+import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage, Held } from './model.js';
 
 /**
  * The engine. Given two commits, it works out which behaviour changed (typed
@@ -499,7 +499,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
     }
     const used = l.mentions.filter((m) => types.has(m));
     const ev: Hop = { label: 'Listener', file: l.file, line: l.line, quote: l.kind, rule: `${l.cls}.${l.method}() ${l.kind}` };
-    if (!used.length) skipReason(`job:${l.cls}.${l.method}`, 'job', `${l.cls}.${l.method}()`, `${l.kind}: uses none of ${[...types].join(', ')}`, ev);
+    // reached jobs are already listed by the follow; an unreached one runs none of the changed code
+    if (!used.length) skipReason(`job:${l.cls}.${l.method}`, 'job', `${l.cls}.${l.method}()`, `${l.kind}: runs none of the changed code${types.size ? `, and uses none of ${[...types].join(', ')}` : ''}`, ev);
     else unseen.push({ what: `${l.cls}.${l.method}() (${fileName(l.file)}:${l.line})`, why: `a ${l.kind} job uses ${used.join(', ')} without going through the API, so @Valid does not check what it saves; whether it saves values the new rules refuse is not modelled`, resolve: 'read this job by hand' });
   }
 
@@ -540,7 +541,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     kinds,
     summary: !runtime.length
       ? `No effect on the running app: ${ledger.length} file${ledger.length === 1 ? '' : 's'} (${Object.keys(kinds).join(', ')}).`
-      : `${runtime.length} file${runtime.length === 1 ? '' : 's'} change the running app${unfollowed.length ? `; ${unfollowed.length} not followed (see LEDGER)` : ''}.`,
+      : `${runtime.length} file${runtime.length === 1 ? ' changes' : 's change'} the running app${unfollowed.length ? `; ${unfollowed.length} not followed (see LEDGER)` : ''}.`,
   };
 
   /* ---------- 3. screens not reached: a skip only when all of their code was read ---------- */
@@ -550,19 +551,31 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const touchedPaths = [...touched].map((e) => ({ e, exp: exposedAs(fh, e) }));
   const hitsTouched = (c: { tpl: string; verbs: readonly string[] }): boolean => touchedPaths.some(({ e, exp }) => c.verbs.includes(e.verb) && (templateHits(c.tpl, exp ? exp.path : e.path) || templateHits(c.tpl, e.path)));
   let held = 0;
+  // every screen that is neither listed nor skipped is held, with why: the report shows each one, never only a count
+  const heldScreens: Held[] = [];
+  const heldNotReached: string[] = [], heldNotRuledOut: string[] = [];
+  const hold = (r: Route, why: string, cover?: string): void => {
+    (cover || why.includes('did not follow') ? heldNotReached : heldNotRuledOut).push(`screen:${r.path}`);
+    heldScreens.push({ id: `screen:${r.path}`, name: screenName(ui.components.get(r.component), r.path), where: r.path, why, ...(cover ? { cover } : {}), evidence: [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }] });
+  };
   // with lines nothing followed, every screen is held, even when nothing at all was modelled
   for (const r of deltas.length || unfollowed.length ? ui.routes : []) {
     const id = `screen:${r.path}`;
     if (surfaces.has(id)) continue;
-    if (!canSkip) { held++; continue; }
+    if (!canSkip) {
+      held++;
+      if (unfollowed.length) hold(r, `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this screen cannot be ruled out`);
+      else hold(r, 'a change reaches every screen', 'screen:*');
+      continue;
+    }
     const comp = ui.components.get(r.component);
     const files = closure(r.component);
     const own = ui.calls.filter((c) => files.has(c.file));
     const hit = own.find(hitsTouched);
-    if (hit) { notRuledOut.push(`${r.path} (calls ${hit.verbs.join('/')} ${hit.tpl}, which changed)`); continue; }
-    if ([...files].some((f) => touchedUi.has(f))) { notRuledOut.push(`${r.path} (runs changed code)`); continue; }
+    if (hit) { notRuledOut.push(`${r.path} (calls ${hit.verbs.join('/')} ${hit.tpl}, which changed)`); hold(r, `calls ${hit.verbs.join('/')} ${hit.tpl}, which runs changed code, but nothing on this screen was traced to a visible change`); heldScreens.at(-1)!.evidence.push({ label: 'Calls', file: hit.file, line: hit.line, quote: callText(hit), rule: `${hit.verbs.join('/')} ${hit.tpl}` }); continue; }
+    if ([...files].some((f) => touchedUi.has(f))) { notRuledOut.push(`${r.path} (runs changed code)`); hold(r, 'runs changed front-end code, but nothing on this screen was traced to a visible change'); continue; }
     const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
-    if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); continue; }
+    if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); hold(r, `gets data in a way Teslon does not follow: ${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''}`); continue; }
     const ro = readsOnly.get(r.path);
     const vc = own.find((c) => c.verbChoice)?.verbChoice;
     const verb = vc ? (new RegExp(`:${vc.param}\\b`).test(r.path) ? vc.ifTrue : vc.ifFalse) : undefined;
@@ -575,8 +588,19 @@ export function impact(opts: ImpactOptions): ImpactReport {
       evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }],
     });
   }
-  if (held) unseen.push({ what: `${held} screen${held === 1 ? '' : 's'} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no screen can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen' });
-  if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'each runs changed code or calls a changed API, but nothing on it was traced to a visible change', resolve: 'open each one and check it works as before' });
+  // a job skip rests on every changed line being followed, like a screen's: with lines nothing followed, it is held too
+  let heldJobs = 0;
+  if (unfollowed.length) {
+    for (const s of [...surfaces.values()]) {
+      if (s.tier !== 'skip' || s.kind !== 'job') continue;
+      surfaces.delete(s.id);
+      heldJobs++;
+      heldNotReached.push(s.id);
+      heldScreens.push({ id: s.id, kind: 'job', name: s.name, where: s.where, why: `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this job cannot be ruled out`, evidence: s.evidence ?? [] });
+    }
+  }
+  if (held || heldJobs) unseen.push({ what: `${[held ? `${held} screen${held === 1 ? '' : 's'}` : '', heldJobs ? `${heldJobs} job${heldJobs === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no ${held ? 'screen' : 'job'} can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen', areas: heldNotReached });
+  if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'each runs changed code or calls a changed API, but nothing on it was traced to a visible change', resolve: 'open each one and check it works as before', areas: heldNotRuledOut });
   for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue and Angular front ends, not ${u.framework} yet, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
 
   /* ---------- 4. what could not be seen ---------- */
@@ -600,7 +624,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   /* ---------- 6. verification: every hop re-read at head ---------- */
   const failed: Hop[] = [];
   let count = 0;
-  const allHops = [...deltas.flatMap((d) => d.causes), ...cases.flatMap((c) => c.hops), ...[...surfaces.values()].flatMap((s) => s.evidence ?? [])];
+  const allHops = [...deltas.flatMap((d) => d.causes), ...cases.flatMap((c) => c.hops), ...[...surfaces.values()].flatMap((s) => s.evidence ?? []), ...heldScreens.flatMap((h) => h.evidence)];
   for (const h of new Set(allHops)) {
     count++;
     const text = (h.side === 'base' ? B : H).line(h.file, h.line);
@@ -608,20 +632,22 @@ export function impact(opts: ImpactOptions): ImpactReport {
     if (!h.verified) failed.push(h);
   }
 
+  // what this build does not follow: kept in step with the rules above, since the report prints it as fact
   const notModelled = [
     'what changed code does (it is followed to where it runs, not typed)',
     'response shapes changed by custom serializers, getters or naming strategies (fields are read as written)',
-    'database schema and migrations',
+    'migrations other than Liquibase XML and Flyway SQL column changes, and the data already in production',
     'messages and events between services',
-    'configuration keys and feature flags',
+    'feature flags served from outside this repository',
     'permissions and security rules',
     'text and translations',
+    'React front ends (detected and named, not read)',
   ];
 
   return {
     schema: 'teslon.impact/1', triage, repo: opts.repo, base: B.ref, head: H.ref,
     deltas, surfaces: [...surfaces.values()].sort((a, b) => RANK[b.tier] - RANK[a.tier] || a.id.localeCompare(b.id)),
-    cases, unseen, ledger, verification: { hops: count, failed }, notModelled, ms: Date.now() - t0,
+    cases, held: heldScreens, unseen, ledger, verification: { hops: count, failed }, notModelled, ms: Date.now() - t0,
   };
 }
 

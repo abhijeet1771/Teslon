@@ -6,6 +6,9 @@ import { routeQuote, callMadeBy, type ApiCall } from './vue.js';
 import { browserCalls, importChain, screenTitle, type WhereCtx } from './where.js';
 import { angularReads, type TypedRead } from './ngtypes.js';
 
+/** One record of a route's collection: customers → customer, categories → category. */
+const one = (w: string): string => w.replace(/ies$/, 'y').replace(/(ss|x|ch|sh)es$/, '$1').replace(/([^su])s$/, '$1');
+
 /**
  * Response shape: a field of what an API sends or reads changes its JSON name,
  * disappears from the JSON, or changes type. Nothing in the Java code breaks,
@@ -298,7 +301,7 @@ export function responseShape(ctx: ShapeCtx): void {
         const hops = [...causes, ...linkHops, typeHop, readHop, ...(importChain(ui, rt.component, r.component) ?? []), { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }];
         const what = r.label || r.expr;
         // the screen's own record: /operation/:id/view shows an operation
-        const own = (rt.path.split('/').filter((x) => x && !x.startsWith(':'))[0] ?? noun).replace(/[-_]/g, ' ');
+        const own = one((rt.path.split('/').filter((x) => x && !x.startsWith(':'))[0] ?? noun).replace(/[-_]/g, ' '));
         const view = rt.path.includes(':') ? ` for a saved ${own}` : '';
         if (r.kind === 'show') ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: what, do: `Open ${title}${view} and look at ${r.label ? `${r.label}` : r.expr}.`, expect: `${r.label || old} shows the ${noun}'s ${old}. Risk: ${blank}, because ${risk}.`, before: 'Shown.', after: blank === 'blank' ? 'Blank.' : 'Shown wrongly.', proof: 'derived', hops });
         else if (r.kind === 'option') ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: what, do: `Open ${title} and open the ${what} list.`, expect: `Each option shows a ${noun}'s ${old}. Risk: ${blank} options, because ${risk}.`, before: 'Options named.', after: blank === 'blank' ? 'Blank options.' : 'Shown wrongly.', proof: 'derived', hops });
@@ -337,7 +340,7 @@ export function responseShape(ctx: ShapeCtx): void {
             const controls = [...ctx.closure(rt.component)].flatMap((f) => { const k = ui.components.get(f); return (k?.elements ?? []).filter((el) => el.attrs['formControlName'] === old).map((el) => ({ el, k: k! })); });
             if (controls.length && ch.kind !== 'retyped') {
               ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
-              const own = (rt.path.split('/').filter((x) => x && !x.startsWith(':'))[0] ?? noun).replace(/[-_]/g, ' ');
+              const own = one((rt.path.split('/').filter((x) => x && !x.startsWith(':'))[0] ?? noun).replace(/[-_]/g, ' '));
               for (const { el, k } of controls) {
                 const id0 = el.attrs['id'];
                 const label = (id0 && k.elements.find((x) => x.tag === 'label' && x.attrs['for'] === id0)?.text) || old;

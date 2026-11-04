@@ -24,36 +24,66 @@ commit before anything is printed.
 One comment, updated in place on every push. This one is for a real PR
 ([spring-petclinic-microservices #559](https://github.com/spring-petclinic/spring-petclinic-microservices/pull/559)):
 
-> ### Teslon · what PR #559 changes for QA
+> ### Teslon · PR #559 test brief
+> **Pet birthdays cannot be set to a future date** · `dc9ca15..1d76b00` · 3 files · merged
 >
-> | Test first | Test next | Watch after release | Safe to skip | Teslon could not see |
-> |---|---|---|---|---|
-> | **5 places** · 16 cases | 2 places · 2 cases | 1 place | 8 places, each with proof | 2 things |
+> | | Areas | |
+> |---|---|---|
+> | 🔵 **Test** | **8** | 20 cases, 16 first · about 3.3 h at 10 min each |
+> | ✅ **Safe to skip** | **8** | each with proof |
+> | ⚠️ **Unclear** | **0** | none |
+>
+> **High confidence.** Every changed line is accounted for, and all 70 cited lines re-checked at 1d76b00.
+>
+> > ⚠️ **Not named in the PR:** Every screen. This change reaches it too.
+>
+> **Application map**
+>
+> | Module | Test | Unclear | Safe to skip |
+> |---|---|---|---|
+> | Every screen | **1** · 4 cases | — | — |
+> | Owners | **5** · 13 cases | — | 4 |
+> | Data | **1** · 1 case | — | — |
+> | Platform | **1** · 2 cases | — | 1 |
+> | Jobs | — | — | 1 |
+> | Vets | — | — | 1 |
+> | Welcome to Petclinic | — | — | 1 |
 >
 > **Start here**
-> 1. **Add Pet** `/owners/:ownerId/new-pet`: **Pet › Birth date**: Enter a date after today, press Submit. → **Expect** Rejected (400). _Before: Saved._
-> 2. **Edit Pet** `/owners/:ownerId/pets/:petId`: **Pet › Birth date**: Enter a date after today, press Update Pet. → **Expect** Rejected (400). _Before: Saved._
-> 3. **AI chat** (on every screen): Ask the chat to add a pet with a future birth date. → **Expect** A sentence saying it could not. Risk: an error, because the 400 is not handled. _Before: Done._
-> 4. API `POST /api/customer/owners/{ownerId}/pets`: …
->
-> **Safe to skip** (8): Welcome to Petclinic `/` · Owners `/owners` · Owner `/owners/:ownerId/edit` · Visits … · Veterinarians `/vets` · …
+> 1. Owners › **Add Pet** `/owners/:ownerId/new-pet`: **Pet › Birth date**: Enter a date after today, press Submit. → **Expect** Rejected (400). _Before: Saved._
+> 2. Owners › **Edit Pet** `/owners/:ownerId/pets/:petId`: **Pet › Birth date**: Enter a date after today, press Update Pet. → **Expect** Rejected (400). _Before: Saved._
+> 3. Every screen › **AI chat** (on every screen): **birthDate**: Ask the chat to add pet to owner with a future date for birthDate. → **Expect** A sentence saying it could not. Risk: an error, because the 400 is not handled. _Before: Done._
+> 4. …
 >
 > **Teslon could not see** (2): callers outside this repository of POST /api/customer/owners/{ownerId}/pets … · runtime configuration in the config repository
 >
 > every claim cites the code: 70/70 cited lines re-checked at `1d76b00`
 
-The run's **summary page** has the full brief:
-- a checklist per screen;
-- a "Why" fold on every case, with each step linked to the exact line;
-- the safe-to-skip table with proof;
+Every output leads with the same decision:
+- **Test · Skip · Unclear**, counted in areas of the application;
+- **how sure** Teslon is, in words;
+- **what the PR changes**, each change marked *Proven* (a typed rule says so)
+  or *Followed* (the change runs there);
+- **what the developer said**, and the modules it does not name that the
+  change reaches;
+- the **application map**: every screen and job, grouped by module, each with
+  exactly one answer.
+
+The run's **summary page** has the full brief, module by module:
+- a checklist per area;
+- a "How Teslon knows" fold on every case, with each step linked to the exact
+  line;
+- the unclear and safe-to-skip areas, with why and proof;
 - every changed file, accounted for.
 
 The run artifact holds **`report.html`**, the cockpit, as one offline file.
-It has:
-- "Start here" and the verdict;
-- the test plan grouped by screen;
-- Pass / Fail on every case, kept in that browser for that commit;
+It opens on the decision and the map, and goes from a module to an area to
+its cases or its proof. It also has:
+- Pass / Fail on every case, and a "check it once" on every unclear area, kept
+  in that browser for that commit;
 - an estimate from your minutes per case;
+- "How sure": what each answer rests on, the skip rule, and what this build
+  does not follow;
 - "Copy checklist" and "Copy as CSV".
 
 It loads nothing from the network.
@@ -178,7 +208,8 @@ The first line of every report says which case it was.
   - every changed line was followed;
   - its screen's code was read completely;
   - nothing reaches it through data Teslon cannot read.
-  Otherwise it is "could not be ruled out", never "safe".
+  Otherwise it is **Unclear**, never "safe". This holds for jobs as well as
+  screens.
 - **Not visible is a result, not a silence.** Other repositories, production
   data, flags in a flag service, mobile clients and partner callers are listed
   with how to check them.
