@@ -25,6 +25,8 @@ export interface PrMeta {
   /** Minutes one case takes this team, if they said; otherwise effort is shown in cases only. */
   readonly minutesPerCase?: number;
   readonly version: string;
+  /** How people call the repository, when there is no repository URL to take it from. */
+  readonly repoName?: string;
 }
 
 export const COMMENT_MARKER = '<!-- teslon:impact -->';

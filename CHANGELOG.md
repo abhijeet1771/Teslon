@@ -124,6 +124,25 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   is enough.
 
 ### Changed
+- The cockpit, redesigned on the Human Interface Guidelines' principles
+  (clarity, deference, depth). It is now overview plus detail:
+  - **One thing at a time.** The overview, one place, what is safe to skip,
+    what could not be seen, or the files, each its own view, named in the
+    address.
+  - **Desktop.** A sidebar lists the places in the order to test them,
+    grouped by kind.
+  - **Phone.** The list lives in the overview and a place opens with a way
+    back.
+  - **Summary.** One headline figure, a thin split bar of the places beside
+    its figures, and a progress meter.
+  - **Each case.** "Expect" and "Risk" on separate lines, Pass / Fail as a
+    two-segment control, and "Why" as a path of steps.
+  - **Look and feel.** Inset grouped lists, system text styles, light and
+    dark semantic colours, 44 pt targets on touch, and motion only where it
+    explains a change (none with Reduce Motion).
+  - Each place shows its own progress in the list, and links to the
+    previous and next place.
+
 - `@angular/compiler` 21.2: it parses arrow functions in templates and still
   runs on Node 20.
 - `teslon pr`, `merged`, `analyze`, `profile`, `paths`, `cases`, `changed`,
