@@ -22,7 +22,39 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 - Without GitHub, the first commit's subject titles the brief, and the commit
   messages stand in for the PR description.
 
-### Fixed
+### Fixed (the perfection loop: `research/PERFECTION-RULES-2026-11-04.md`)
+- **A moved route.** A route path that changes no longer leaves the screens
+  linking to the old path "safe". Each is listed test first, with the link.
+  Angular's `router.navigate([...])` and `navigateByUrl(...)` are now read.
+- **An enum change on an entity field** names the rows already stored that
+  it breaks: a removed value when stored by name, any reorder when stored by
+  position. Every screen showing the entity is held.
+- **Plain SQL in Java strings** (`update`, `insert`, `delete`, `from`) is
+  read as data written and data read.
+- **`@ConditionalOnProperty` reads its key.** A flag flip lists the bean's
+  listeners and the jobs that call it. "Nothing reads it" is claimed only
+  when no Java string names the key.
+- **Aspects** are followed to every method their pointcuts wrap.
+- **Dependencies:**
+  - dev dependencies that only check code are "no app effect";
+  - build tools reach every screen;
+  - unknown ones are said.
+
+  When the app changes, every screen gets an answer.
+- **No longer every screen:**
+  - log settings;
+  - TypeScript `interface` and `type` lines;
+  - a non-unique index (a watch on the table instead);
+  - a changed constant (only the methods that use it).
+- **Migrations:**
+  - unique indexes and constraints reach the writers;
+  - column type changes reach the writers;
+  - seed data (`loadData`, `insert`, `update`, and a changed CSV) reaches
+    the screens that show the table.
+- **The Java reader dropped type arguments** (`JpaRepository<Order, Long>`).
+  Which endpoints save an entity was never found for endpoints taking a DTO.
+- Migration citations land on the line their quoted word is on: Liquibase
+  tags span lines.
 - **What a change stores, and what it announces, is followed.** Following
   callers found who runs a change, not who later reads what it stored or
   listens for what it published. Now:
@@ -62,6 +94,19 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   saved customer".
 
 ### Added
+- **Perfection rules and the probe catalog.**
+  `research/PERFECTION-RULES-2026-11-04.md` defines perfect as measurable
+  gates:
+  - trust: never silent, never a wrong skip, every citation re-checks, never
+    a crash, the same answer twice;
+  - completeness: every screen gets one answer, every kind of change is
+    probed;
+  - precision: at most 5% extra screens and at most 10% held.
+
+  `bench/probes/catalog.mjs` holds 39 real developer PRs on OrderDesk, each
+  tagged with the engine logic it exercises, with truth written first.
+  `bench/probes/run.mjs` scores them, and CI gates on it. Progress is in
+  `research/PERFECTION-SCOREBOARD.md`.
 - Six proving-ground scenarios from a probe of 14 risky changes
   (`research/CHANGE-COVERAGE-2026-11-04.md`):
   - an event no longer published;

@@ -54,6 +54,16 @@ function repositories(f: SpringFacts): Map<string, string> {
   return out;
 }
 
+/** Tables named by SQL in a method's string literals, with the line of each literal. */
+function sqlTables(m: JMethod, re: RegExp): { table: string; line: number }[] {
+  const out: { table: string; line: number }[] = [];
+  for (const tok of m.body) {
+    if (!/^("|`)/.test(tok.t)) continue;
+    for (const x of tok.t.matchAll(re)) out.push({ table: x[2]!, line: tok.line });
+  }
+  return out;
+}
+
 export interface DataFlow {
   readonly written: readonly Written[];
   /** Does this endpoint's code (or what it calls) read or write the entity? */
@@ -103,10 +113,32 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
         for (const m of t.matchAll(/publishEvent\s*\(\s*(?:new\s+)?([A-Z]\w*)/g)) {
           events.push({ type: m[1]!, removed: side === 'base', hop: { label: side === 'base' ? 'Publish removed' : 'Publishes', file, line: n, quote: 'publishEvent', rule: `publishes ${m[1]}`, ...sideOf } });
         }
+        // plain SQL in the method: update orders …, insert into orders …, delete from orders …
+        if (at?.method) {
+          const sqlWrites = sqlTables(at.method, /\b(update|insert\s+into|delete\s+from|merge\s+into)\s+["`]?(\w+)/gi);
+          for (const { table, line } of sqlWrites) {
+            const entity = f.entities.find((e) => e.table.toLowerCase() === table.toLowerCase())?.name;
+            if (entity) add({ entity, field: '*', hop: { label: side === 'base' ? 'SQL write removed' : 'SQL writes', file, line, quote: table, rule: `${simple(at.type.name)}.${at.method.name}() writes ${table} with SQL`, ...sideOf } });
+          }
+        }
+        // a condition, a loop, a return or an assignment that changed decides the writes after it in the method
+        if (side === 'head' && at?.method && /^(if|else|for|while|switch|case|return|try|catch|do)\b|^\}\s*(else|catch)\b|^[\w.[\]]+\s*[-+*/]?=[^=]|^(final\s+)?[\w<>,.?[\]]+\s+\w+\s*=[^=]/.test(code)) {
+          const body = at.method.body;
+          const repoFieldsHere = new Map(at.type.fields.filter((x) => repos.has(simple(x.type))).map((x) => [x.name, repos.get(simple(x.type))!]));
+          for (let i = 0; i + 3 < body.length; i++) {
+            if (body[i]!.line < n || body[i + 1]!.t !== '.' || body[i + 3]!.t !== '(') continue;
+            const name = body[i + 2]!.t;
+            const decides: Hop = { label: 'Decides a write', file, line: n, quote: code.slice(0, 24), rule: `this line decides whether ${body[i]!.t}.${name}(…) on line ${body[i + 2]!.line} runs` };
+            if (/^set[A-Z]/.test(name)) { const field = lowerFirst(name.slice(3)); for (const entity of byField.get(field) ?? []) add({ entity, field, hop: decides }); }
+            else if (/^(save|saveAll|saveAndFlush|delete|deleteById|deleteAll)$/.test(name) && repoFieldsHere.has(body[i]!.t)) add({ entity: repoFieldsHere.get(body[i]!.t)!, field: '*', hop: decides });
+          }
+        }
         // a value computed here and written by the caller: order.setTotal(pricing.orderTotal(…))
         if (side === 'head' && at?.method) {
           const target = `${simple(at.type.name)}.${at.method.name}`;
-          for (const e of f.callEdges.filter((x) => x.to === target)) {
+          // callers reach an implementation through its interface: tax.apply(…) calls StandardTax.apply
+          const called = new Set([target, ...(f.supertypes.get(simple(at.type.name)) ?? []).map((x) => `${x}.${at.method!.name}`)]);
+          for (const e of f.callEdges.filter((x) => called.has(x.to))) {
             // the statement can start a line or two above the call: order.setTotal(pricing\n  .orderTotal(…))
             const ct = [e.line - 2, e.line - 1, e.line].map((k) => (k > 0 ? H.line(e.file, k) ?? '' : '')).join(' ');
             const sm = new RegExp(`(\\w+)\\s*\\.\\s*set([A-Z]\\w*)\\s*\\([^;]*\\b${at.method.name}\\s*\\(`).exec(ct.slice(Math.max(0, ct.lastIndexOf(';', ct.lastIndexOf(at.method.name)) + 1)));
@@ -137,6 +169,41 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
         if (f.listeners.some((l) => l.takes.includes(simple(t.name)) && l.kind.includes('EventListener'))) events.push({ type: simple(t.name), removed: false, hop: { label: 'Event changed', file, line: t.line, quote: simple(t.name), rule: `${simple(t.name)} changed`, ...sideOf } });
       }
     }
+  }
+
+  // an enum whose stored values change: rows already in the database hold the old ones
+  const stored: { entity: string; field: string; enumName: string; gone: string[]; ordinal: boolean; hop: Hop }[] = [];
+  for (const cf of ctx.changes) {
+    if (fileKind(cf.path) !== 'java' || cf.status !== 'modified') continue;
+    const before = fb.javaFiles.get(cf.path), after = fh.javaFiles.get(cf.path);
+    for (const eb of before?.types.filter((t) => t.kind === 'enum') ?? []) {
+      const eh = after?.types.find((t) => t.kind === 'enum' && simple(t.name) === simple(eb.name));
+      if (!eh) continue;
+      const gone = eb.constants.filter((c) => !eh.constants.includes(c));
+      const moved = eb.constants.some((c, i) => eh.constants.indexOf(c) !== i && eh.constants.includes(c)) || eh.constants.length !== eb.constants.length;
+      if (!gone.length && !moved) continue;
+      const enumName = simple(eh.name);
+      // entity fields of this type, and how they are stored: by name (STRING) or by position (ORDINAL, the default)
+      for (const jf of fh.javaFiles.values()) for (const t of jf.types) {
+        const entity = fh.entities.find((e) => e.name === simple(t.name) && e.file === jf.path);
+        if (!entity) continue;
+        for (const fl of t.fields.filter((x) => simple(x.type) === enumName)) {
+          const how = fl.annotations.find((a) => a.name === 'Enumerated');
+          const ordinal = !how || !how.args.some((a) => a.t === 'STRING');
+          if (!ordinal && !gone.length) continue;
+          const hop: Hop = { label: ordinal ? 'Stored by position' : 'Stored by name', file: jf.path, line: how?.line ?? fl.line, quote: how ? 'Enumerated' : fl.name, rule: `${entity.name}.${fl.name} stores ${enumName} ${ordinal ? 'as its position in the list' : 'as its name'}` };
+          stored.push({ entity: entity.name, field: fl.name, enumName, gone, ordinal, hop });
+          add({ entity: entity.name, field: fl.name, hop });
+        }
+      }
+    }
+  }
+  for (const s0 of stored) {
+    ctx.unseen.push({
+      what: s0.ordinal ? `${s0.entity} rows already stored with ${s0.enumName} by position` : `${s0.entity} rows already stored as ${s0.gone.join(', ')}`,
+      why: s0.ordinal ? `${s0.entity}.${s0.field} is stored as a number, and this PR moves ${s0.enumName}'s values, so stored rows now mean another value` : `${s0.enumName} no longer has ${s0.gone.join(', ')}, so a stored row with ${s0.gone.length === 1 ? 'that value' : 'those values'} fails to load, and every screen showing it fails`,
+      resolve: s0.ordinal ? 'add a migration that renumbers stored rows, or store the enum by name' : `count the rows with ${s0.gone.join(', ')} in production and add a migration that renames them`,
+    });
   }
 
   // listeners of an event whose publishing or shape changed run differently, or not at all
@@ -175,6 +242,8 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
       for (const m of t.methods.filter((x) => x.name === method)) {
         if (simple(m.returnType) === entity || m.returnType.includes(`<${entity}>`) || m.params.some((p) => simple(p.type) === entity)) return true;
         if (m.body.some((tok) => tok.t === entity || repoFields.has(tok.t))) return true;
+        const table = fh.entities.find((e) => e.name === entity)?.table;
+        if (table && sqlTables(m, /\b(from|join|update|into)\s+["`]?(\w+)/gi).some((x) => x.table.toLowerCase() === table.toLowerCase())) return true;
       }
     }
     return fh.callEdges.filter((x) => x.from === at).some((x) => uses(x.to, entity, depth + 1, seenAt));

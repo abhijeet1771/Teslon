@@ -33,10 +33,15 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      - name: Proving ground (OrderDesk, 25 real PRs, truth written first)
+      - name: Proving ground (OrderDesk, 31 real PRs, truth written first)
         # A silent miss, a wrong skip, a false alarm, noise, a wrong range or unsafe
         # output on any scenario fails the build: Teslon stands on trust.
         run: node bench/proving-ground/run.mjs --out proving-ground.md && cat proving-ground.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Probe catalog (one real PR per kind of change, truth written first)
+        # The perfection gates (research/PERFECTION-RULES-2026-11-04.md): any silent
+        # miss, wrong skip, unsaid risk, failed citation or crash fails the build.
+        run: node bench/probes/run.mjs --md probes.md && cat probes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Invariants must be covered, not merely passing
         run: |

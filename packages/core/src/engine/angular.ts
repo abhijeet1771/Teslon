@@ -371,6 +371,7 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
     const { sf } = fi;
     const opaque: { what: string; line: number }[] = [];
     const extraDeps: { file: string; line: number }[] = [];
+    const pushes: { target: string; line: number }[] = [];
     let cls: string | null = null;
 
     const routeArray = (arr: ts.ArrayLiteralExpression): RawRoute[] => {
@@ -456,6 +457,16 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
         const callee = (ts.isNewExpression(n) ? 'new ' : '') + n.expression.getText(sf).replace(/^this\./, '');
         if (NG_OPAQUE.test(callee)) opaque.push({ what: `${callee}()`, line: lineOf(sf, n) });
       }
+      // navigation from code: router.navigate(['/orders', id]), router.navigateByUrl('/products')
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && /^(navigate|navigateByUrl)$/.test(n.expression.name.text) && n.arguments[0]) {
+        const a = n.arguments[0];
+        const part = (e: ts.Expression): string => (ts.isStringLiteralLike(e) ? e.text : ts.isNumericLiteral(e) ? e.text : '*');
+        const target = ts.isArrayLiteralExpression(a) ? a.elements.map((e) => part(e as ts.Expression)).join('/').replace(/\/+/g, '/')
+          : ts.isStringLiteralLike(a) ? a.text
+          : ts.isTemplateExpression(a) ? a.head.text + a.templateSpans.map((x) => `*${x.literal.text}`).join('')
+          : null;
+        if (target && target.startsWith('/')) pushes.push({ target: `'${target}'`, line: lineOf(sf, n) });
+      }
       if (ts.isCallExpression(n)) {
         const callee = n.expression.getText(sf).replace(/^this\./, '');
         const m = HTTP_VERB.exec(callee);
@@ -510,7 +521,7 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
       elements: (tpl?.elements ?? []).map((e) => ({ ...e, file: tpl!.file })),
       shows: (tpl?.shows ?? []).map((x) => ({ ...x, file: tpl!.file })),
       routeParams: new Map(),
-      pushes: [],
+      pushes,
       links: (tpl?.links ?? []).map((x) => ({ ...x, file: tpl!.file })),
       deps: [...new Set([...fi.imports.values(), ...fi.reexports, ...extraDeps.map((d) => d.file)])],
       depLines,

@@ -199,8 +199,11 @@ export function readJavaFile(path: string, src: string): JavaFile {
       else if (isIdent(t) && mode && mode !== 'permits' && toks[j - 1]?.t !== '.') {
         let full = t, m = j;
         while (toks[m + 1]?.t === '.' && isIdent(toks[m + 2]?.t)) { full += '.' + toks[m + 2]!.t; m += 2; }
-        supertypes.push(full);
-        j = skipGenerics(m + 1) - 1;
+        // keep the type arguments as written: JpaRepository<Order, Long> says which entity the repository stores
+        const after = skipGenerics(m + 1);
+        const args = after > m + 1 ? toks.slice(m + 1, after).map((x) => x.t).join('').replace(/,/g, ', ') : '';
+        supertypes.push(full + args);
+        j = after - 1;
       }
       j++;
     }

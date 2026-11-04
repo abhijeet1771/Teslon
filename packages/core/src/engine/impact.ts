@@ -570,7 +570,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
   /* ---------- 3. screens not reached: a skip only when all of their code was read ---------- */
   const notRuledOut: string[] = [];
   // a skip says "not affected": only true when every changed line was explained or followed
-  const canSkip = deltas.length > 0 && !unfollowed.length && !surfaces.has('screen:*');
+  // with every changed line followed, a screen the change does not reach is skipped, with its proof
+  const canSkip = !unfollowed.length && !surfaces.has('screen:*');
   const touchedPaths = [...touched].map((e) => ({ e, exp: exposedAs(fh, e) }));
   const hitsTouched = (c: { tpl: string; verbs: readonly string[] }): boolean => touchedPaths.some(({ e, exp }) => c.verbs.includes(e.verb) && (templateHits(c.tpl, exp ? exp.path : e.path) || templateHits(c.tpl, e.path)));
   let held = 0;
@@ -584,7 +585,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
     heldScreens.push({ id: `screen:${r.path}`, name: screenName(ui.components.get(r.component), r.path), where: r.path, why, ...(cover ? { cover } : {}), evidence: [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }] });
   };
   // with lines nothing followed, every screen is held, even when nothing at all was modelled
-  for (const r of deltas.length || unfollowed.length ? ui.routes : []) {
+  // whenever the running app changes, every screen gets an answer, even when nothing at all was modelled
+  for (const r of deltas.length || unfollowed.length || runtime.length ? ui.routes : []) {
     const id = `screen:${r.path}`;
     if (surfaces.has(id)) continue;
     if (!canSkip) {

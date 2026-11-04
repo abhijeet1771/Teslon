@@ -180,3 +180,12 @@ test('code removed together with the job that used it: the job is named as gone,
     assert.equal(r.verification.failed.length, 0);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test('T6: the same PR gives the same report, byte for byte, but for the time it took', () => {
+  const { d, base, head } = repo((dir) => edit(dir, `${J}/service/PricingService.java`, 'new BigDecimal("0.95")', 'new BigDecimal("0.90")'));
+  try {
+    const a = impact({ repo: d, base, head }), b = impact({ repo: d, base, head });
+    const strip = (r) => JSON.stringify({ ...r, ms: 0 });
+    assert.equal(strip(a), strip(b));
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
