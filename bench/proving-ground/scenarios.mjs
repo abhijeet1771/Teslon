@@ -87,10 +87,11 @@ export const scenarios = [
     apply: ({ edit }) => edit(`${J}/service/PricingService.java`, 'new BigDecimal("0.95")', 'new BigDecimal("0.90")'),
     required: {
       find: [{ s: 'api:POST /api/orders' }, { s: 'screen:/orders/new' }],
-      notSkip: ['screen:/orders/new'],
+      notSkip: ['screen:/orders/new', 'job:InvoiceService.onOrderPlaced'],
     },
     // the report uses lineTotal, not orderTotal
     ideal: [{ s: 'screen:/reports', absent: true }],
+    // truth corrected 2026-11-04: the invoice listener copies order.getTotal() into the invoice amount, so invoices change too
   },
   {
     id: 's06-status-badge',
@@ -335,5 +336,65 @@ export const scenarios = [
     apply: ({ edit }) => edit(`${J}/service/PricingService.java`, 'new BigDecimal("0.95")', 'new BigDecimal("0.90")'),
     apply2: ({ edit }) => edit(`${J}/service/PricingService.java`, 'sum.setScale(2, RoundingMode.HALF_UP)', 'sum.setScale(2, RoundingMode.HALF_EVEN)'),
     required: { find: [{ s: 'screen:/orders/new' }], ledgerOnly: [`${J}/service/PricingService.java`] },
+  },
+  // ---- added 2026-11-04, from probing what following callers alone misses: events, data, images, scripts
+  {
+    id: 's26-event-dropped',
+    title: 'OrderService cleanup drops the OrderPlacedEvent',
+    says: 'Small cleanup in OrderService.create().',
+    apply: ({ edit }) => edit(`${J}/service/OrderService.java`, '        events.publishEvent(new OrderPlacedEvent(saved.getId()));\n', ''),
+    // nothing publishes OrderPlacedEvent any more: no invoice and no notification for new orders
+    required: {
+      find: [{ s: 'job:InvoiceService.onOrderPlaced', expect: /never runs/ }, { s: 'job:NotificationService.onOrderPlaced', expect: /never runs/ }, { s: 'screen:/orders/new' }],
+      notSkip: ['job:InvoiceService.onOrderPlaced', 'job:NotificationService.onOrderPlaced'],
+    },
+  },
+  {
+    id: 's27-total-not-saved',
+    title: 'Order total no longer stored when the order is created',
+    says: 'The total is computed when it is read now.',
+    apply: ({ edit }) => edit(`${J}/service/OrderService.java`, '        order.setTotal(pricing.orderTotal(customer, order.getItems()));\n', ''),
+    // new orders are saved with no total: the list, the detail and the invoice amount show it; the daily report uses line totals
+    required: {
+      find: [{ s: 'screen:/orders/new' }],
+      notSkip: ['screen:/orders', 'screen:/orders/:id', 'job:InvoiceService.onOrderPlaced'],
+      unseen: [/write.*differently[\s\S]*\/orders\/:id|\/orders\/:id[\s\S]*write/i],
+    },
+  },
+  {
+    id: 's28-stock-not-reserved',
+    title: 'Inventory: reserve keeps the stock as it is',
+    says: 'Refactor in InventoryService.',
+    apply: ({ edit }) => edit(`${J}/service/InventoryService.java`, 'product.setStock(product.getStock() - quantity);', 'product.setStock(product.getStock());'),
+    // stock never goes down: the product list shows it, and the stock alert job reads it
+    required: {
+      find: [{ s: 'screen:/orders/new' }],
+      notSkip: ['screen:/products', 'job:StockAlertJob.alert'],
+      unseen: [/\/products/],
+    },
+  },
+  {
+    id: 's29-logo',
+    title: 'New brand logo',
+    says: 'Logo refresh from design.',
+    apply: ({ write }) => write('src/main/webapp/content/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#5856d6"/></svg>\n'),
+    // the navbar draws it on every screen
+    required: { find: [{ every: true }] },
+  },
+  {
+    id: 's30-entrypoint',
+    title: 'Container entrypoint sets the time zone',
+    says: 'Ops: run the JVM in UTC.',
+    apply: ({ edit }) => edit('docker-entrypoint.sh', 'exec java -jar', 'exec java -Duser.timezone=UTC -jar'),
+    // how the server starts in production: dates and "today" can move
+    required: { find: [{ s: 'deploy:docker-entrypoint.sh' }] },
+  },
+  {
+    id: 's31-image-named-nowhere',
+    title: 'New empty-cart illustration',
+    says: 'Design asset update.',
+    apply: ({ write }) => write('src/main/webapp/content/empty-cart.png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])),
+    // nothing in the code names it, so where it shows is not known: it must be said, and no screen skipped
+    required: { notSkip: '*', unseen: [/empty-cart\.png/] },
   },
 ];

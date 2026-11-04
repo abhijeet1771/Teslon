@@ -18,9 +18,10 @@ const APP = fileURLToPath(new URL('../../../fixtures/orderdesk', import.meta.url
 const J = 'src/main/java/com/orderdesk';
 const g = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-function repo(change) {
+function repo(change, prepare) {
   const d = mkdtempSync(join(tmpdir(), 'teslon-areas-'));
   cpSync(APP, d, { recursive: true });
+  prepare?.(d);
   g(d, 'init', '-q', '-b', 'main');
   g(d, 'config', 'user.email', 't@t'); g(d, 'config', 'user.name', 't'); g(d, 'config', 'commit.gpgsign', 'false');
   g(d, 'add', '-A'); g(d, 'commit', '-qm', 'app');
@@ -100,5 +101,67 @@ test('what the developer said, against what the change reaches', () => {
     assert.ok(!unnamed(b, 'Order cancel moved to PATCH').includes('Orders'), 'a module named in the singular counts');
     const c = renderComment(impact({ repo: d, base, head }), { number: 9, title: 'REST cleanup', baseRef: 'main', state: 'open', how: 'x', version: 't' });
     assert.match(c, /Not named in the PR:\*\* Orders/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('what following callers alone misses: an event no longer published, a value no longer stored', async () => {
+  const { brief: b0 } = await import('../dist/index.js');
+  {
+    const { d, base, head } = repo((dir) => edit(dir, `${J}/service/OrderService.java`, '        events.publishEvent(new OrderPlacedEvent(saved.getId()));\n', ''));
+    try {
+      const r = impact({ repo: d, base, head });
+      for (const id of ['job:InvoiceService.onOrderPlaced', 'job:NotificationService.onOrderPlaced']) {
+        const s = r.surfaces.find((x) => x.id === id);
+        assert.equal(s?.tier, 'test-first', `${id} runs no more: it must be tested first`);
+        assert.match(r.cases.find((c) => c.surface === id).expect, /never runs, because nothing publishes OrderPlacedEvent/);
+      }
+      assert.equal(r.verification.failed.length, 0);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }
+  {
+    const { d, base, head } = repo((dir) => edit(dir, `${J}/service/OrderService.java`, '        order.setTotal(pricing.orderTotal(customer, order.getItems()));\n', ''));
+    try {
+      const r = impact({ repo: d, base, head });
+      const b = b0(r);
+      for (const id of ['screen:/orders', 'screen:/orders/:id', 'job:InvoiceService.onOrderPlaced']) {
+        assert.ok(!r.surfaces.some((s) => s.id === id && s.tier === 'skip'), `${id} shows the total: never safe to skip`);
+        const a = b.areas.find((x) => x.id === id);
+        assert.ok(a && a.state !== 'skip', id);
+      }
+      assert.match(b.areas.find((x) => x.id === 'screen:/orders').why, /shows Order data, and this PR changes what is written to Order\.total/);
+      assert.equal(r.verification.failed.length, 0);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }
+});
+
+test('an image is never "no app effect": it is followed to where the app names it, or said', () => {
+  {
+    const { d, base, head } = repo((dir) => put(dir, 'src/main/webapp/content/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"><circle r="9"/></svg>\n'));
+    try {
+      const r = impact({ repo: d, base, head });
+      assert.equal(r.triage.appEffect, 'yes');
+      assert.ok(r.surfaces.some((s) => s.id === 'screen:*' && s.tier !== 'skip'), 'the navbar shows it on every screen');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }
+  {
+    const { d, base, head } = repo((dir) => writeFileSync(join(dir, 'src/main/webapp/content/empty-cart.png'), Buffer.from([137, 80, 78, 71, 1, 2, 3])));
+    try {
+      const r = impact({ repo: d, base, head });
+      assert.notEqual(r.triage.appEffect, 'none');
+      assert.equal(r.ledger[0].status, 'not-modelled');
+      assert.ok(r.unseen.some((u) => /empty-cart\.png/.test(u.what)));
+      assert.ok(!r.surfaces.some((s) => s.kind === 'screen' && s.tier === 'skip'));
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }
+});
+
+test('a call written over several lines is cited where the method is named, and its result is still followed into the field', () => {
+  const split = (dir) => edit(dir, `${J}/service/OrderService.java`, 'order.setTotal(pricing.orderTotal(customer, order.getItems()));', 'order.setTotal(pricing\n            .orderTotal(customer, order.getItems()));');
+  const { d, base, head } = repo((dir) => edit(dir, `${J}/service/PricingService.java`, 'new BigDecimal("0.95")', 'new BigDecimal("0.90")'), split);
+  try {
+    const r = impact({ repo: d, base, head });
+    assert.equal(r.verification.failed.length, 0, r.verification.failed.map((h) => `${h.file}:${h.line} ${h.quote}`).join('; '));
+    const why = brief(r).areas.find((a) => a.id === 'screen:/orders')?.why ?? '';
+    assert.match(why, /Order\.total/, 'the total is still known to be written by the changed code');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

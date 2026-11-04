@@ -117,6 +117,11 @@ function score(sc, res) {
     if (f.field && !cases(f.s).some((c) => f.field.test(c.field ?? '') || f.field.test(c.do))) bad('IMPRECISE', `${f.s} does not name the field ${f.field}`);
     if (f.expect && !cases(f.s).some((c) => f.expect.test(c.expect))) bad('IMPRECISE', `${f.s} does not say ${f.expect}`);
   }
+  // every screen gets exactly one answer when the app changes: listed, skipped with proof, or held as unclear; never dropped
+  if (r.triage.appEffect !== 'none') {
+    const held = new Set((r.held ?? []).map((h) => h.id));
+    for (const p of SCREENS) { const id = `screen:${p}`; if (!surf(id) && !held.has(id)) bad('SILENT MISS', `${id} has no answer: not listed, not skipped, not held`); }
+  }
   const notSkip = req.notSkip === '*' ? SCREENS.map((p) => `screen:${p}`) : req.notSkip ?? [];
   for (const id of notSkip) { const s = surf(id); if (s?.tier === 'skip') bad('WRONG SKIP', `${id} was called safe to skip: ${s.reason}`); }
   for (const a of req.noAlarm ?? []) { const c = cases(a.s).find((x) => a.expect.test(`${x.expect} ${x.do}`)); if (c) bad('FALSE ALARM', `${a.s}: "${c.expect.slice(0, 120)}"`); }

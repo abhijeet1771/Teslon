@@ -77,7 +77,11 @@ export interface Component {
   readonly injects?: readonly string[];
 }
 
-export interface Global { readonly tag: string; readonly file: string; readonly root: string; readonly line: number }
+export interface Global {
+  readonly tag: string; readonly file: string; readonly root: string; readonly line: number;
+  /** What the cited line says, and how it puts the component on every screen, when that is not a tag in a template: a route in a named outlet. */
+  readonly quote?: string; readonly how?: string;
+}
 
 export interface FrontendFacts {
   readonly routes: readonly Route[];

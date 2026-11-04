@@ -23,6 +23,32 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   messages stand in for the PR description.
 
 ### Fixed
+- **What a change stores, and what it announces, is followed.** Following
+  callers found who runs a change, not who later reads what it stored or
+  listens for what it published. Now:
+  - entity writes (setters, `save`, `delete`, a changed method's result
+    written by its caller, the entity's own code) hold every screen and job
+    that reads that entity, with the write as evidence;
+  - a changed or removed `publishEvent` puts its listeners on the test list,
+    first when nothing publishes the event any more.
+
+  Before, both cases could be called safe to skip.
+- **Images, fonts and scripts are no longer silent.** Images and fonts
+  outside `docs/`, `.github/` and the root are assets: they are followed to
+  where the code names them (by path), or said. A binary change is never
+  "no app effect" by default. A script is tooling only when a whole word of
+  its name says so; start and deploy scripts are deployment.
+- A global stylesheet named in `angular.json`, and an `index.html` with an
+  app root, reach every screen instead of being left unfollowed.
+- Two citations did not re-check on JHipster's history; neither was silent,
+  since the report said "Not proven":
+  - a call chain written over several lines was cited on the line where the
+    statement starts, not where the method is named;
+  - a navbar in a named router outlet was cited as a tag;
+  - a component drawn in a template was cited in the component's
+    TypeScript file, with the template's line number;
+  - a deleted front-end file's routes, app shell and imports were cited at
+    head instead of at the commit before.
 - A job was skipped when some changed lines had not been followed. It is now
   held, like a screen, and confidence says Partial.
 - The "not followed by this build" list said that migrations and
@@ -32,6 +58,17 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   saved customer".
 
 ### Added
+- Six proving-ground scenarios from a probe of 14 risky changes
+  (`research/CHANGE-COVERAGE-2026-11-04.md`):
+  - an event no longer published;
+  - a total no longer stored;
+  - stock no longer reduced;
+  - a new logo;
+  - a container entrypoint;
+  - an image nothing names.
+
+  The scorer also fails a run in which any screen has no answer. s05's truth
+  now includes the invoice listener, which copies the order total.
 - The OrderDesk proving ground: a Spring Boot + Angular app
   (`fixtures/orderdesk`) and 25 developer PRs whose truth was written before
   Teslon ran (`bench/proving-ground`). Each runs the real flow: GitHub refs,

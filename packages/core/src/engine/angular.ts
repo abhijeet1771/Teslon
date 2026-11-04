@@ -542,11 +542,13 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
     if (!tpl) continue;
     const extra: string[] = [];
     const lines: Record<string, number> = { ...c.depLines };
+    const files: Record<string, string> = { ...(c.depFiles ?? {}) };
     for (const tag of tpl.uses) {
       const comp = selectors.get(tag);
-      if (comp && comp !== f && !c.deps.includes(comp)) { extra.push(comp); lines[comp] ??= tpl.useLines.get(tag) ?? 1; }
+      // the line is the template's, so the citation names the template file
+      if (comp && comp !== f && !c.deps.includes(comp)) { extra.push(comp); if (lines[comp] === undefined) { lines[comp] = tpl.useLines.get(tag) ?? 1; files[comp] = tpl.file; } }
     }
-    if (extra.length) components.set(f, { ...c, deps: [...c.deps, ...extra], depLines: lines });
+    if (extra.length) components.set(f, { ...c, deps: [...c.deps, ...extra], depLines: lines, depFiles: files });
   }
 
   // routes: from the files nobody loads as children, down through children and lazy route files
@@ -559,7 +561,8 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
       const full = joinPath(prefix, r.path);
       if (r.outlet && r.outlet !== 'primary' && r.component) {
         const sel = [...selectors].find(([, file]) => file === r.component)?.[0] ?? r.outlet;
-        globals.push({ tag: sel, file: r.component, root: r.file, line: r.line });
+        // cited by the route itself: its line holds the path, not a tag
+        globals.push({ tag: sel, file: r.component, root: r.file, line: r.line, quote: r.path ? r.path : 'path', how: `drawn in the "${r.outlet}" outlet on every route` });
         continue;
       }
       if (r.component && fileSet.has(r.component) && !r.path.includes('**')) {

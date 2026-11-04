@@ -224,7 +224,12 @@ The first line of every report says which case it was.
 |---|---|
 | Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven. The JSON each type sends and reads, as Jackson writes it (`@JsonProperty`, `@JsonIgnore`, `transient`, `@JsonIgnoreProperties`) |
 | Front end | **Vue**: routes, templates, forms, fields, components, the calls each screen makes. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls, and every template read typed by the TypeScript checker (the column, the value, the form field, the dropdown). React and AngularJS code is detected and named under "could not see" until its reader ships |
-| Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, `pom.xml`, `package.json`, resources under `src/main/resources` |
+| Data and events | what changed code writes to an entity (setters, `save`, `delete`, a result its caller stores) and every screen and job that reads that entity; `publishEvent` and the listeners that take the event; Liquibase and Flyway column changes |
+| Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, start and deploy scripts, images and fonts (to where the code names them), `pom.xml`, `package.json`, resources under `src/main/resources` |
+
+What each kind of change gets, what is said instead of followed, and where
+Teslon could still be wrong without knowing it, is in
+[research/CHANGE-COVERAGE-2026-11-04.md](research/CHANGE-COVERAGE-2026-11-04.md).
 
 The next stacks, in order, are React / Next.js, Node (Express, NestJS), .NET
 and Python. A stack Teslon does not read yet is reported under

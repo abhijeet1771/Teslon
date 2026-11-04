@@ -58,7 +58,11 @@ export interface CallEdge extends Located { readonly from: string; readonly to: 
 /** A method an AI model can call: `@Tool`, or a `@Bean` function handed to a chat client by name. */
 export interface Tool extends Located { readonly cls: string; readonly method: string; readonly mark: string }
 export interface ToolWiring extends Located { readonly toolsClass: string; readonly holder: string; readonly expr: string }
-export interface Listener extends Located { readonly kind: string; readonly cls: string; readonly method: string; readonly mentions: readonly string[] }
+export interface Listener extends Located {
+  readonly kind: string; readonly cls: string; readonly method: string; readonly mentions: readonly string[];
+  /** Simple types of its parameters: for an @EventListener, the event it takes. */
+  readonly takes: readonly string[];
+}
 export interface Timed extends Located { readonly metric: string; readonly cls: string; readonly method?: string }
 export interface GatewayRoute extends Located { readonly service: string; readonly prefix: string; readonly strip: number }
 
@@ -263,7 +267,7 @@ export function readSpring(snap: Snapshot): SpringFacts {
       const la = m.annotations.find((a) => LISTENERS.has(a.name));
       if (la) {
         const words = new Set(m.body.map((x) => x.t));
-        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e)) });
+        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e) || m.params.some((p) => p.type.replace(/<.*$/, '').split('.').pop() === e)), takes: m.params.map((p) => p.type.replace(/<.*$/, '').split('.').pop()!) });
       }
       const locals = new Map<string, string>(m.params.map((p) => [p.name, p.type.replace(/<.*$/, '')]));
       const body = m.body;
@@ -276,16 +280,16 @@ export function readSpring(snap: Snapshot): SpringFacts {
         // bean calls: field.method( and local.method(
         if (/^[a-z]/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(' && body[k - 1]?.t !== '.') {
           const type = ft.get(x.t) ?? locals.get(x.t);
-          if (x.t === 'this' && own.has(body[k + 2]!.t)) edge(`${cls}.${body[k + 2]!.t}`, x.line);
-          else if (type && fieldTypes.has(type)) edge(`${type}.${body[k + 2]!.t}`, x.line);
+          if (x.t === 'this' && own.has(body[k + 2]!.t)) edge(`${cls}.${body[k + 2]!.t}`, body[k + 2]!.line);
+          else if (type && fieldTypes.has(type)) edge(`${type}.${body[k + 2]!.t}`, body[k + 2]!.line);
         }
         // calls inside the class: helper(…), and to static methods: Other.helper(…)
         if (/^[a-z]\w*$/.test(x.t) && body[k + 1]?.t === '(' && body[k - 1]?.t !== '.' && body[k - 1]?.t !== 'new' && own.has(x.t)) edge(`${cls}.${x.t}`, x.line);
-        if (/^[A-Z]\w*$/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(' && fieldTypes.has(x.t)) edge(`${x.t}.${body[k + 2]!.t}`, x.line);
+        if (/^[A-Z]\w*$/.test(x.t) && body[k + 1]?.t === '.' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '') && body[k + 3]?.t === '(' && fieldTypes.has(x.t)) edge(`${x.t}.${body[k + 2]!.t}`, body[k + 2]!.line);
         // method references: this::helper, Type::helper
         if (body[k + 1]?.t === '::' && /^[a-z]\w*$/.test(body[k + 2]?.t ?? '')) {
           const target = x.t === 'this' ? cls : /^[A-Z]/.test(x.t) && fieldTypes.has(x.t) ? x.t : (ft.get(x.t) ?? locals.get(x.t));
-          if (target) edge(`${target}.${body[k + 2]!.t}`, x.line);
+          if (target) edge(`${target}.${body[k + 2]!.t}`, body[k + 2]!.line);
         }
         // functions handed to a chat client by bean name: .defaultFunctions("listOwners", …)
         if ((x.t === 'defaultFunctions' || x.t === 'functions' || x.t === 'toolNames' || x.t === 'defaultToolNames') && body[k - 1]?.t === '.' && body[k + 1]?.t === '(') {

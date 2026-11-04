@@ -122,7 +122,7 @@ export interface LedgerEntry {
   readonly removed?: readonly number[];
 }
 
-export type FileKind = 'docs' | 'ci' | 'tooling' | 'test' | 'dependencies' | 'deploy' | 'config' | 'java' | 'frontend' | 'style' | 'data' | 'i18n' | 'other';
+export type FileKind = 'docs' | 'ci' | 'tooling' | 'test' | 'dependencies' | 'deploy' | 'config' | 'java' | 'frontend' | 'style' | 'asset' | 'data' | 'i18n' | 'other';
 
 export interface Triage {
   /** Does the PR change anything the running app does? unknown: some lines were not followed. */

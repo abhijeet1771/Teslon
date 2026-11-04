@@ -3,7 +3,8 @@ import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, t
 import { targetsRoute, routeQuote, callMadeBy, type Component, type Route } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
-import { followChanges, type WhereCtx } from './where.js';
+import { followChanges, browserCalls, type WhereCtx } from './where.js';
+import { followWritesAndEvents } from './dataflow.js';
 import { responseShape, contractCheck } from './shape.js';
 import { fileKind, noAppEffect } from './kinds.js';
 import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage, Held } from './model.js';
@@ -226,6 +227,17 @@ export function impact(opts: ImpactOptions): ImpactReport {
 
   /* ---------- 1b. everything else that changed: where it lands ---------- */
   followChanges(whereCtx);
+  /* ---------- 1c. what changed code hands on: rows it writes, events it publishes ---------- */
+  const flow = followWritesAndEvents(whereCtx);
+  const writtenEntities = [...new Set(flow.written.map((w) => w.entity))];
+  const writeOf = (entity: string): Hop => flow.written.find((w) => w.entity === entity && w.field !== '*')?.hop ?? flow.written.find((w) => w.entity === entity)!.hop;
+  const writeWords = (entity: string): string => {
+    const fields = [...new Set(flow.written.filter((w) => w.entity === entity).map((w) => w.field))];
+    const h = writeOf(entity);
+    return `${fields.includes('*') && fields.length === 1 ? `${entity} rows` : fields.filter((f) => f !== '*').map((f) => `${entity}.${f}`).join(', ')} (${fileName(h.file)}:${h.line})`;
+  };
+  /** Jobs held because they read what changed code writes; placed with the other held areas below. */
+  const dataHeldJobs: { id: string; name: string; where: string; why: string; evidence: Hop[] }[] = [];
 
   function propagate(d: Delta, e: Endpoint): void {
     const writerScreens = new Set<string>();
@@ -309,7 +321,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
                   { label: 'Wired into the chat', file: w.file, line: w.line, quote: w.expr.split('(')[0]!.replace('.', ''), rule: `${w.holder}${w.expr}` },
                   { label: 'The chat calls it', file: fc.file, line: fc.line, quote: callText(fc), rule: `${fc.verbs.join('/')} ${fc.tpl}` }];
                 if (g) {
-                  hops.push({ label: 'On every screen', file: g.root, line: g.line, quote: `<${g.tag}`, rule: `<${g.tag}> is drawn beside <router-view>` });
+                  hops.push({ label: 'On every screen', file: g.root, line: g.line, quote: g.quote ?? `<${g.tag}`, rule: `<${g.tag}> is ${g.how ?? 'drawn beside <router-view>'}` });
                   const sid = `widget:${g.tag}`;
                   surface({ id: sid, kind: 'widget', name: 'AI chat', where: `every screen · <${g.tag}>`, tier: 'test-first' });
                   for (const rule of d.rules) {
@@ -499,6 +511,12 @@ export function impact(opts: ImpactOptions): ImpactReport {
     }
     const used = l.mentions.filter((m) => types.has(m));
     const ev: Hop = { label: 'Listener', file: l.file, line: l.line, quote: l.kind, rule: `${l.cls}.${l.method}() ${l.kind}` };
+    // a job that reads what changed code writes shows the change, though it runs none of it
+    const reads = writtenEntities.filter((e) => l.mentions.includes(e));
+    if (!used.length && reads.length && !surfaces.has(`job:${l.cls}.${l.method}`)) {
+      dataHeldJobs.push({ id: `job:${l.cls}.${l.method}`, name: `${l.cls}.${l.method}()`, where: l.file, why: `reads ${reads.join(', ')}, and this PR changes what is written to ${reads.map(writeWords).join('; ')}`, evidence: [writeOf(reads[0]!), ev] });
+      continue;
+    }
     // reached jobs are already listed by the follow; an unreached one runs none of the changed code
     if (!used.length) skipReason(`job:${l.cls}.${l.method}`, 'job', `${l.cls}.${l.method}()`, `${l.kind}: runs none of the changed code${types.size ? `, and uses none of ${[...types].join(', ')}` : ''}`, ev);
     else unseen.push({ what: `${l.cls}.${l.method}() (${fileName(l.file)}:${l.line})`, why: `a ${l.kind} job uses ${used.join(', ')} without going through the API, so @Valid does not check what it saves; whether it saves values the new rules refuse is not modelled`, resolve: 'read this job by hand' });
@@ -519,6 +537,11 @@ export function impact(opts: ImpactOptions): ImpactReport {
       ledger.push({ file: cf.path, status: followed ? 'deleted' : 'not-modelled', kind, reason: followed ? 'deleted; the screens that used it are listed' : 'deleted; nothing followed what used it', by, lines: [] });
       continue;
     }
+    // an image or a font has no lines: it is followed when something cites where it is shown, and never "no effect" by default
+    if (cf.binary) {
+      ledger.push({ file: cf.path, status: by.length ? 'followed' : 'not-modelled', kind, reason: by.length ? 'a binary file, followed to where it is shown' : 'a binary file changed (an image, a font, an archive); nothing followed where it is used', by, lines: [] });
+      continue;
+    }
     const ex = explainedLines.get(cf.path) ?? new Set<number>();
     const fo = followedLines.get(cf.path) ?? new Set<number>();
     const fob = followedBase.get(cf.path) ?? new Set<number>();
@@ -531,7 +554,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const anyFollowed = real.some((n) => fo.has(n)) || removedReal.some((n) => fob.has(n));
     // only whitespace moved: whatever cites the file, nothing in it changed
     const reformatted = !!cf.whitespaceOnly && !cf.hunks.length;
-    if (!left.length && !removedLeft.length) ledger.push({ file: cf.path, status: reformatted ? 'no-runtime-effect' : real.some((n) => ex.has(n)) && !anyFollowed ? 'explained' : anyFollowed ? 'followed' : by.length ? 'explained' : 'no-runtime-effect', kind, ...(anyFollowed ? { reason: 'followed to where it runs; what it does is not typed' } : !real.length && !removedReal.length ? { reason: cf.whitespaceOnly && !cf.hunks.length ? 'only whitespace moved (indentation, line breaks)' : 'only blank lines, comments or imports changed' } : {}), by, lines: [] });
+    if (!left.length && !removedLeft.length) ledger.push({ file: cf.path, status: reformatted ? 'no-runtime-effect' : real.some((n) => ex.has(n)) && !anyFollowed ? 'explained' : anyFollowed ? 'followed' : by.length ? 'explained' : 'no-runtime-effect', kind, ...(anyFollowed ? { reason: 'followed to where it runs; what it does is not typed' } : !real.length && !removedReal.length ? { reason: cf.whitespaceOnly && !cf.hunks.length ? 'only whitespace moved (indentation, line breaks)' : !cf.hunks.length ? 'only the file mode changed' : 'only blank lines, comments or imports changed' } : {}), by, lines: [] });
     else ledger.push({ file: cf.path, status: 'not-modelled', kind, reason: removedLeft.length && !left.length ? `lines removed (base ${removedLeft.slice(0, 8).join(', ')}) and nothing followed what used them` : 'nothing followed these lines', by, lines: left, ...(removedLeft.length ? { removed: removedLeft } : {}) });
   }
   const unfollowed = ledger.filter((l) => l.status === 'not-modelled');
@@ -553,9 +576,11 @@ export function impact(opts: ImpactOptions): ImpactReport {
   let held = 0;
   // every screen that is neither listed nor skipped is held, with why: the report shows each one, never only a count
   const heldScreens: Held[] = [];
-  const heldNotReached: string[] = [], heldNotRuledOut: string[] = [];
+  const heldNotReached: string[] = [], heldNotRuledOut: string[] = [], heldShowsData: string[] = [];
+  // endpoints that read an entity changed code writes, and the browser calls that reach them
+  const readers = writtenEntities.length ? fh.endpoints.map((e) => ({ e, entities: writtenEntities.filter((x) => flow.readsEntity(e, x)), calls: new Set(browserCalls(fh, ui, e)) })).filter((x) => x.entities.length && x.calls.size) : [];
   const hold = (r: Route, why: string, cover?: string): void => {
-    (cover || why.includes('did not follow') ? heldNotReached : heldNotRuledOut).push(`screen:${r.path}`);
+    if (!why.startsWith('shows ')) (cover || why.includes('did not follow') ? heldNotReached : heldNotRuledOut).push(`screen:${r.path}`);
     heldScreens.push({ id: `screen:${r.path}`, name: screenName(ui.components.get(r.component), r.path), where: r.path, why, ...(cover ? { cover } : {}), evidence: [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }] });
   };
   // with lines nothing followed, every screen is held, even when nothing at all was modelled
@@ -571,8 +596,21 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const comp = ui.components.get(r.component);
     const files = closure(r.component);
     const own = ui.calls.filter((c) => files.has(c.file));
-    const hit = own.find(hitsTouched);
+    const hits = own.filter(hitsTouched);
+    // a call the screen itself makes, not one it only imports with a service
+    const hit = hits.find((c) => callMadeBy(ui, files, c));
     if (hit) { notRuledOut.push(`${r.path} (calls ${hit.verbs.join('/')} ${hit.tpl}, which changed)`); hold(r, `calls ${hit.verbs.join('/')} ${hit.tpl}, which runs changed code, but nothing on this screen was traced to a visible change`); heldScreens.at(-1)!.evidence.push({ label: 'Calls', file: hit.file, line: hit.line, quote: callText(hit), rule: `${hit.verbs.join('/')} ${hit.tpl}` }); continue; }
+    // a screen that shows rows changed code writes shows the change, though it runs none of it
+    const shows = own.map((c) => ({ c, e: readers.find((x) => x.calls.has(c)) })).find((x) => x.e);
+    if (shows?.e) {
+      heldShowsData.push(id);
+      hold(r, `shows ${shows.e.entities.join(', ')} data, and this PR changes what is written to ${shows.e.entities.map(writeWords).join('; ')}`);
+      heldScreens.at(-1)!.evidence.unshift(writeOf(shows.e.entities[0]!));
+      heldScreens.at(-1)!.evidence.push({ label: 'Calls', file: shows.c.file, line: shows.c.line, quote: callText(shows.c), rule: `${shows.c.verbs.join('/')} ${shows.c.tpl} → ${shows.e.e.verb} ${shows.e.e.path} reads ${shows.e.entities.join(', ')}` });
+      continue;
+    }
+    const imported = hits[0];
+    if (imported) { notRuledOut.push(`${r.path} (imports ${fileName(imported.file)}, whose ${imported.verbs.join('/')} ${imported.tpl} changed)`); hold(r, `imports ${fileName(imported.file)}, whose ${imported.verbs.join('/')} ${imported.tpl} runs changed code; whether this screen uses that call was not traced`); heldScreens.at(-1)!.evidence.push({ label: 'Imports a call', file: imported.file, line: imported.line, quote: callText(imported), rule: `${imported.verbs.join('/')} ${imported.tpl}` }); continue; }
     if ([...files].some((f) => touchedUi.has(f))) { notRuledOut.push(`${r.path} (runs changed code)`); hold(r, 'runs changed front-end code, but nothing on this screen was traced to a visible change'); continue; }
     const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
     if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); hold(r, `gets data in a way Teslon does not follow: ${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''}`); continue; }
@@ -588,6 +626,13 @@ export function impact(opts: ImpactOptions): ImpactReport {
       evidence: own.length ? own.map((c) => ({ label: 'Calls', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}` })) : [{ label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `${r.path} → ${fileName(r.component)}` }],
     });
   }
+  for (const j of dataHeldJobs) {
+    // with lines nothing followed, the job is held below for that reason instead
+    if (unfollowed.length) { skipReason(j.id, 'job', j.name, 'held', j.evidence.at(-1)!); continue; }
+    heldShowsData.push(j.id);
+    heldScreens.push({ id: j.id, kind: 'job', name: j.name, where: j.where, why: j.why, evidence: j.evidence });
+  }
+  if (heldShowsData.length) unseen.push({ what: `${heldShowsData.length} screen${heldShowsData.length === 1 ? '' : 's'} or job${heldShowsData.length === 1 ? '' : 's'} that show data this PR writes differently: ${heldScreens.filter((h) => heldShowsData.includes(h.id)).map((h) => h.where.startsWith('/') ? h.where : h.name).join(', ')}`, why: 'they run none of the changed code, but they read rows that changed code writes', resolve: 'open each one on data written after this change and check what it shows', areas: heldShowsData });
   // a job skip rests on every changed line being followed, like a screen's: with lines nothing followed, it is held too
   let heldJobs = 0;
   if (unfollowed.length) {
@@ -606,6 +651,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   /* ---------- 4. what could not be seen ---------- */
   // every changed line nothing followed is named, with the line itself: never a silent "unknown"
   for (const l of unfollowed) {
+    if (!l.lines.length && !(l.removed ?? []).length) { unseen.push({ what: `what ${l.file} changes (${l.reason ?? 'no lines to read'})`, why: `no rule in this build follows ${l.kind ?? 'this kind of'} file${l.kind ? 's' : ''} like this to where ${l.kind === 'asset' ? 'it is shown' : 'it is used'}, so nothing it affects is ruled out`, resolve: l.kind === 'asset' ? 'find where the app shows it and look there' : 'read the change and test what uses it', files: [l.file] }); continue; }
     const side = l.lines.length ? H : B;
     const ns = l.lines.length ? l.lines : l.removed ?? [];
     const sample = ns.slice(0, 2).map((n) => `${n}: ${(side.line(l.file, n) ?? '').trim().slice(0, 60)}`).join('; ');

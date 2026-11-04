@@ -77,6 +77,8 @@ export interface ChangedFile {
   readonly hunks: readonly { readonly base: readonly number[]; readonly head: readonly number[] }[];
   /** Hunks left out because only whitespace moved (indentation, line breaks) in a language where it means nothing. */
   readonly whitespaceOnly?: number;
+  /** The content changed, but git shows no lines: an image, a font, an archive. */
+  readonly binary?: boolean;
 }
 
 /** Languages where indentation and line breaks between tokens do not change what the code does. */
@@ -97,7 +99,7 @@ export function changedFiles(repo: string, base: string, head: string): ChangedF
 
 function parseDiff(out: string): ChangedFile[] {
   const files: ChangedFile[] = [];
-  let cur: { path: string; status: ChangedFile['status']; headLines: number[]; baseLines: number[]; hunks: { base: number[]; head: number[] }[] } | null = null;
+  let cur: { path: string; status: ChangedFile['status']; headLines: number[]; baseLines: number[]; hunks: { base: number[]; head: number[] }[]; binary?: boolean } | null = null;
   let oldPath = '';
   for (const raw of out.split('\n')) {
     if (raw.startsWith('diff --git ')) {
@@ -107,6 +109,12 @@ function parseDiff(out: string): ChangedFile[] {
       const m = / b\/(.*)$/.exec(raw);
       cur = { path: m?.[1] ?? raw, status: 'modified', headLines: [], baseLines: [], hunks: [] };
       oldPath = '';
+      continue;
+    }
+    if (raw.startsWith('Binary files ') && cur) {
+      cur.binary = true;
+      if (/^Binary files \/dev\/null and /.test(raw)) cur.status = 'added';
+      else if (/ and \/dev\/null differ$/.test(raw)) cur.status = 'deleted';
       continue;
     }
     if (raw.startsWith('--- ')) {

@@ -286,7 +286,7 @@ export function followChanges(ctx: WhereCtx): void {
       if (global) {
         const sid = `widget:${global.tag}`;
         ctx.surface({ id: sid, kind: 'widget', name: global.tag.replace(/^[a-z]+-/, (m) => (/^(app|jhi|ng|v)-$/.test(m) ? '' : m)).replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase()), where: `every screen · <${global.tag}>`, tier: 'test-next' });
-        ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-next', do: `Use <${global.tag}> for what calls ${e.verb} ${ext}.`, expect: `Works as before: ${why}.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived', hops: [...chain, apiHop, ...gwHop, callHop, { label: 'On every screen', file: global.root, line: global.line, quote: `<${global.tag}`, rule: `<${global.tag}> is drawn beside <router-view>` }] });
+        ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-next', do: `Use <${global.tag}> for what calls ${e.verb} ${ext}.`, expect: `Works as before: ${why}.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived', hops: [...chain, apiHop, ...gwHop, callHop, { label: 'On every screen', file: global.root, line: global.line, quote: global.quote ?? `<${global.tag}`, rule: `<${global.tag}> is ${global.how ?? 'drawn beside <router-view>'}` }] });
         n++;
       }
       for (const r of ui.routes.filter((x) => callMadeBy(ui, ctx.closure(x.component), c))) {
@@ -770,10 +770,12 @@ export function followChanges(ctx: WhereCtx): void {
         }
       }
       targets = found.filter((f) => !/\.html?$/.test(f));
-      if (found.some((f) => /\.html?$/.test(f)) || targets.some((t) => everyScreen(u, S, t))) targets = ['*'];
+      // a global stylesheet is named by the build, not imported: angular.json "styles", a Vite or Vue entry
+      const global = !found.length && S.files.some((f) => /(^|\/)(angular|project|workspace)\.json$|(^|\/)vite\.config\.[mc]?[jt]s$/.test(f) && (S.read(f) ?? '').includes(cf.path.split('/').slice(-2).join('/')));
+      if (global || found.some((f) => /\.html?$/.test(f)) || targets.some((t) => everyScreen(u, S, t))) targets = ['*'];
     }
     // the page shell: index.html loads the app, so it is every screen
-    if (kind === 'frontend' && /\.html?$/.test(cf.path) && /<script[^>]+src=|<div[^>]+id=["']app["']|<router-view|ng-app|ng-view/.test(S.read(cf.path) ?? '')) targets = ['*'];
+    if (kind === 'frontend' && /\.html?$/.test(cf.path) && /<script[^>]+src=|<div[^>]+id=["']app["']|<router-view|ng-app|ng-view|<[a-z]+-root[\s>]/.test(S.read(cf.path) ?? '') && !u.components.has(cf.path) && ![...u.components.values()].some((c) => c.elements.some((e) => e.file === cf.path))) targets = ['*'];
     const id = `ui:${cf.path}`;
     // an Angular template is its own file: the component that draws it is the one whose elements live there
     const comp = u.components.get(cf.path) ?? [...u.components.values()].find((c) => c.elements.some((e) => e.file === cf.path));
@@ -790,14 +792,14 @@ export function followChanges(ctx: WhereCtx): void {
     for (const r of defined) {
       const sid = `screen:${r.path}`;
       ctx.surface({ id: sid, kind: 'screen', name: screenTitle(u.components.get(r.component), r.path), where: r.path, tier: 'test-first' });
-      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${r.path} directly and by every link to it.`, expect: 'The route and the screen it shows are as the change intends.', before: 'As released.', after: 'Route changed.', proof: 'derived', hops: [{ label: 'Route changed', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path} → ${fileName(r.component)}` }] });
+      ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${r.path} directly and by every link to it.`, expect: 'The route and the screen it shows are as the change intends.', before: 'As released.', after: 'Route changed.', proof: 'derived', hops: [{ label: 'Route changed', file: r.file, line: r.line, quote: routeQuote(r), ...(atHead ? {} : { side: 'base' as const }), rule: `route ${r.path} → ${fileName(r.component)}` }] });
       reached++;
     }
     if (screens === null) {
       const sid = 'screen:*';
       ctx.surface({ id: sid, kind: 'screen', name: 'Every screen', where: `${u.routes.length} screens`, tier: 'test-next' });
       const sh = u.shell?.get(cf.path);
-      const shellHop: Hop[] = sh && sh.from !== cf.path ? [{ label: 'Part of the app shell', file: sh.from, line: sh.line, quote: '', rule: `${fileName(sh.from)} loads ${fileName(cf.path)} before any screen, so it runs on all of them` }] : [];
+      const shellHop: Hop[] = sh && sh.from !== cf.path ? [{ label: 'Part of the app shell', file: sh.from, line: sh.line, quote: '', ...(atHead ? {} : { side: 'base' as const }), rule: `${fileName(sh.from)} loads ${fileName(cf.path)} before any screen, so it runs on all of them` }] : [];
       ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Open each screen (${u.routes.map((r) => r.path).slice(0, 8).join(', ')}${u.routes.length > 8 ? ', …' : ''}) and check ${what}.`, expect: 'As intended by the change, and nothing else moved.', before: 'As released.', after: 'Changed on every screen.', proof: 'derived', hops: [changedHop, ...shellHop] });
       reached = 1;
     } else {
@@ -809,7 +811,7 @@ export function followChanges(ctx: WhereCtx): void {
         const own = targets.includes(r.component) && atHead;
         const tier: Tier = own ? 'test-first' : 'test-next';
         ctx.surface({ id: sid, kind: 'screen', name: title, where: r.path, tier });
-        const via = targets.map((t) => importChain(u, r.component, t)).find((x) => x) ?? [];
+        const via = (targets.map((t) => importChain(u, r.component, t)).find((x) => x) ?? []).map((h) => (atHead ? h : { ...h, side: 'base' as const }));
         ctx.addCase({ surface: sid, delta: id, tier, do: `Open ${title} and check ${what}.`, expect: own ? 'Shows and works as the change intends.' : `Works as before: it runs ${fileName(cf.path)}, which changed.`, before: 'As released.', after: own ? 'Changed.' : 'Runs changed code.', proof: 'derived', hops: atHead ? [changedHop, ...via, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }] : [changedHop] });
         reached++;
       }
@@ -825,6 +827,59 @@ export function followChanges(ctx: WhereCtx): void {
     }
     if (reached) ctx.deltas.push({ id, kind: 'ui-changed', title: `${fileName(cf.path)}: ${what}`, endpoint: '', rules: [], causes: [changedHop] });
     else ctx.unseen.push({ what: `changed front-end file ${cf.path}`, why: 'no screen this build can see imports or draws it', resolve: 'check where it is used', files: [cf.path] });
+  }
+
+  /* ---------- images, fonts and other served files: wherever the app names them ---------- */
+  for (const cf of ctx.changes) {
+    if (fileKind(cf.path) !== 'asset') continue;
+    const atHead = cf.status !== 'deleted';
+    const u = atHead ? ui : ub;
+    const S = atHead ? H : B;
+    const name = fileName(cf.path);
+    // a reference names this file when the path it writes is the end of this file's path: content/logo.svg, not another logo.svg
+    const re = new RegExp(`['"(\\s]([^'"()\\s]*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})['")?#\\s]`, 'g');
+    const mine = (ref: string): boolean => { const r = ref.replace(/^(\.{1,2}\/)+|^\/+|^~\//, ''); return cf.path === r || cf.path.endsWith(`/${r}`); };
+    const users: { file: string; line: number }[] = [];
+    for (const f of S.files) {
+      if (!/\.(s?css|sass|less|styl|vue|[mc]?[jt]sx?|html?|json)$/.test(f) || /node_modules\//.test(f) || fileKind(f) === 'test') continue;
+      const lines = (S.read(f) ?? '').split('\n');
+      const i = lines.findIndex((l) => [...` ${l} `.matchAll(re)].some((m) => mine(m[1]!)));
+      if (i >= 0) users.push({ file: f, line: i + 1 });
+    }
+    // named nowhere a screen can be traced from: left unfollowed, so it is said and no screen is skipped
+    if (!users.length) continue;
+    const changed: Hop = atHead ? { label: 'Changed', file: cf.path, line: 1, quote: '', rule: `${name} changed` } : { label: 'Deleted', file: cf.path, line: 1, quote: '', side: 'base', rule: `${name} was deleted` };
+    const comps = users.map((x) => ({ x, comp: u.components.get(x.file) ?? [...u.components.values()].find((c) => c.elements.some((e) => e.file === x.file)) }));
+    // named by the page shell, a global stylesheet, a stylesheet we cannot trace, or a component on every screen: every screen
+    const every = comps.some(({ x, comp }) => (/\.html?$/.test(x.file) && !comp) || (!comp && /\.(s?css|sass|less|styl)$/.test(x.file)) || (comp && everyScreen(u, S, comp.file)));
+    const id = `asset:${cf.path}`;
+    const what = `${name} (${/\.(woff2?|ttf|otf|eot)$/i.test(name) ? 'a font' : 'an image'})`;
+    let reached = 0;
+    if (every) {
+      const use = comps.find(({ x, comp }) => (/\.html?$/.test(x.file) && !comp) || !comp || everyScreen(u, S, comp.file))!.x;
+      ctx.surface({ id: 'screen:*', kind: 'screen', name: 'Every screen', where: `${u.routes.length} screens`, tier: 'test-next' });
+      ctx.addCase({ surface: 'screen:*', delta: id, tier: 'test-next', do: `Open the app and check where ${what} shows.`, expect: 'It shows as intended, at the right size, in light and dark.', before: 'As released.', after: `${name} changed.`, proof: 'derived', hops: [changed, { label: 'Used by', file: use.file, line: use.line, quote: name, rule: `${fileName(use.file)} names ${name}` }] });
+      reached = 1;
+    } else {
+      for (const r of allScreens(u)) {
+        const hit = comps.find(({ comp }) => {
+          if (!comp) return false;
+          const seen = new Set<string>();
+          const walk = (f: string, d: number): boolean => { if (f === comp.file) return true; if (seen.has(f) || d > 8) return false; seen.add(f); return (u.components.get(f)?.deps ?? []).some((y) => walk(y, d + 1)); };
+          return walk(r.component, 0);
+        });
+        if (!hit) continue;
+        const sid = `screen:${r.path}`;
+        const title = screenTitle(u.components.get(r.component), r.path);
+        ctx.surface({ id: sid, kind: 'screen', name: title, where: r.path, tier: 'test-next' });
+        ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Open ${title} and check ${what}.`, expect: 'It shows as intended, at the right size.', before: 'As released.', after: `${name} changed.`, proof: 'derived', hops: [changed, { label: 'Used by', file: hit.x.file, line: hit.x.line, quote: name, rule: `${fileName(hit.x.file)} names ${name}` }, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }] });
+        reached++;
+      }
+    }
+    if (!reached) continue;
+    if (!cf.binary && atHead) for (const n of cf.headLines) ctx.follow(cf.path, n);
+    if (!cf.binary) for (const n of cf.baseLines) ctx.follow(cf.path, n, 'base');
+    ctx.deltas.push({ id, kind: 'ui-changed', title: `${what} changed`, endpoint: '', rules: [], causes: [changed] });
   }
 
   /* ---------- dependencies: which modules use what moved ---------- */

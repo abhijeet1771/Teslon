@@ -1,5 +1,5 @@
 <nav class="navbar">
-  <a routerLink="/" class="brand">OrderDesk</a>
+  <a routerLink="/" class="brand"><img src="content/logo.svg" alt="" width="24" height="24"> OrderDesk</a>
   <button type="button" class="toggle" (click)="open.update((o) => !o)">Menu</button>
   <ul [class.open]="open()">
     <li><a routerLink="/customers" routerLinkActive="active">Customers</a></li>

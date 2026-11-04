@@ -105,6 +105,22 @@ The scorer had two bugs of its own:
 
 Both were fixed after reading the actual output.
 
+## 2026-11-04: six more, from a probe
+
+A probe of 14 risky one-line changes found four classes of change that
+following callers alone gets wrong:
+- data a change stores, read by other screens and jobs;
+- events it stops publishing;
+- images outside `docs/`;
+- start scripts.
+
+They are fixed, and the six scenarios s26–s31 hold them. The scorer also
+fails a run in which any screen has no answer. With these, 33 runs give 33
+trusted and 0 trust failures
+([results](../bench/proving-ground/results-2026-11-04.md)). The probe and
+what each kind of change gets are in
+[CHANGE-COVERAGE-2026-11-04.md](CHANGE-COVERAGE-2026-11-04.md).
+
 ## What is not covered yet
 
 - **React front ends.** They are detected and named under "could not see",
