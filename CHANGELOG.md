@@ -49,6 +49,10 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
     TypeScript file, with the template's line number;
   - a deleted front-end file's routes, app shell and imports were cited at
     head instead of at the commit before.
+- **A crash on JHipster's history.** When removed code was followed back to
+  a scheduled job that the same PR also removed, the engine looked for the
+  job at head and crashed. The job is now listed, test first, as removed,
+  and cited at the commit before.
 - A job was skipped when some changed lines had not been followed. It is now
   held, like a screen, and confidence says Partial.
 - The "not followed by this build" list said that migrations and

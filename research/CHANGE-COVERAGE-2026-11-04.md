@@ -70,7 +70,12 @@ re-check:
   template's line;
 - a deleted front-end file was cited at head.
 
-All four are fixed. A failed citation was never silent: the report says
+All four are fixed. The same scan found one crash: removed code was
+followed back to a scheduled job that the PR also removed, and the engine
+looked for the job at head. The job is now listed, test first, as removed.
+The final scans give 0 failed citations and 0 crashes on both repositories.
+JHipster's 60 commits re-check every cited line, 8,042 of them on the
+biggest commit alone. A failed citation was never silent: the report says
 "Not proven" and the run exits 3.
 
 ## What each kind of change gets today

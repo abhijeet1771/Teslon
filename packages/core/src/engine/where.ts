@@ -323,7 +323,17 @@ export function followChanges(ctx: WhereCtx): void {
       return n;
     }
     if (r.kind === 'listener') {
-      const l = fh.listeners.find((x) => x.cls === cls && x.method === method)!;
+      const lh = fh.listeners.find((x) => x.cls === cls && x.method === method);
+      // reached through code the PR removed, and gone at head too: the job no longer runs at all
+      if (!lh) {
+        const lb = fb.listeners.find((x) => x.cls === cls && x.method === method);
+        if (!lb) return 0;
+        const sid = `job:${cls}.${method}`;
+        ctx.surface({ id: sid, kind: 'job', name: `${cls}.${method}() ${lb.kind} (removed)`, where: lb.file, tier: 'test-first' });
+        ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-first', do: `Check that nothing relied on ${cls}.${method}(): it ran ${lb.kind} before this change.`, expect: `It no longer runs; what it did (${why}) is done elsewhere or no longer needed.`, before: 'Ran.', after: 'Gone.', proof: 'derived', hops: [...chain, { label: 'Job removed', file: lb.file, line: lb.line, quote: lb.kind.replace('@', ''), side: 'base', rule: `${cls}.${method}() ${lb.kind} existed at base` }] });
+        return 1;
+      }
+      const l = lh;
       const sid = `job:${cls}.${method}`;
       ctx.surface({ id: sid, kind: 'job', name: `${cls}.${method}() ${l.kind}`, where: l.file, tier: 'test-next' });
       ctx.addCase({ surface: sid, delta: deltaId, tier: 'test-next', do: `Let ${cls}.${method}() run (or trigger it) and check what it does.`, expect: `Same effect unless the change means otherwise: ${why}.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived', hops: [...chain, { label: 'Job', file: l.file, line: l.line, quote: l.kind.replace('@', ''), rule: `${cls}.${method}() ${l.kind}` }] });
@@ -331,7 +341,9 @@ export function followChanges(ctx: WhereCtx): void {
     }
     // an AI tool: the chat that is given it
     let n = 0;
-    const tool = fh.tools.find((t) => t.cls === cls && t.method === method)!;
+    const tool = fh.tools.find((t) => t.cls === cls && t.method === method);
+    // a tool reached through removed code and gone at head: the chats that had it are found from the base below, if anywhere
+    if (!tool) return 0;
     const toolHop: Hop = { label: 'Exposed to an AI model', file: tool.file, line: tool.line, quote: tool.mark, rule: `${cls}.${method}() is a tool the model can call` };
     for (const w of fh.wiring.filter((x) => x.toolsClass === cls)) {
       const wire: Hop = { label: 'Wired into the chat', file: w.file, line: w.line, quote: w.expr.split('(')[0]!.replace('.', ''), rule: `${w.holder}${w.expr}` };

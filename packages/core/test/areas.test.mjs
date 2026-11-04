@@ -165,3 +165,18 @@ test('a call written over several lines is cited where the method is named, and 
     assert.match(why, /Order\.total/, 'the total is still known to be written by the changed code');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test('code removed together with the job that used it: the job is named as gone, cited at base, and nothing crashes', () => {
+  const { d, base, head } = repo((dir) => {
+    rmSync(join(dir, `${J}/jobs/StockAlertJob.java`));
+    edit(dir, `${J}/repository/ProductRepository.java`, '    List<Product> findByStockLessThan(int threshold);\n', '');
+  });
+  try {
+    const r = impact({ repo: d, base, head });
+    const s = r.surfaces.find((x) => x.id === 'job:StockAlertJob.alert');
+    assert.ok(s, 'the removed job is in the brief');
+    assert.equal(s.tier, 'test-first');
+    assert.match(s.name, /\(removed\)/);
+    assert.equal(r.verification.failed.length, 0);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
