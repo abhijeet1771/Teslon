@@ -1,0 +1,23 @@
+<h2>Customers <a routerLink="/customers/new" class="btn">New customer</a></h2>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Email</th>
+      <th>Tier</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    @for (customer of customers(); track customer.id) {
+      <tr>
+        <td><a [routerLink]="['/customers', customer.id]">{{ customer.name }}</a></td>
+        <td>{{ customer.email }}</td>
+        <td>{{ customer.tier }}</td>
+        <td><a [routerLink]="['/customers', customer.id, 'edit']">Edit</a></td>
+      </tr>
+    } @empty {
+      <tr><td colspan="4">No customers yet.</td></tr>
+    }
+  </tbody>
+</table>

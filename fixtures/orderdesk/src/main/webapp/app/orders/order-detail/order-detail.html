@@ -1,0 +1,37 @@
+@let o = current() ?? order();
+<h2>Order {{ o.id }} <app-status-badge [status]="o.status" /></h2>
+<dl>
+  <dt>Customer</dt>
+  <dd><a [routerLink]="['/customers', o.customer.id]">{{ o.customer.name }}</a> ({{ o.customer.email }})</dd>
+  <dt>Placed</dt>
+  <dd>{{ o.placedAt | date: 'medium' }}</dd>
+  <dt>Note</dt>
+  <dd>{{ o.note }}</dd>
+</dl>
+<table>
+  <thead>
+    <tr>
+      <th>SKU</th>
+      <th>Product</th>
+      <th>Qty</th>
+      <th>Unit price</th>
+    </tr>
+  </thead>
+  <tbody>
+    @for (item of o.items; track item.id) {
+      <tr>
+        <td>{{ item.product.sku }}</td>
+        <td>{{ item.product.name }}</td>
+        <td>{{ item.quantity }}</td>
+        <td>{{ item.unitPrice | money }}</td>
+      </tr>
+    }
+  </tbody>
+</table>
+<p class="total">Total: {{ o.total | money }}</p>
+@if (o.status === 'NEW' || o.status === 'PAID') {
+  <button type="button" (click)="confirming.set(true)">Cancel order</button>
+}
+@if (confirming()) {
+  <app-confirm-dialog message="Cancel this order?" (confirmed)="cancel()" (cancelled)="confirming.set(false)" />
+}

@@ -1,0 +1,24 @@
+<h2>Products <a routerLink="/products/new" class="btn">New product</a></h2>
+<table>
+  <thead>
+    <tr>
+      <th>SKU</th>
+      <th>Name</th>
+      <th>Price</th>
+      <th>Stock</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    @for (product of products(); track product.id) {
+      <tr [class.inactive]="!product.active">
+        <td>{{ product.sku }}</td>
+        <td>{{ product.name }}</td>
+        <td>{{ product.price | money }}</td>
+        <td [class.low]="product.stock < 5">{{ product.stock }}</td>
+        <td><a [routerLink]="['/products', product.id, 'edit']">Edit</a></td>
+      </tr>
+    }
+  </tbody>
+</table>
+<button type="button" (click)="service.page.set(service.page() + 1)">Next page</button>

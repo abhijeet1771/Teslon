@@ -1,0 +1,23 @@
+<h2>Daily sales</h2>
+<input type="date" [value]="day()" (change)="day.set($any($event.target).value); load()" />
+@if (sales(); as s) {
+  <p>{{ s.orders }} orders · {{ s.revenue | money }}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Product</th>
+        <th>Sold</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (t of s.top; track t.sku) {
+        <tr>
+          <td>{{ t.sku }}</td>
+          <td>{{ t.name }}</td>
+          <td>{{ t.quantity }}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+}

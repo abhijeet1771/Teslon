@@ -2,7 +2,7 @@ import type { Hop, Delta } from './model.js';
 import type { SpringFacts, Endpoint } from './spring.js';
 import { exposedAs } from './spring.js';
 import { hasAnn, annStrings, type JType, type JField } from './java.js';
-import { routeQuote, type ApiCall } from './vue.js';
+import { routeQuote, callMadeBy, type ApiCall } from './vue.js';
 import { browserCalls, importChain, screenTitle, type WhereCtx } from './where.js';
 import { angularReads, type TypedRead } from './ngtypes.js';
 
@@ -129,6 +129,75 @@ function carriers(f: SpringFacts, start: JShape, json: string): { type: string; 
 
 export interface ShapeCtx extends WhereCtx { explain(file: string, line: number): void }
 
+/** Front-end types that are a Java type: the page declares the response type of a call to an API returning it. */
+function apiLinks(fh: SpringFacts, ui: WhereCtx['ui']): Map<string, { java: string; call: ApiCall; e: Endpoint }> {
+  const links = new Map<string, { java: string; call: ApiCall; e: Endpoint }>();
+  // a read (GET) is the clearest evidence of what a page receives
+  for (const e of [...fh.endpoints].sort((a, b) => Number(b.verb === 'GET') - Number(a.verb === 'GET'))) {
+    const jt = ids(e.returns);
+    if (jt.length !== 1) continue;
+    for (const c of browserCalls(fh, ui, e)) {
+      const tt = c.resultType ? ids(c.resultType) : [];
+      if (tt.length === 1 && !links.has(tt[0]!)) links.set(tt[0]!, { java: jt[0]!, call: c, e });
+    }
+  }
+  return links;
+}
+
+const readsCache = new WeakMap<object, TypedRead[]>();
+function readsOf(ctx: WhereCtx): TypedRead[] {
+  const hit = readsCache.get(ctx.H);
+  if (hit) return hit;
+  const r = ctx.ui.routes.length && ctx.H.files.some((f) => /\.ts$/.test(f) && /@angular\//.test(ctx.H.read(f) ?? '')) ? angularReads(ctx.H) : [];
+  readsCache.set(ctx.H, r);
+  return r;
+}
+
+/**
+ * The front end reads a field the API does not send: a rename made on one side only. TypeScript compiles it,
+ * the build passes, and the page shows nothing. Only reads this PR introduced are reported, on types the page
+ * gets straight from a Java API.
+ */
+export function contractCheck(ctx: ShapeCtx): void {
+  const { fh, ui } = ctx;
+  const changed = new Map(ctx.changes.filter((c) => c.status !== 'deleted').map((c) => [c.path, new Set(c.headLines)]));
+  if (![...changed.keys()].some((f) => /\.(ts|html)$/.test(f) && ui.files.includes(f))) return;
+  const links = apiLinks(fh, ui);
+  const javaOf = (ts0: string): { java: string; how: string } | null => {
+    const l = links.get(ts0);
+    if (l) return { java: l.java, how: `${l.call.verbs.join('/')} ${l.call.tpl} is typed ${l.call.resultType}, and ${l.e.verb} ${l.e.path} returns ${l.e.returns}` };
+    const n = ts0.replace(/^I(?=[A-Z])/, '');
+    return [...fh.dtos.values()].some((d) => d.name === n) ? { java: n, how: `${ts0} is named like the Java type ${n}` } : null;
+  };
+  const done = new Set<string>();
+  for (const r of readsOf(ctx)) {
+    const isNew = (changed.get(r.file)?.has(r.line) ?? false) || (changed.get(r.typeFile)?.has(r.declLine) ?? false);
+    if (!isNew) continue;
+    const j = javaOf(r.type);
+    if (!j) continue;
+    const key = [...fh.dtos.keys()].find((k) => k.endsWith(`|${j.java}`));
+    const shape = key ? shapeOf(fh, key) : null;
+    if (!shape || shape.custom.length || shape.props.some((p) => p.json === r.prop)) continue;
+    const sends = shape.props.map((p) => p.json);
+    const near = sends.find((p) => p.toLowerCase().includes(r.prop.toLowerCase()) || r.prop.toLowerCase().includes(p.toLowerCase()));
+    const id = `contract:${r.type}.${r.prop}`;
+    const causes: Hop[] = [
+      { label: 'The page reads', file: r.typeFile, line: r.declLine, quote: r.prop, rule: `${r.type}.${r.prop}` },
+      { label: 'The API sends', file: shape.file, line: shape.line, quote: shape.name, rule: `${shape.name} as JSON: ${sends.join(', ')}; no "${r.prop}"` },
+    ];
+    if (!ctx.deltas.some((d) => d.id === id)) ctx.deltas.push({ id, kind: 'response-shape-changed', title: `${r.type}.${r.prop} is read, but ${shape.name} sends no "${r.prop}"`, endpoint: '', rules: [], causes });
+    for (const rt of ui.routes.filter((x) => ctx.closure(x.component).has(r.component))) {
+      const k = `${rt.path}|${r.file}:${r.line}`;
+      if (done.has(k)) continue;
+      done.add(k);
+      const sid = `screen:${rt.path}`;
+      const title = screenTitle(ui.components.get(rt.component), rt.path);
+      ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
+      ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: r.label || r.prop, do: `Open ${title} and look at ${r.label || r.expr}.`, expect: `It shows the ${words(shape.name)}'s ${near ?? r.prop}. Risk: blank, because the page reads "${r.prop}" and ${shape.name} sends no "${r.prop}"${near ? ` (it sends "${near}")` : ''}.`, before: 'Shown.', after: 'Blank.', proof: 'derived', hops: [...causes, { label: 'Same type as the API', file: r.typeFile, line: r.declLine, quote: r.prop, rule: j.how }, { label: 'The page reads it', file: r.file, line: r.line, quote: r.prop, rule: `${r.label ? `${r.label}: ` : ''}${r.expr}` }, ...(importChain(ui, rt.component, r.component) ?? []), { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }] });
+    }
+  }
+}
+
 export function responseShape(ctx: ShapeCtx): void {
   const { fb, fh, ui, H } = ctx;
   const changedJava = new Set(ctx.changes.filter((c) => c.path.endsWith('.java') && c.status !== 'deleted' && !/\/src\/test\//.test(c.path)).map((c) => c.path));
@@ -147,19 +216,8 @@ export function responseShape(ctx: ShapeCtx): void {
   const naming = H.files.filter((f) => /application[^/]*\.(ya?ml|properties)$/.test(f)).find((f) => /property-naming-strategy|propertyNamingStrategy/.test(H.read(f) ?? ''));
   if (naming) ctx.unseen.push({ what: `a JSON naming strategy in ${fileName(naming)}`, why: 'it renames every JSON field; the names below are as written in the Java code', resolve: 'check one response of each changed API by hand', files: [naming] });
 
-  // front-end types that are a Java type: the page declares the response type of a call to an API returning it
-  const links = new Map<string, { java: string; call: ApiCall; e: Endpoint }>();
-  // a read (GET) is the clearest evidence of what a page receives
-  for (const e of [...fh.endpoints].sort((a, b) => Number(b.verb === 'GET') - Number(a.verb === 'GET'))) {
-    const jt = ids(e.returns);
-    if (jt.length !== 1) continue;
-    for (const c of browserCalls(fh, ui, e)) {
-      const tt = c.resultType ? ids(c.resultType) : [];
-      if (tt.length === 1 && !links.has(tt[0]!)) links.set(tt[0]!, { java: jt[0]!, call: c, e });
-    }
-  }
-  let reads: TypedRead[] | null = null;
-  const typedReads = (): TypedRead[] => (reads ??= ui.routes.length && H.files.some((f) => /\.ts$/.test(f) && /@angular\//.test(H.read(f) ?? '')) ? angularReads(H) : []);
+  const links = apiLinks(fh, ui);
+  const typedReads = (): TypedRead[] => readsOf(ctx);
 
   for (const ch of changes) {
     const T = ch.type;
@@ -248,7 +306,7 @@ export function responseShape(ctx: ShapeCtx): void {
           if (!rt.path.endsWith('/new')) ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: what, do: `Open ${title}${view} and look at the ${what} field.`, expect: `Filled with the saved ${what.toLowerCase()}. Risk: empty, because ${risk.replace('this page reads', 'the form reads')}.`, before: 'Filled.', after: 'Empty.', proof: 'derived', hops });
           // saving: the page sends the old name to an API that now reads the new one
           const files = ctx.closure(rt.component);
-          const save = ui.calls.find((c) => files.has(c.file) && writes.some((e) => c.verbs.includes(e.verb) && browserCalls(fh, ui, e).includes(c)));
+          const save = ui.calls.find((c) => callMadeBy(ui, files, c) && writes.some((e) => c.verbs.includes(e.verb) && browserCalls(fh, ui, e).includes(c)));
           if (save && ch.kind !== 'retyped') {
             const e = writes.find((x) => save.verbs.includes(x.verb) && browserCalls(fh, ui, x).includes(save))!;
             const required = ch.was.required && !!e.body?.valid;
@@ -268,13 +326,28 @@ export function responseShape(ctx: ShapeCtx): void {
         const apiHop: Hop = { label: 'API', file: e.file, line: e.line, quote: 'Mapping', rule: `${e.verb} ${e.path} returns ${e.returns}` };
         for (const call of browserCalls(fh, ui, e)) {
           const callHop: Hop = { label: 'The page calls it', file: call.file, line: call.line, quote: call.code.slice(0, 24).trim(), rule: `${call.verbs.join('/')} ${call.tpl}` };
-          for (const rt of ui.routes.filter((x) => ctx.closure(x.component).has(call.file))) {
+          for (const rt of ui.routes.filter((x) => callMadeBy(ui, ctx.closure(x.component), call))) {
             const sid = `screen:${rt.path}`;
             if (reached.has(sid)) continue;
             reached.add(sid);
             const title = screenTitle(ui.components.get(rt.component), rt.path);
             const chain = [...causes, apiHop, callHop, ...(importChain(ui, rt.component, call.file) ?? []), { label: 'Screen', file: rt.file, line: rt.line, quote: routeQuote(rt), rule: `route ${rt.path}` }];
             const shows = [...ctx.closure(rt.component)].filter((f) => /\.(vue|m?js)$/.test(f)).flatMap((f) => (ui.components.get(f)?.shows ?? []).filter((x) => nameRe.test(x.expr)).map((x) => ({ ...x, file: f })));
+            // an untyped form (FormBuilder, patchValue): its controls are bound to the API's fields by name
+            const controls = [...ctx.closure(rt.component)].flatMap((f) => { const k = ui.components.get(f); return (k?.elements ?? []).filter((el) => el.attrs['formControlName'] === old).map((el) => ({ el, k: k! })); });
+            if (controls.length && ch.kind !== 'retyped') {
+              ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
+              const own = (rt.path.split('/').filter((x) => x && !x.startsWith(':'))[0] ?? noun).replace(/[-_]/g, ' ');
+              for (const { el, k } of controls) {
+                const id0 = el.attrs['id'];
+                const label = (id0 && k.elements.find((x) => x.tag === 'label' && x.attrs['for'] === id0)?.text) || old;
+                const hop: Hop = { label: 'The form field', file: el.file ?? k.file, line: el.line, quote: old, rule: `formControlName="${old}": an untyped form, filled from the API by field name` };
+                if (rt.path.includes(':')) ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: label, do: `Open ${title} for a saved ${own} and look at the ${label} field.`, expect: `Filled with the saved ${label.toLowerCase()}. Risk: it shows its default instead, because ${risk.replace('this page reads', 'the form reads')}.`, before: 'Filled.', after: 'Default value.', proof: 'derived', hops: [...chain, hop] });
+                const save = ui.calls.find((c) => callMadeBy(ui, ctx.closure(rt.component), c) && writes.some((w) => c.verbs.includes(w.verb) && browserCalls(fh, ui, w).includes(c)));
+                if (save) ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: label, do: `${rt.path.endsWith('/new') ? `Create a ${own}` : `Change something else`} and press Save, then reload.`, expect: `${label} keeps its value. Risk: ${ch.kind === 'removed' ? `the server no longer reads "${old}", so ${label} is not saved${rt.path.includes(':') ? ' and may be reset' : ''}` : `the page sends "${old}" and the server reads "${neu}", so ${label} is not saved`}.`, before: 'Saved.', after: 'Not saved.', proof: 'derived', hops: [...chain, hop, { label: 'The page sends it', file: save.file, line: save.line, quote: save.code.slice(0, 24).trim(), rule: `${save.verbs.join('/')} ${save.tpl}` }] });
+              }
+              continue;
+            }
             if (shows.length) {
               ctx.surface({ id: sid, kind: 'screen', name: title, where: rt.path, tier: 'test-first' });
               for (const sh of shows) ctx.addCase({ surface: sid, delta: id, tier: 'test-first', field: sh.label || sh.expr, do: `Open ${title} and look at ${sh.label || sh.expr}.`, expect: `It shows the ${noun}'s ${old}. Risk: ${blank}, because ${risk}.`, before: 'Shown.', after: 'Blank.', proof: 'derived', hops: [...chain, { label: 'The page reads it', file: sh.file, line: sh.line, quote: old, rule: `${sh.expr} (read by name; its type is not checked)` }] });

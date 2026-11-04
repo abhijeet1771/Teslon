@@ -1,0 +1,12 @@
+<nav class="navbar">
+  <a routerLink="/" class="brand">OrderDesk</a>
+  <button type="button" class="toggle" (click)="open.update((o) => !o)">Menu</button>
+  <ul [class.open]="open()">
+    <li><a routerLink="/customers" routerLinkActive="active">Customers</a></li>
+    <li><a routerLink="/products" routerLinkActive="active">Products</a></li>
+    <li><a routerLink="/orders" routerLinkActive="active">Orders</a></li>
+    @if (session.hasRole('MANAGER')) {
+      <li><a routerLink="/reports" routerLinkActive="active">Reports</a></li>
+    }
+  </ul>
+</nav>

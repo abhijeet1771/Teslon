@@ -25,8 +25,9 @@ export interface TplElement {
   readonly file?: string;
 }
 
-export interface TplShow { readonly expr: string; readonly line: number; readonly label: string; readonly when: readonly string[] }
-export interface TplLink { readonly target: string; readonly line: number; readonly text: string }
+/** `file`: the template file, when it is not the component's own (Angular `templateUrl`). */
+export interface TplShow { readonly expr: string; readonly line: number; readonly label: string; readonly when: readonly string[]; readonly file?: string }
+export interface TplLink { readonly target: string; readonly line: number; readonly text: string; readonly file?: string }
 
 export interface TemplateFacts {
   readonly elements: readonly TplElement[];

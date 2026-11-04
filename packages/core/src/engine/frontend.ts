@@ -14,5 +14,7 @@ export function readFrontend(snap: Snapshot): FrontendFacts {
     globals: [...v.globals, ...a.globals],
     files: [...new Set([...v.files, ...a.files])],
     unread: v.unread.filter((u) => u.framework !== 'Angular'),
+    ...(a.shell ? { shell: a.shell } : {}),
+    ...(a.memberCalls ? { memberCalls: a.memberCalls } : {}),
   };
 }

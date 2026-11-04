@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+  <changeSet id="0001-customer" author="orderdesk">
+    <createTable tableName="customer">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="name" type="varchar(80)"><constraints nullable="false"/></column>
+      <column name="email" type="varchar(254)"><constraints nullable="false"/></column>
+      <column name="phone" type="varchar(32)"/>
+      <column name="tier" type="varchar(16)"/>
+    </createTable>
+  </changeSet>
+  <changeSet id="0001-product" author="orderdesk">
+    <createTable tableName="product">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="sku" type="varchar(32)"><constraints nullable="false" unique="true"/></column>
+      <column name="name" type="varchar(120)"><constraints nullable="false"/></column>
+      <column name="price" type="decimal(12,2)"><constraints nullable="false"/></column>
+      <column name="stock" type="int"/>
+      <column name="active" type="boolean"/>
+    </createTable>
+  </changeSet>
+  <changeSet id="0001-orders" author="orderdesk">
+    <createTable tableName="orders">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="customer_id" type="bigint"/>
+      <column name="status" type="varchar(16)"/>
+      <column name="placed_at" type="timestamp"/>
+      <column name="total" type="decimal(12,2)"/>
+      <column name="note" type="varchar(500)"/>
+    </createTable>
+    <createTable tableName="order_item">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="order_id" type="bigint"/>
+      <column name="product_id" type="bigint"/>
+      <column name="quantity" type="int"/>
+      <column name="unit_price" type="decimal(12,2)"/>
+    </createTable>
+    <createTable tableName="invoice">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="order_id" type="bigint"/>
+      <column name="number" type="varchar(32)"/>
+      <column name="issued_at" type="timestamp"/>
+      <column name="amount" type="decimal(12,2)"/>
+    </createTable>
+  </changeSet>
+</databaseChangeLog>

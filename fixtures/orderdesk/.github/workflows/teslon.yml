@@ -1,0 +1,33 @@
+# What each PR changes for QA: what to test, how, and what is safe to skip.
+name: Teslon
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number (open or merged)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: teslon-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: abhijeet1771/Teslon@claude/beautiful-galileo-9ay5n1
+        with:
+          pr: ${{ github.event.pull_request.number || inputs.pr }}
+          minutes-per-case: 6

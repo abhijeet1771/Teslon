@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: orderdesk
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orderdesk
+    username: orderdesk
+  jpa:
+    open-in-view: false
+  liquibase:
+    change-log: classpath:config/liquibase/master.xml
+  mail:
+    host: smtp.internal.example
+    port: 587
+
+orderdesk:
+  page-size: 20
+  currency: EUR
+  low-stock-threshold: 5
+  stock-alert-cron: "0 0 7 * * MON-FRI"

@@ -2,7 +2,7 @@ e8b747a unknown test=  6 [api,screen,widget] nm=1 (PetFormPage.js) | Fix pet upd
 1d76b00 none    test=  0 [] nm=0 | Use dynamic date instead of hardcoded year in future-bi
 a3f9d06 yes     test=  4 [api,screen,widget,dashboard] nm=0 | Add validation to reject future pet birth dates
 1e7ecb8 yes     test=  5 [api,screen,data,dashboard] nm=0 | Pet birthdays cannot be set to a future date
-dc9ca15 unknown test= 13 [screen,api,module] nm=2 (petclinic.css,petclinic.scss) | Migrate from AngularJS to Vue.js for frontend component
+dc9ca15 unknown test= 14 [api,screen,module] nm=2 (petclinic.css,petclinic.scss) | Migrate from AngularJS to Vue.js for frontend component
 aefaf7f yes     test=  1 [job] nm=0 | Fix GenAI vector store loading from JAR (#564)
 295fa8d yes     test= 20 [api,module] nm=0 | Fix 405 errors from api-gateway by upgrading chaos-monk
 3858f9c none    test=  0 [] nm=0 | Add missing pet not found web test (#545)
@@ -12,7 +12,7 @@ f03042b none    test=  0 [] nm=0 | fix(workflows): avoid require('@actions/githu
 f08e5e4 none    test=  0 [] nm=0 | feat(workflows): enhance PR triage by detecting non-pro
 d518311 none    test=  0 [] nm=0 | feat(workflows): auto-close invalid PRs and enforce PR 
 3e9d6f9 none    test=  0 [] nm=0 | Fix README typos and broken links
-9a76b4e unknown test= 20 [api,module] nm=1 (application.yml) | fix: zipkin tracing
+9a76b4e yes     test= 20 [api,module] nm=0 | fix: zipkin tracing
 597ad1f yes     test=  1 [module] nm=0 | Update Spring Boot Admin to 4.0.2
 17cad88 unknown test= 26 [api,job,module,screen] nm=1 (application.yml) | Bump to Spring Cloud 2025.1.0 (aka Oakwood) and Spring 
 e8827d8 none    test=  0 [] nm=0 | Add support for genai-service in image push and tag scr
@@ -22,12 +22,12 @@ b6eaebf yes     test=  1 [deploy] nm=0 | Remove the temporary JAVA_OPTS environm
 a16800b none    test=  0 [] nm=0 | Bump to actions/checkout@v4 and setup-java@v4
 6220cbf unknown test=  0 [] nm=3 (schema.sql,schema.sql,schema.sql) | Update MySQL version to 8.4.5 LTS
 bac5c68 none    test=  0 [] nm=0 | JetBrains support for Open-Source Projects (#304)
-f9fd559 unknown test=  1 [deploy] nm=1 (application.yml) | Externalise the genai-service configuration (#301)
+f9fd559 unknown test=  2 [api,deploy] nm=1 (application.yml) | Externalise the genai-service configuration (#301)
 ce0a734 yes     test= 24 [api,module] nm=0 | Bump to Spring Cloud 2024 and Spring Boot 3.4.1 (#302)
 b9c725f yes     test= 21 [api,job,module] nm=0 | Get rid of Lombok #251 (#300)
 104410a none    test=  0 [] nm=0 | Add "Open with Codeanywhere" badge to README.md (#292)
 79b527a unknown test= 28 [api,job,module,screen,deploy] nm=3 (application.yml,application.yml,logback-spring.xml) | Generative AI support for Spring Petclinic Microservice
-f2c1422 unknown test=  0 [] nm=1 (pom.xml) | Add user friendly error when Java < 17 is used (Issue #
+f2c1422 none    test=  0 [] nm=0 | Add user friendly error when Java < 17 is used (Issue #
 06a9bac none    test=  0 [] nm=0 | Add  Microservices Overview to readme (#276)
 f154535 none    test=  0 [] nm=0 | Disable Github linguist support for CSS
 50935af none    test=  0 [] nm=0 | Upgrade to Maven 3.9.8 and Maven Wrapper 3.3.2 (#274)
@@ -58,4 +58,4 @@ ec7ea22 none    test=  0 [] nm=0 | Spring Cloud Sleuth has to be migrated to Mic
 a05f4fb yes     test= 21 [api,module] nm=0 | Bump to Spring Cloud 2021.0.2 and Spring Boot 2.6.7 (#2
 f8d05ba yes     test= 21 [api,module] nm=0 | Spring Cloud 2021.0.1 (#202)
 8685f93 unknown test= 15 [api,data,dashboard] nm=8 (owner-form.template.html,Owner.java,Pet.java) | Refactoring & clean up (#201)
-{"tally":{"none":20,"yes":26,"unknown":14},"withSurfaces":36,"failedEvidence":0,"avgMs":1306}
+{"tally":{"none":21,"yes":27,"unknown":12},"withSurfaces":36,"failedEvidence":0,"avgMs":1250}

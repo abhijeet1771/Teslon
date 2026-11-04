@@ -33,6 +33,11 @@ jobs:
       - run: npm run build
       - run: npm test
 
+      - name: Proving ground (OrderDesk, 25 real PRs, truth written first)
+        # A silent miss, a wrong skip, a false alarm, noise, a wrong range or unsafe
+        # output on any scenario fails the build: Teslon stands on trust.
+        run: node bench/proving-ground/run.mjs --out proving-ground.md && cat proving-ground.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Invariants must be covered, not merely passing
         run: |
           # A green suite that stopped asserting the invariants is worse than

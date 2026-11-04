@@ -254,6 +254,66 @@ function readNgTemplate(text: string, url: string, lineOffset: number): { elemen
 const HTTP_VERB = /(?:^|\.)(?:http|httpClient|_http|client)\.(get|post|put|patch|delete|head|request)$/i;
 const NG_OPAQUE = /(?:^|\.)(?:store|_store)\.(?:select|dispatch|pipe)$|^(?:createEffect|createSelector)$|^new (?:WebSocket|EventSource)$|webSocket$/;
 
+/**
+ * Members of app classes a file uses: `this.orders.list()` where `orders = inject(OrderService)` (or a typed field
+ * or constructor parameter), `inject(OrderService).get(…)`, a local `const s = inject(X)`, and `orders.x` in the
+ * component's template. Also each class member's span, and the members of its own class it uses through `this.`.
+ */
+function memberUse(fi: FileIndex, template: string): { uses: string[]; injects: string[]; members: { cls: string; name: string; start: number; end: number; eager: boolean }[]; edges: Map<string, string[]> } {
+  const { sf } = fi;
+  const uses = new Set<string>();
+  const injects = new Set<string>();
+  const members: { cls: string; name: string; start: number; end: number; eager: boolean }[] = [];
+  const edges = new Map<string, string[]>();
+  const appClass = (name: string): boolean => fi.imports.has(name) || fi.classProps.has(name);
+  const injected = (e: ts.Expression | undefined): string | null =>
+    e && ts.isCallExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'inject' && e.arguments[0] && ts.isIdentifier(e.arguments[0]) && appClass(e.arguments[0].text) ? e.arguments[0].text : null;
+  const typeName = (t: ts.TypeNode | undefined): string | null => (t && ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && appClass(t.typeName.text) ? t.typeName.text : null);
+  const vars = new Map<string, string>();
+  const walk = (n: ts.Node, fields: Map<string, string>, cls: string | null, member: string | null): void => {
+    if (ts.isClassDeclaration(n) && n.name) {
+      const own = new Map<string, string>();
+      const names = new Set<string>();
+      for (const m of n.members) {
+        if (m.name && (ts.isIdentifier(m.name) || ts.isPrivateIdentifier(m.name))) names.add(m.name.text);
+        if (ts.isPropertyDeclaration(m) && m.name && ts.isIdentifier(m.name)) { const t = injected(m.initializer) ?? typeName(m.type); if (t) { own.set(m.name.text, t); injects.add(t); } }
+        if (ts.isConstructorDeclaration(m)) for (const p of m.parameters) if (ts.isIdentifier(p.name)) { const t = typeName(p.type); if (t) { own.set(p.name.text, t); injects.add(t); } }
+      }
+      for (const m of n.members) {
+        const name = ts.isConstructorDeclaration(m) ? 'constructor' : m.name && (ts.isIdentifier(m.name) || ts.isPrivateIdentifier(m.name)) ? m.name.text : null;
+        if (!name) continue;
+        const start = sf.getLineAndCharacterOfPosition(m.getStart(sf)).line + 1, end = sf.getLineAndCharacterOfPosition(m.getEnd()).line + 1;
+        members.push({ cls: n.name.text, name, start, end, eager: ts.isPropertyDeclaration(m) || ts.isConstructorDeclaration(m) });
+        const self: string[] = [];
+        const look = (x: ts.Node): void => {
+          if (ts.isPropertyAccessExpression(x) && x.expression.kind === ts.SyntaxKind.ThisKeyword && names.has(x.name.text)) self.push(`${n.name!.text}.${x.name.text}`);
+          ts.forEachChild(x, look);
+        };
+        look(m);
+        if (self.length) edges.set(`${n.name.text}.${name}`, [...new Set(self)]);
+        walk(m, own, n.name.text, name);
+      }
+      // the template uses the component's fields: `orders.list()`, `products.products.value()`
+      if (template) for (const [field, t] of own) for (const mm of template.matchAll(new RegExp(`\\b${field}\\.(\\w+)`, 'g'))) uses.add(`${t}.${mm[1]}`);
+      return;
+    }
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) { const t = injected(n.initializer); if (t) { vars.set(n.name.text, t); injects.add(t); } }
+    if (ts.isPropertyAccessExpression(n)) {
+      const r = n.expression;
+      // this.orders.list / orders.list / inject(OrderService).get
+      const viaField = ts.isPropertyAccessExpression(r) && r.expression.kind === ts.SyntaxKind.ThisKeyword ? fields.get(r.name.text) : undefined;
+      const viaVar = ts.isIdentifier(r) ? vars.get(r.text) ?? fields.get(r.text) : undefined;
+      const viaInject = injected(r);
+      const t = viaField ?? viaVar ?? viaInject;
+      if (t) { uses.add(`${t}.${n.name.text}`); if (viaInject) injects.add(viaInject); }
+    }
+    if (ts.isCallExpression(n)) { const t = injected(n); if (t) injects.add(t); }
+    ts.forEachChild(n, (x) => walk(x, fields, cls, member));
+  };
+  walk(sf, new Map(), null, null);
+  return { uses: [...uses], injects: [...injects], members, edges };
+}
+
 export function readAngular(snap: Snapshot): FrontendFacts | null {
   const files = snap.files.filter(isNgFile);
   const ngFiles = files.filter((f) => /from\s+['"]@angular\//.test(snap.read(f) ?? ''));
@@ -448,15 +508,32 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
     components.set(f, {
       file: f,
       elements: (tpl?.elements ?? []).map((e) => ({ ...e, file: tpl!.file })),
-      shows: tpl?.shows ?? [],
+      shows: (tpl?.shows ?? []).map((x) => ({ ...x, file: tpl!.file })),
       routeParams: new Map(),
       pushes: [],
-      links: tpl?.links ?? [],
+      links: (tpl?.links ?? []).map((x) => ({ ...x, file: tpl!.file })),
       deps: [...new Set([...fi.imports.values(), ...fi.reexports, ...extraDeps.map((d) => d.file)])],
       depLines,
       packages: [...fi.packages],
       opaque,
     });
+  }
+
+  // which members of app classes each file uses, and in which member each call is made
+  const memberCalls = new Map<string, string[]>();
+  for (const f of files) {
+    const fi = idx.get(f);
+    const c0 = components.get(f);
+    if (!fi || !c0) continue;
+    const u = memberUse(fi, templateOf.get(f) ? snap.read(templateOf.get(f)!.file) ?? '' : '');
+    for (const [k, v] of u.edges) memberCalls.set(k, v);
+    components.set(f, { ...c0, uses: u.uses, injects: u.injects });
+    for (let i = 0; i < calls.length; i++) {
+      const c = calls[i]!;
+      if (c.file !== f) continue;
+      const m = u.members.filter((x) => c.line >= x.start && c.line <= x.end).sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+      if (m) calls[i] = { ...c, owner: m.cls, member: m.name, ...(m.eager ? { eager: true } : {}) };
+    }
   }
 
   // components drawn by selector are part of the screen; selectors are known only now
@@ -507,5 +584,34 @@ export function readAngular(snap: Snapshot): FrontendFacts | null {
 
   const ngDirs = new Set(ngFiles.map((f) => f.split('/').slice(0, -1).join('/')));
   const html = snap.files.filter((f) => /\.html$/.test(f) && ngDirs.has(f.split('/').slice(0, -1).join('/')));
-  return { routes: [...byPath.values()], calls, components, globals, files: [...files, ...html], unread: [] };
+  // the app shell: bootstrapApplication(App, appConfig) and everything they import, before any lazy route
+  const shell = new Map<string, { from: string; line: number }>();
+  for (const f of files) {
+    const fi = idx.get(f);
+    if (!fi || !/\bbootstrapApplication\s*\(|\bplatformBrowserDynamic\s*\(\s*\)\s*\.\s*bootstrapModule\s*\(/.test(fi.sf.text)) continue;
+    shell.set(f, { from: f, line: 1 });
+    const queue = [f];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      const c = components.get(cur);
+      for (const d of c?.deps ?? []) {
+        if (shell.has(d) || !components.has(d) && !/\.(html|s?css|less)$/.test(d)) continue;
+        shell.set(d, { from: c?.depFiles?.[d] ?? cur, line: c?.depLines[d] ?? 1 });
+        if (components.has(d)) queue.push(d);
+      }
+    }
+    // components drawn by the root component's template are on every screen, like a named outlet
+    for (const [file, info] of shell) {
+      const tpl = templateOf.get(file);
+      if (!tpl || !tpl.uses.length || file === f) continue;
+      if (!tpl.uses.includes('router-outlet')) continue;
+      for (const tag of tpl.uses) {
+        const comp = selectors.get(tag);
+        if (comp && comp !== file && !globals.some((g) => g.file === comp)) globals.push({ tag, file: comp, root: tpl.file, line: tpl.useLines.get(tag) ?? info.line });
+      }
+    }
+  }
+  // a file that defines routes is not the shell itself: its changes are read per route
+  for (const f of rawRoutes.keys()) shell.delete(f);
+  return { routes: [...byPath.values()], calls, components, globals, files: [...files, ...html], unread: [], ...(shell.size ? { shell } : {}), ...(memberCalls.size ? { memberCalls } : {}) };
 }

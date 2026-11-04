@@ -265,9 +265,13 @@ import { ItemFormGroup } from './item-form';
 export class ItemUpdate {
   protected readonly service = inject(ItemService);
   editForm!: ItemFormGroup;
+
+  save(): void {
+    this.service.update(this.editForm.getRawValue() as never).subscribe();
+  }
 }
 `,
-  [`${A}/items/update/item-update.html`]: `<form [formGroup]="editForm">
+  [`${A}/items/update/item-update.html`]: `<form [formGroup]="editForm" (ngSubmit)="save()">
   <label for="field_name">Name</label>
   <input id="field_name" formControlName="name" />
 </form>

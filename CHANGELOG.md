@@ -5,6 +5,32 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 ## Unreleased
 
 ### Added
+- The OrderDesk proving ground: a Spring Boot + Angular app
+  (`fixtures/orderdesk`) and 25 developer PRs whose truth was written before
+  Teslon ran (`bench/proving-ground`). Each runs the real flow: GitHub refs,
+  a fresh clone, then `teslon pr N`. A silent miss, wrong skip, false alarm,
+  noise, wrong range, unsafe output or unchecked evidence fails CI. The
+  first run had 14 trust failures; after the fixes below there are none,
+  and every ideal is met (16/16). See
+  `research/PROVING-GROUND-ORDERDESK-2026-11-03.md`.
+- Config keys (application.yml / .properties) are followed to the code that
+  reads them: `@ConfigurationProperties` accessors, `${…}` placeholders, and
+  `getProperty`. Framework keys (`spring.*`, `server.*`, `management.*`)
+  reach the whole service.
+- Database migrations (Liquibase XML, Flyway SQL) are followed:
+  - adding a NOT NULL column with no default that the entity cannot fill
+    breaks every write;
+  - dropping or renaming a column that is still mapped breaks every use;
+  - row counts in production are said out loud.
+- The Angular app shell (what `bootstrapApplication` loads: root component,
+  config, interceptors, root-route guards) is on every screen, and so are
+  components drawn in the root template.
+- A contract check: a front-end read this PR introduces, on a type the page
+  gets from a Java API, of a field that type does not send.
+- Untyped forms (`FormBuilder`, `patchValue`) are matched to JSON fields by
+  `formControlName`.
+- An enum is followed into the methods that decide on its values.
+
 - `teslon pr <number | url>`: a pull request in, the QA brief out. The PR is
   checked where it lands on `main`: a merge commit against its first parent,
   a rebase-merge by patch-id, a squash-merge by its whole diff, and an open PR
@@ -70,6 +96,26 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
   no longer taken as part of the JSON.
 
 ### Fixed
+- Proving-ground trust failures, each with a regression scenario:
+  - A moved mapping (POST /cancel → PATCH /cancellation) left a screen
+    still calling the old path "safe to skip". Every base API missing at
+    head is now a removed API.
+  - Screens that import a service were said to make all of its calls.
+    Claims now use member-level attribution.
+  - Renaming a Java field but keeping its JSON name raised false "Rejected
+    (400)" alarms. Rules are now keyed by JSON name or Java field.
+  - Angular template hops cited the component file with template lines.
+  - Lines nothing followed could leave "could not see" empty. Each is now
+    named.
+  - Deletion-only route removals were not seen.
+  - A reindent counted as a change. In whitespace-free languages it is now
+    "no app effect".
+  - A moved bound produced two contradictory cases.
+  - Type holders now follow only what the JSON really carries
+    (`@JsonIgnore`, `@JsonIgnoreProperties`).
+  - "Callers outside" said 400 for removed APIs.
+  - Labels and buttons came from the service, not the screen.
+
 - A route whose component belongs to another framework was listed as a
   screen and could be skipped. It is now that framework's, named under
   "could not see".

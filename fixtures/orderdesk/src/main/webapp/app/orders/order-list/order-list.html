@@ -1,0 +1,23 @@
+<h2>Orders <a routerLink="/orders/new" class="btn">New order</a></h2>
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Customer</th>
+      <th>Status</th>
+      <th>Total</th>
+      <th>Placed</th>
+    </tr>
+  </thead>
+  <tbody>
+    @for (order of orders(); track order.id) {
+      <tr>
+        <td><a [routerLink]="['/orders', order.id]">{{ order.id }}</a></td>
+        <td>{{ order.customerName }}</td>
+        <td><app-status-badge [status]="order.status" /></td>
+        <td>{{ order.total | money }}</td>
+        <td>{{ order.placedAt | date: 'short' }}</td>
+      </tr>
+    }
+  </tbody>
+</table>

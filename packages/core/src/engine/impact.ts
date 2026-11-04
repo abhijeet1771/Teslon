@@ -1,10 +1,10 @@
 import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
-import { targetsRoute, routeQuote, type Component } from './vue.js';
+import { targetsRoute, routeQuote, callMadeBy, type Component } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
 import { followChanges, type WhereCtx } from './where.js';
-import { responseShape } from './shape.js';
+import { responseShape, contractCheck } from './shape.js';
 import { fileKind, noAppEffect } from './kinds.js';
 import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage } from './model.js';
 
@@ -32,7 +32,20 @@ export interface ImpactOptions {
 
 const RANK: Record<Tier, number> = { 'test-first': 3, 'test-next': 2, watch: 1, skip: 0 };
 const fileName = (p: string): string => p.split('/').pop() ?? p;
-const ruleKey = (field: string, rule: string): string => `${field} ${rule}`;
+/** A rule is part of the client's contract, so it is keyed by the JSON name: renaming the Java field changes nothing a client sends. */
+const ruleKey = (json: string, rule: string): string => `${json} ${rule}`;
+
+/** The numeric bounds a rule sets, when it sets any: @Size(min, max), @Min, @Max, @DecimalMin, @DecimalMax, @Length. */
+function bounds(name: string, rule: string): { min: number; max: number } | null {
+  const num = (k: string): number | undefined => { const m = new RegExp(`${k}\\s*=\\s*"?(-?[\\d.]+)`).exec(rule); return m ? Number(m[1]) : undefined; };
+  const only = /\(\s*"?(-?[\d.]+)"?\s*\)/.exec(rule);
+  if (/^(Size|Length)$/.test(name)) { const mn = num('min'), mx = num('max'); return mn === undefined && mx === undefined ? null : { min: mn ?? -Infinity, max: mx ?? Infinity }; }
+  const v = num('value') ?? (only ? Number(only[1]) : undefined);
+  if (v === undefined || Number.isNaN(v)) return null;
+  if (/^(Min|DecimalMin)$/.test(name)) return { min: v, max: Infinity };
+  if (/^(Max|DecimalMax)$/.test(name)) return { min: -Infinity, max: v };
+  return null;
+}
 
 function enforced(f: SpringFacts, e: Endpoint): { field: DtoField; rule: string; name: string; line: number; file: string }[] {
   if (!e.body?.valid) return [];
@@ -144,15 +157,26 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const before = fb.endpoints.find((x) => x.service === e.service && x.verb === e.verb && x.path === e.path) ?? fb.endpoints.find((x) => x.cls === e.cls && x.method === e.method && x.verb === e.verb);
     const now = enforced(fh, e);
     const was = before ? enforced(fb, before) : [];
-    const wasKeys = new Set(was.map((r) => ruleKey(r.field.name, r.rule)));
-    const added = now.filter((r) => !wasKeys.has(ruleKey(r.field.name, r.rule)));
-    const nowKeys = new Set(now.map((r) => ruleKey(r.field.name, r.rule)));
-    const removed = was.filter((r) => !nowKeys.has(ruleKey(r.field.name, r.rule)));
+    // the same rule on the same field is not new: same JSON name (a Java rename) or same Java field (a JSON rename, typed as a response shape change)
+    const wasKeys = new Set(was.flatMap((r) => [ruleKey(r.field.json, r.rule), `field:${ruleKey(r.field.name, r.rule)}`]));
+    const added = now.filter((r) => !wasKeys.has(ruleKey(r.field.json, r.rule)) && !wasKeys.has(`field:${ruleKey(r.field.name, r.rule)}`));
+    const nowKeys = new Set(now.flatMap((r) => [ruleKey(r.field.json, r.rule), `field:${ruleKey(r.field.name, r.rule)}`]));
+    const removed = was.filter((r) => !nowKeys.has(ruleKey(r.field.json, r.rule)) && !nowKeys.has(`field:${ruleKey(r.field.name, r.rule)}`));
+    // one rule whose bound moved (@Size(max = 500) → @Size(max = 200)) is one change, in one direction
+    for (const ra of [...added]) {
+      const rb = removed.find((x) => (x.field.json === ra.field.json || x.field.name === ra.field.name) && x.name === ra.name);
+      const nb = rb ? bounds(ra.name, ra.rule) : null, ob = rb ? bounds(rb.name, rb.rule) : null;
+      if (!rb || !nb || !ob) continue;
+      const tighter = nb.max <= ob.max && nb.min >= ob.min, looser = nb.max >= ob.max && nb.min <= ob.min;
+      if (tighter) removed.splice(removed.indexOf(rb), 1);
+      else if (looser) added.splice(added.indexOf(ra), 1);
+    }
     for (const [kind, list] of [['request-rules-enforced', added], ['request-rules-relaxed', removed]] as const) {
       if (!list.length) continue;
       const exp = exposedAs(fh, e);
       const action = e.verb === 'POST' ? 'Create' : e.verb === 'PUT' || e.verb === 'PATCH' ? 'Update' : e.verb;
-      const noun = e.body!.type.replace(/(Request|DTO|Dto|Form|Command)$/, '').toLowerCase();
+      // CreateOrderRequest → "order": the verb is already in the action
+      const noun = e.body!.type.replace(/<.*$/, '').replace(/(Request|DTO|Dto|Form|Command)$/, '').replace(/^(Create|Update|Save|New|Edit|Patch)(?=[A-Z])/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
       const causes: Hop[] = [];
       // a removed rule is read where it was: at base
       for (const r of list) causes.push({ label: kind === 'request-rules-enforced' ? 'Rule' : 'Rule removed', file: r.file, line: r.line, quote: r.name, rule: `${r.field.name}: ${r.rule}`, ...(kind === 'request-rules-relaxed' ? { side: 'base' as const } : {}) });
@@ -198,6 +222,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
 
   /* ---------- 1a. response shape: JSON fields renamed, removed or retyped ---------- */
   responseShape({ ...whereCtx, explain });
+  contractCheck({ ...whereCtx, explain });
 
   /* ---------- 1b. everything else that changed: where it lands ---------- */
   followChanges(whereCtx);
@@ -212,7 +237,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
       const internal = route ? '/' + c.tpl.split('/').filter(Boolean).slice(route.strip).join('/') : c.tpl;
       if (!templateHits(internal, e.path)) continue;
       const comp = ui.components.get(c.file);
-      const routes = screensUsing(c.file);
+      const routes = screensUsing(c.file).filter((r) => callMadeBy(ui, closure(r.component), c));
       if (!c.verbs.includes(e.verb)) {
         // direction: a rule on the request body cannot change what a read returns
         for (const r of routes) if (!readsOnly.has(r.path)) readsOnly.set(r.path, { label: 'Reads only', file: c.file, line: c.line, quote: callText(c), rule: `${c.verbs.join('/')} ${c.tpl}: a rule on what is sent cannot change what is read back` });
@@ -224,12 +249,14 @@ export function impact(opts: ImpactOptions): ImpactReport {
         writerScreens.add(r.path);
         const sid = `screen:${r.path}`;
         surface({ id: sid, kind: 'screen', name: screenName(comp, r.path, verb), where: r.path, tier: 'test-first' });
+        // the screen's own component holds the fields and the button, wherever the call itself is made
+        const screen = ui.components.get(ui.routes.find((x) => x.path === r.path)?.component ?? '') ?? comp;
         for (const rule of d.rules) {
           const prop = c.payload?.props.find((p) => p.key === rule.json);
           const model = prop ? modelPath(prop.value) : c.payload?.whole ? `${c.payload.whole}.${rule.json}` : undefined;
-          const el = model && comp ? comp.elements.find((x) => Object.entries(x.attrs).some(([k, v]) => k.startsWith('v-model') && v === model)) : undefined;
-          const label = el && comp ? labelFor(comp, el) : undefined;
-          const section = el && comp ? sectionAbove(comp, el.line) : undefined;
+          const el = screen ? screen.elements.find((x) => (!!model && Object.entries(x.attrs).some(([k, v]) => k.startsWith('v-model') && v === model)) || x.attrs['formControlName'] === rule.json) : undefined;
+          const label = el && screen ? labelFor(screen, el) : undefined;
+          const section = el && screen ? sectionAbove(screen, el.line) : undefined;
           const g = guard(rule.rule, el, !!prop && /\.trim\(\)/.test(prop.value));
           const rk = `${d.id}|${rule.json}`;
           if (!reachable.has(rk)) reachable.set(rk, new Set());
@@ -238,11 +265,11 @@ export function impact(opts: ImpactOptions): ImpactReport {
           hops.push({ label: 'The page sends it', file: c.file, line: c.line, quote: callText(c), rule: c.verbChoice ? `${c.verbChoice.param} ? '${c.verbChoice.ifTrue}' : '${c.verbChoice.ifFalse}': this route ${new RegExp(`:${c.verbChoice.param}\\b`).test(r.path) ? 'has' : 'has no'} :${c.verbChoice.param}, so it sends ${verb}` : `${verb} ${c.tpl}` });
           if (prop) hops.push({ label: 'Which field', file: c.file, line: prop.line, quote: rule.json, rule: `payload key ${rule.json} ← ${prop.value}` });
           else if (c.payload?.whole && c.payload.line) hops.push({ label: 'Which field', file: c.file, line: c.payload.line, quote: c.payload.whole.split('.')[0]!, rule: `the whole ${c.payload.whole} is sent, so ${rule.json} is ${c.payload.whole}.${rule.json}` });
-          if (el) hops.push({ label: 'The field', file: c.file, line: el.line, quote: model ?? '', rule: g.why });
+          if (el) hops.push({ label: 'The field', file: el.file ?? screen?.file ?? c.file, line: el.line, quote: el.attrs['formControlName'] ? rule.json : model ?? '', rule: g.why });
           const rr = ui.routes.find((x) => x.path === r.path)!;
           hops.push({ label: 'Screen', file: rr.file, line: rr.line, quote: routeQuote(rr), rule: `route ${r.path} → ${fileName(c.file)}` });
           const v = tryValue(rule.rule);
-          const button = comp ? submitLabel(comp, verb) : 'save';
+          const button = screen ? submitLabel(screen, verb) : 'save';
           if (g.reach === 'no') {
             addCase({ surface: sid, delta: d.id, tier: 'skip', ...(section ? { section } : {}), field: label ?? rule.json, do: `Not reachable from this screen`, expect: g.why, before: '—', after: '—', proof: 'derived', hops });
             continue;
@@ -341,12 +368,12 @@ export function impact(opts: ImpactOptions): ImpactReport {
               if (reach && !reach.has('yes') && !reach.has('unknown')) {
                 // the form that edits it already blocked such a value before this change
                 const sec0 = sectionAbove(comp, show.line);
-                addCase({ surface: rsid, delta: d.id, tier: 'skip', ...(sec0 ? { section: sec0 } : {}), field: show.label || rule.json, do: `Do not test stored rows with ${tryValue(rule.rule).plain} in ${show.label || rule.json}`, expect: 'The edit form blocked such a value before this change too, so nothing changes here.', before: '—', after: '—', proof: 'derived', hops: [...hops, { label: 'Shown here', file, line: show.line, quote: rule.json, rule: `${show.label || rule.json}: ${show.expr}` }] });
+                addCase({ surface: rsid, delta: d.id, tier: 'skip', ...(sec0 ? { section: sec0 } : {}), field: show.label || rule.json, do: `Do not test stored rows with ${tryValue(rule.rule).plain} in ${show.label || rule.json}`, expect: 'The edit form blocked such a value before this change too, so nothing changes here.', before: '—', after: '—', proof: 'derived', hops: [...hops, { label: 'Shown here', file: show.file ?? file, line: show.line, quote: rule.json, rule: `${show.label || rule.json}: ${show.expr}` }] });
                 continue;
               }
               surface({ id: rsid, kind: 'screen', name: screenName(comp, r.path), where: r.path, tier: 'test-next' });
-              const rh: Hop[] = [...hops, { label: 'Shown here', file, line: show.line, quote: rule.json, rule: `${show.label || rule.json}: ${show.expr}` }];
-              if (link) rh.push({ label: 'The way to edit it', file, line: link.line, quote: 'router-link', rule: `"${link.text}" opens the form that now refuses such rows` });
+              const rh: Hop[] = [...hops, { label: 'Shown here', file: show.file ?? file, line: show.line, quote: rule.json, rule: `${show.label || rule.json}: ${show.expr}` }];
+              if (link) rh.push({ label: 'The way to edit it', file: link.file ?? file, line: link.line, quote: link.file ? 'routerLink' : 'router-link', rule: `"${link.text}" opens the form that now refuses such rows` });
               const sec = sectionAbove(comp, show.line);
               addCase({ surface: rsid, delta: d.id, tier: 'test-next', ...(sec ? { section: sec } : {}), field: show.label || rule.json, do: `Open a record whose ${show.label || rule.json} already breaks ${rule.rule}${link ? `, press ${link.text}` : ''}, save without changing anything.`, expect: 'Rejected until the value is fixed.', before: 'Saved.', after: 'Rejected (400).', proof: 'derived', hops: rh });
             }
@@ -501,7 +528,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const left = real.filter((n) => !ex.has(n) && !fo.has(n));
     const removedLeft = removedReal.filter((n) => !fob.has(n));
     const anyFollowed = real.some((n) => fo.has(n)) || removedReal.some((n) => fob.has(n));
-    if (!left.length && !removedLeft.length) ledger.push({ file: cf.path, status: real.some((n) => ex.has(n)) && !anyFollowed ? 'explained' : anyFollowed ? 'followed' : by.length ? 'explained' : 'no-runtime-effect', kind, ...(anyFollowed ? { reason: 'followed to where it runs; what it does is not typed' } : !real.length && !removedReal.length ? { reason: 'only blank lines, comments or imports changed' } : {}), by, lines: [] });
+    // only whitespace moved: whatever cites the file, nothing in it changed
+    const reformatted = !!cf.whitespaceOnly && !cf.hunks.length;
+    if (!left.length && !removedLeft.length) ledger.push({ file: cf.path, status: reformatted ? 'no-runtime-effect' : real.some((n) => ex.has(n)) && !anyFollowed ? 'explained' : anyFollowed ? 'followed' : by.length ? 'explained' : 'no-runtime-effect', kind, ...(anyFollowed ? { reason: 'followed to where it runs; what it does is not typed' } : !real.length && !removedReal.length ? { reason: cf.whitespaceOnly && !cf.hunks.length ? 'only whitespace moved (indentation, line breaks)' : 'only blank lines, comments or imports changed' } : {}), by, lines: [] });
     else ledger.push({ file: cf.path, status: 'not-modelled', kind, reason: removedLeft.length && !left.length ? `lines removed (base ${removedLeft.slice(0, 8).join(', ')}) and nothing followed what used them` : 'nothing followed these lines', by, lines: left, ...(removedLeft.length ? { removed: removedLeft } : {}) });
   }
   const unfollowed = ledger.filter((l) => l.status === 'not-modelled');
@@ -521,7 +550,8 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const touchedPaths = [...touched].map((e) => ({ e, exp: exposedAs(fh, e) }));
   const hitsTouched = (c: { tpl: string; verbs: readonly string[] }): boolean => touchedPaths.some(({ e, exp }) => c.verbs.includes(e.verb) && (templateHits(c.tpl, exp ? exp.path : e.path) || templateHits(c.tpl, e.path)));
   let held = 0;
-  for (const r of deltas.length ? ui.routes : []) {
+  // with lines nothing followed, every screen is held, even when nothing at all was modelled
+  for (const r of deltas.length || unfollowed.length ? ui.routes : []) {
     const id = `screen:${r.path}`;
     if (surfaces.has(id)) continue;
     if (!canSkip) { held++; continue; }
@@ -550,7 +580,17 @@ export function impact(opts: ImpactOptions): ImpactReport {
   for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue and Angular front ends, not ${u.framework} yet, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
 
   /* ---------- 4. what could not be seen ---------- */
-  if (deltas.some((d) => d.endpoint)) unseen.push({ what: `callers outside this repository of ${[...new Set(deltas.map((d) => d.endpoint).filter(Boolean))].join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });
+  // every changed line nothing followed is named, with the line itself: never a silent "unknown"
+  for (const l of unfollowed) {
+    const side = l.lines.length ? H : B;
+    const ns = l.lines.length ? l.lines : l.removed ?? [];
+    const sample = ns.slice(0, 2).map((n) => `${n}: ${(side.line(l.file, n) ?? '').trim().slice(0, 60)}`).join('; ');
+    unseen.push({ what: `what ${l.file} changes (${l.lines.length ? 'line' : 'removed line'}${ns.length === 1 ? '' : 's'} ${sample}${ns.length > 2 ? '; …' : ''})`, why: `no rule in this build follows ${l.kind ?? 'this kind of'} change${l.kind ? 's' : ''} like this to where it lands, so nothing it affects is ruled out`, resolve: 'read these lines and test what uses them', files: [l.file] });
+  }
+  const ruleApis = [...new Set(deltas.filter((d) => d.kind === 'request-rules-enforced' || d.kind === 'request-rules-relaxed').map((d) => d.endpoint).filter(Boolean))];
+  if (ruleApis.length) unseen.push({ what: `callers outside this repository of ${ruleApis.join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 400 for the values listed above', resolve: 'check gateway access logs for other callers of these paths' });
+  const goneApis = deltas.filter((d) => d.id.startsWith('api-gone:')).map((d) => d.endpoint);
+  if (goneApis.length) unseen.push({ what: `callers outside this repository of ${goneApis.join(', ')}`, why: 'mobile apps, partner systems and scripts are not in the code; they now get 404 or 405', resolve: 'check gateway access logs for callers of these paths before release' });
   for (const c of fh.configRepos) {
     const local = opts.linked?.[c.uri];
     if (!local) unseen.push({ what: `runtime configuration in ${c.uri}`, why: `the config server serves properties from another repository (${fileName(c.file)}:${c.line}); error bodies, time zones and flags may be set there`, resolve: `pass that repository with --link ${c.uri}=<path>` });

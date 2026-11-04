@@ -43,6 +43,10 @@ export interface ApiCall {
   readonly resultType?: string;
   /** The URL starts with a base this reader cannot resolve (`${SERVER_API_URL}api/x`); taken as the server root. */
   readonly baseAssumed?: boolean;
+  /** The class and member the call is made in (`OrderService.cancel`), when known; `eager` when it runs on construction. */
+  readonly owner?: string;
+  readonly member?: string;
+  readonly eager?: boolean;
 }
 
 export type El = TplElement;
@@ -68,6 +72,9 @@ export interface Component {
   readonly packages: readonly string[];
   /** Ways data reaches it that this reader does not follow; a screen with any of these is never ruled out. */
   readonly opaque: readonly { readonly what: string; readonly line: number }[];
+  /** Members of app classes this file uses (`OrderService.list`), and the app classes it injects. */
+  readonly uses?: readonly string[];
+  readonly injects?: readonly string[];
 }
 
 export interface Global { readonly tag: string; readonly file: string; readonly root: string; readonly line: number }
@@ -80,6 +87,45 @@ export interface FrontendFacts {
   readonly files: readonly string[];
   /** Front-end code in a framework this reader does not read, by framework. */
   readonly unread: readonly { readonly framework: string; readonly files: number; readonly example: string; readonly paths: readonly string[] }[];
+  /**
+   * The app shell: what the entry point loads before any route (root component, app config, interceptors,
+   * guards of the root routes). It runs on every screen. Each file with the line that pulls it in.
+   */
+  readonly shell?: ReadonlyMap<string, { readonly from: string; readonly line: number }>;
+  /** `Cls.m` → members of the same class it uses through `this.` */
+  readonly memberCalls?: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * Does a screen whose code is `files` make this call? When the call's class and member are known, only if
+ * something on the screen uses that member (or, for a call made on construction, injects the class). Without
+ * that knowledge, any screen that runs the file is taken to make it. This is for claims; whether a screen can be
+ * ruled out stays with the wider file-level answer.
+ */
+export function callMadeBy(ui: FrontendFacts, files: ReadonlySet<string>, c: ApiCall): boolean {
+  if (!files.has(c.file)) return false;
+  if (!c.owner || !c.member) return true;
+  const comp = ui.components.get(c.file);
+  // a component's own method: its template and lifecycle call it
+  if (comp && comp.elements.length + comp.shows.length + comp.links.length > 0) return true;
+  const uses = new Set<string>();
+  const injects = new Set<string>();
+  for (const f of files) {
+    const k = ui.components.get(f);
+    for (const u of k?.uses ?? []) uses.add(u);
+    for (const i of k?.injects ?? []) injects.add(i);
+  }
+  if (c.eager) return injects.has(c.owner) || uses.has(`${c.owner}.${c.member}`) || [...uses].some((u) => u.startsWith(`${c.owner}.`));
+  // members reach other members of the same class through `this.`
+  const want = `${c.owner}.${c.member}`;
+  const queue = [...uses].filter((u) => u.startsWith(`${c.owner}.`));
+  const seen = new Set(queue);
+  while (queue.length) {
+    const u = queue.shift()!;
+    if (u === want) return true;
+    for (const n of ui.memberCalls?.get(u) ?? []) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+  }
+  return false;
 }
 
 const HTTP_CALL = /^(fetch|axios(\.(get|post|put|patch|delete|request))?|http\.(get|post|put|patch|delete)|\$http\.(get|post|put|patch|delete)|api\.(get|post|put|patch|delete))$/;

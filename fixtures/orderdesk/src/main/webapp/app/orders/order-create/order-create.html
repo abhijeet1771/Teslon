@@ -1,0 +1,26 @@
+<h2>New order</h2>
+<form [formGroup]="form" (ngSubmit)="submit()">
+  <label for="customer">Customer</label>
+  <select id="customer" formControlName="customerId">
+    @for (c of customers(); track c.id) {
+      <option [ngValue]="c.id">{{ c.name }} ({{ c.email }})</option>
+    }
+  </select>
+  <div formArrayName="lines">
+    @for (line of form.controls.lines.controls; track $index; let i = $index) {
+      <div [formGroupName]="i" class="line">
+        <label [for]="'product' + i">Product</label>
+        <select [id]="'product' + i" formControlName="productId">
+          @for (p of products.products.value() ?? []; track p.id) {
+            <option [ngValue]="p.id">{{ p.name }} ({{ p.sku }})</option>
+          }
+        </select>
+        <input type="number" formControlName="quantity" min="1" max="99" />
+      </div>
+    }
+  </div>
+  <button type="button" (click)="addLine()">Add line</button>
+  <label for="note">Note</label>
+  <textarea id="note" formControlName="note" maxlength="500"></textarea>
+  <button type="submit" [disabled]="form.invalid">Place order</button>
+</form>

@@ -1,0 +1,20 @@
+<h2>Dashboard</h2>
+<section>
+  <h3>Recent orders</h3>
+  <ul>
+    @for (o of recent().slice(0, 5); track o.id) {
+      <li>
+        <a [routerLink]="['/orders', o.id]">#{{ o.id }}</a> {{ o.customerName }}
+        <app-status-badge [status]="o.status" /> {{ o.total | money }}
+      </li>
+    }
+  </ul>
+</section>
+<section>
+  <h3>Low stock</h3>
+  <ul>
+    @for (p of lowStock(); track p.id) {
+      <li>{{ p.name }}: {{ p.stock }} left</li>
+    }
+  </ul>
+</section>

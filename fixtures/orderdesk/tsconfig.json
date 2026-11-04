@@ -1,0 +1,14 @@
+{
+  // shared by the app and the tests
+  "compilerOptions": {
+    "baseUrl": "./",
+    "paths": {
+      "app/*": ["src/main/webapp/app/*"]
+    },
+    "strict": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "dom"]
+  }
+}

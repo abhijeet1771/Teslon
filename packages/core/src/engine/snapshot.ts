@@ -75,10 +75,27 @@ export interface ChangedFile {
   readonly baseLines: readonly number[];
   /** Each diff hunk: the base lines it replaces and the head lines it puts in their place. */
   readonly hunks: readonly { readonly base: readonly number[]; readonly head: readonly number[] }[];
+  /** Hunks left out because only whitespace moved (indentation, line breaks) in a language where it means nothing. */
+  readonly whitespaceOnly?: number;
 }
 
+/** Languages where indentation and line breaks between tokens do not change what the code does. */
+const WHITESPACE_FREE = /\.(java|kt|kts|scala|groovy|ts|tsx|js|jsx|mjs|cjs|vue|html?|s?css|less|xml|json|cs|go|c|cc|cpp|h|hpp|swift|dart|php|rb|sql)$/;
+
 export function changedFiles(repo: string, base: string, head: string): ChangedFile[] {
-  const out = git(repo, ['diff', '--no-renames', '-U0', '--no-color', base, head]);
+  const normal = parseDiff(git(repo, ['diff', '--no-renames', '-U0', '--no-color', base, head]));
+  // the same diff blind to changes in the amount of whitespace: a reindent is not a change in what code does
+  const loose = new Map(parseDiff(git(repo, ['diff', '--no-renames', '-U0', '--no-color', '-b', base, head])).map((f) => [f.path, f]));
+  return normal.map((f) => {
+    if (!WHITESPACE_FREE.test(f.path) || f.status !== 'modified') return f;
+    const l = loose.get(f.path);
+    const dropped = f.hunks.length - (l?.hunks.length ?? 0);
+    if (!l) return { path: f.path, status: f.status, headLines: [], baseLines: [], hunks: [], whitespaceOnly: Math.max(1, dropped) };
+    return dropped > 0 || l.headLines.length !== f.headLines.length ? { ...l, whitespaceOnly: Math.max(1, dropped) } : f;
+  });
+}
+
+function parseDiff(out: string): ChangedFile[] {
   const files: ChangedFile[] = [];
   let cur: { path: string; status: ChangedFile['status']; headLines: number[]; baseLines: number[]; hunks: { base: number[]; head: number[] }[] } | null = null;
   let oldPath = '';
