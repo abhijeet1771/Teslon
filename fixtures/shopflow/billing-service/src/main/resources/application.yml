@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: billing-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/billing
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: billing
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.shopflow.events
+billing:
+  provider: stripe
+  tax-rate: 0.19
+  stripe:
+    api-key: ${STRIPE_API_KEY:}
+server:
+  port: 8082

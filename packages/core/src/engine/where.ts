@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import type { Snapshot, ChangedFile } from './snapshot.js';
 import { exposedAs, templateHits, type SpringFacts, type Endpoint } from './spring.js';
-import { targetsRoute, routeQuote, callMadeBy, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
+import { targetsRoute, routeQuote, callMadeBy, usesMembers, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
 import { annStrings, type JType, type JMethod } from './java.js';
 import type { Delta, Surface, Case, Hop, Unseen, Tier } from './model.js';
 import { fileKind } from './kinds.js';
@@ -37,6 +37,12 @@ export interface WhereCtx {
   readonly touched: Set<Endpoint>;
   /** Front-end files that changed, at head or deleted. */
   readonly touchedUi: Set<string>;
+  /** Broker listeners whose way of receiving changed (a setting, a topic), found here and followed into the data they write. */
+  readonly receiving?: { cls: string; method: string; why: string; hop: Hop }[];
+  /** Methods that behave differently without a changed line in them (a setting they read): what they return may be written. */
+  readonly affected?: { at: string; hop: Hop }[];
+  /** Front-end modules where only named members changed: the members, so a screen that uses none of them is ruled out. */
+  readonly uiMembers?: Map<string, { owner: string; member: string; line: number }[]>;
 }
 
 const fileName = (p: string): string => p.split('/').pop() ?? p;
@@ -230,7 +236,7 @@ function describe(el: Component['elements'][number], comp: Component): string {
 }
 
 /** The dotted key of a YAML line: its own key and those of the lines it is nested under. */
-function yamlKey(lines: readonly string[], n: number): string | null {
+export function yamlKey(lines: readonly string[], n: number): string | null {
   const own = /^(\s*)(?:-\s+)?([\w.\-"']+)\s*:/.exec(lines[n - 1] ?? '');
   if (!own) return null;
   const parts = [own[2]!.replace(/["']/g, '')];
@@ -497,7 +503,7 @@ export function followChanges(ctx: WhereCtx): void {
     if (depth < 2) {
       // another service calls this endpoint: what reaches that call reaches this change
       for (const jc of fh.calls.filter((x) => x.service === e.service && x.verb === e.verb && templateHits(x.tpl, e.path))) {
-        const hop: Hop = { label: 'Another service calls it', file: jc.file, line: jc.line, quote: 'uri', rule: `${jc.cls}.${jc.method}() · ${jc.how}` };
+        const hop: Hop = { label: 'Another service calls it', file: jc.file, line: jc.line, quote: jc.how.startsWith('@FeignClient') ? 'Mapping' : 'uri', rule: `${jc.cls}.${jc.method}() · ${jc.how}` };
         for (const r of reachFrom(fh, `${jc.cls}.${jc.method}`)) n += entry(r, [...chain, apiHop, hop, ...r.hops], deltaId, why, depth + 1);
       }
     }
@@ -665,6 +671,8 @@ export function followChanges(ctx: WhereCtx): void {
           reached += followType(outer, outer, [changed, { label: 'Part of', file: cf.path, line: g.type.line, quote: simple(g.type.name), rule: `${g.type.name} is declared inside ${outer}` }], id, why, starts);
         }
         const late = starts.splice(0);
+        // an accessor is also read by Java code: o.getCustomer().getName() in a service that builds another answer
+        if (g.method && !ctor && isAccessor(g.method)) late.push({ at: `${cls}.${g.method.name}`, lead: [] });
         for (const st of late) for (const r of reachFrom(fh, st.at)) reached += entry(r, [changed, ...st.lead, ...r.hops], id, why);
         dataType = true;
       }
@@ -672,6 +680,10 @@ export function followChanges(ctx: WhereCtx): void {
         for (const n of g.lines) ctx.follow(cf.path, n);
         for (const n of g.baseLines) ctx.follow(cf.path, n, 'base');
         ctx.deltas.push({ id, kind: 'code-changed', title: why, endpoint: '', rules: [], causes: [changed] });
+      } else if (!g.gone && g.lines.length && cf.hunks.every((h) => h.base.every((n) => trivial((B.line(cf.path, n) ?? '').trim()))) && g.lines.every((n) => newConstantUnused(cf.path, n))) {
+        // only new constants that no file names: nothing reads them yet
+        for (const n of g.lines) ctx.follow(cf.path, n);
+        ctx.noEffect(cf.path, 'only new constants that nothing in this repository uses yet');
       } else if (cf.status === 'added' && !g.gone && unused(cls, cf.path, g.type)) {
         // a new class no other file names, with nothing the framework starts on its own: nothing runs it yet
         for (const n of g.lines) ctx.follow(cf.path, n);
@@ -680,6 +692,17 @@ export function followChanges(ctx: WhereCtx): void {
         ctx.unseen.push({ what: `${g.gone ? 'removed' : 'changed'} code in ${g.method ? `${cls}.${g.method.name}()` : cls} (${fileName(cf.path)}:${at})`, why: 'it reaches no API, job, AI tool or screen this build can see: it may be called through reflection, events, an unresolved interface, or only from tests', resolve: 'ask the developer where it runs', files: [cf.path] });
       }
     }
+  }
+
+  /** A line that declares a constant (static final) whose name appears nowhere else. */
+  function newConstantUnused(path: string, n: number): boolean {
+    const text = (H.line(path, n) ?? '').trim();
+    if (trivial(text)) return true;
+    const m = /^(?:(?:public|private|protected)\s+)?static\s+final\s+[\w<>,.?[\]\s]+?\s+(\w+)\s*=.*;\s*$/.exec(text);
+    if (!m) return false;
+    const word = new RegExp(`\\b${m[1]}\\b`, 'g');
+    if (((H.read(path) ?? '').match(word) ?? []).length !== 1) return false;
+    return !H.files.some((f) => f !== path && /\.(java|kt|groovy|ya?ml|properties|xml|[jt]sx?|vue)$/.test(f) && new RegExp(`\\b${m[1]}\\b`).test(H.read(f) ?? ''));
   }
 
   /** A class no other Java or front-end file names, with no annotation the framework acts on (a bean, an endpoint, a listener, an entity). */
@@ -789,6 +812,82 @@ export function followChanges(ctx: WhereCtx): void {
     return n;
   }
 
+  /* ---------- another service reads this API with its own type: a field the API no longer sends arrives empty there ---------- */
+  {
+    const jsonNames = (f: SpringFacts, module: string, type: string): Set<string> | null => { const d = f.dto(module, type); return d ? new Set(d.fields.map((x) => x.json)) : null; };
+    for (const e of fh.endpoints) {
+      const eb = fb.endpoints.find((x) => x.verb === e.verb && x.path === e.path && x.service === e.service);
+      const rt = e.returns.match(/[A-Z]\w*/g)?.filter((x) => !/^(List|Set|Collection|Optional|ResponseEntity|Page|Mono|Flux|Map|String|Long|Integer|Object|Void)$/.test(x)) ?? [];
+      if (!eb || rt.length !== 1) continue;
+      const nowSent = jsonNames(fh, e.module, rt[0]!), wasSent = jsonNames(fb, eb.module, rt[0]!);
+      if (!nowSent || !wasSent) continue;
+      const gone = [...wasSent].filter((x) => !nowSent.has(x));
+      if (!gone.length) continue;
+      const dtoNow = fh.dto(e.module, rt[0]!)!;
+      for (const c of fh.calls.filter((x) => x.service === e.service && x.verb === e.verb && templateHits(x.tpl, e.path))) {
+        const ct = [...fh.javaFiles.values()].flatMap((jf) => jf.types).find((t) => simple(t.name) === c.cls);
+        const m = ct?.methods.find((x) => x.name === c.method);
+        const consumer = m?.returnType.match(/[A-Z]\w*/g)?.filter((x) => !/^(List|Set|Optional|ResponseEntity|Mono|Flux)$/.test(x))[0];
+        const reads = consumer ? fh.dto(c.module, consumer) : undefined;
+        if (!reads) continue;
+        for (const fl of reads.fields.filter((x) => gone.includes(x.json))) {
+          const id = `contract-java:${reads.name}.${fl.json}`;
+          const readHop: Hop = { label: 'Another service reads', file: reads.file, line: fl.line, quote: fl.name, rule: `${reads.name}.${fl.name} in ${fh.serviceOf(reads.file) ?? c.module} is read from "${fl.json}" of ${e.service}'s ${e.verb} ${e.path}` };
+          const sendHop: Hop = { label: 'The API sends', file: dtoNow.file, line: dtoNow.line, quote: dtoNow.name, rule: `${dtoNow.name} as JSON now: ${[...nowSent].join(', ')}; no "${fl.json}"` };
+          const callHop: Hop = { label: 'Called by', file: c.file, line: c.line, quote: c.how.startsWith('@FeignClient') ? 'Mapping' : 'uri', rule: `${c.cls}.${c.method}() · ${c.how}` };
+          const why = `${reads.name}.${fl.name} (${fh.serviceOf(reads.file) ?? c.module}) arrives empty: ${e.service} no longer sends "${fl.json}"`;
+          let n = 0;
+          for (const r of reachFrom(fh, `${c.cls}.${c.method}`)) n += entry(r, [sendHop, readHop, callHop, ...r.hops], id, why);
+          if (!ctx.deltas.some((d) => d.id === id)) ctx.deltas.push({ id, kind: 'response-shape-changed', title: `${reads.name}.${fl.json} is read by ${fh.serviceOf(reads.file) ?? c.module}, but ${dtoNow.name} no longer sends "${fl.json}"`, endpoint: '', rules: [], causes: [sendHop, readHop] });
+          if (!n) ctx.unseen.push({ what: `${fh.serviceOf(reads.file) ?? c.module}'s use of ${reads.name}.${fl.name}`, why, resolve: `rename ${reads.name}.${fl.name} in the same release, or keep sending "${fl.json}"` });
+        }
+      }
+    }
+  }
+
+  /* ---------- feature switches: @EnableAsync and friends change how every method they govern runs ---------- */
+  const SWITCHES: Record<string, { anns: string[]; how: string }> = {
+    Async: { anns: ['Async'], how: 'runs on another thread, and its caller does not wait' },
+    Scheduling: { anns: ['Scheduled'], how: 'runs on its schedule' },
+    Caching: { anns: ['Cacheable', 'CachePut', 'CacheEvict', 'Caching'], how: 'answers from the cache' },
+    Retry: { anns: ['Retryable'], how: 'is retried when it fails' },
+    Kafka: { anns: ['KafkaListener'], how: 'receives from Kafka' },
+    Rabbit: { anns: ['RabbitListener'], how: 'receives from RabbitMQ' },
+    Jms: { anns: ['JmsListener'], how: 'receives from JMS' },
+    TransactionManagement: { anns: ['Transactional'], how: 'runs in a transaction' },
+  };
+  for (const cf of ctx.changes) {
+    if (fileKind(cf.path) !== 'java') continue;
+    for (const [side, S, f, ns] of [['head', H, fh, cf.headLines], ['base', B, fb, cf.baseLines]] as const) {
+      for (const n of ns) {
+        const m = /@Enable(Async|Scheduling|Caching|Retry|Kafka|Rabbit|Jms|TransactionManagement)\b/.exec(S.line(cf.path, n) ?? '');
+        if (!m) continue;
+        const sw = SWITCHES[m[1]!]!;
+        const module = f.moduleOf(cf.path);
+        const turned = side === 'head' ? (B.read(cf.path) ?? '').includes(`@Enable${m[1]}`) ? 'changed' : 'turned on' : (H.read(cf.path) ?? '').includes(`@Enable${m[1]}`) ? 'changed' : 'turned off';
+        const hop: Hop = { label: 'Switch changed', file: cf.path, line: n, quote: `Enable${m[1]}`, rule: `@Enable${m[1]} ${turned} in ${f.serviceOf(cf.path) ?? 'this service'}: every @${sw.anns[0]} method ${turned === 'turned off' ? 'no longer' : 'now'} ${sw.how}`, ...(side === 'base' ? { side: 'base' as const } : {}) };
+        const id = `switch:${cf.path}:${m[1]}`;
+        let reached = 0;
+        for (const [file, jf] of fh.javaFiles) {
+          if (fh.moduleOf(file) !== module) continue;
+          for (const t of jf.types) {
+            const onClass = t.annotations.find((a) => sw.anns.includes(a.name));
+            for (const meth of t.methods) {
+              const a = meth.annotations.find((x) => sw.anns.includes(x.name)) ?? onClass;
+              if (!a) continue;
+              const at = `${simple(t.name)}.${meth.name}`;
+              const annHop: Hop = { label: `@${a.name}`, file, line: a.line, quote: a.name, rule: `${at}() is @${a.name}` };
+              for (const r of reachFrom(fh, at)) reached += entry(r, [hop, annHop, ...r.hops], id, `@Enable${m[1]} ${turned}`);
+            }
+          }
+        }
+        if (!reached) continue;
+        ctx.follow(cf.path, n, side === 'base' ? 'base' : undefined);
+        if (!ctx.deltas.some((d) => d.id === id)) ctx.deltas.push({ id, kind: 'code-changed', title: hop.rule, endpoint: '', rules: [], causes: [hop] });
+      }
+    }
+  }
+
   /* ---------- configuration keys: application.yml / .properties, to the code that reads them ---------- */
   for (const cf of ctx.changes) {
     if (!/(^|\/)(application|bootstrap)[^/]*\.(ya?ml|properties)$/.test(cf.path)) continue;
@@ -838,6 +937,21 @@ export function followChanges(ctx: WhereCtx): void {
         ctx.deltas.push({ id, kind: 'code-changed', title: `${changed.rule}: nothing in this repository reads it`, endpoint: '', rules: [], causes: [changed, hop] });
         continue;
       }
+      // how a service receives from its broker (consumer settings, JSON trust, the listener container): its listeners, not its API
+      if (/^spring\.(kafka\.(consumer|listener|streams|bootstrap-servers)|kafka\.properties\.spring\.json|json\.|rabbitmq\.listener|jms\.listener)/.test(key) || /^spring\.kafka\.consumer\./.test(key)) {
+        const ls = fh.listeners.filter((l) => l.module === module && /^@(KafkaListener|RabbitListener|JmsListener|SqsListener)$/.test(l.kind));
+        if (ls.length) {
+          for (const l of ls) {
+            const sid = `job:${l.cls}.${l.method}`;
+            ctx.surface({ id: sid, kind: 'job', name: `${l.cls}.${l.method}() ${l.kind}`, where: l.file, tier: 'test-first' });
+            ctx.addCase({ surface: sid, delta: id, tier: 'test-first', do: `Publish what ${l.cls}.${l.method}() listens for${l.channels?.length ? ` (${l.channels.map((c) => c.name).join(', ')})` : ''} and check that it still receives and handles it.`, expect: `It receives every record as before. Risk: ${key} changes how ${service ?? 'the service'} reads records, and a record it cannot read is skipped or retried for ever.`, before: 'Received.', after: 'Receives with new settings.', proof: 'derived', hops: [changed, { label: 'Listens', file: l.file, line: l.line, quote: l.kind.replace('@', ''), rule: `${l.cls}.${l.method}() ${l.kind} in ${service ?? module}` }] });
+            ctx.receiving?.push({ cls: l.cls, method: l.method, why: `${key} changed how it receives`, hop: changed });
+          }
+          for (const n of lines) ctx.follow(cf.path, n, atHead ? undefined : 'base');
+          ctx.deltas.push({ id, kind: 'code-changed', title: `${changed.rule} (how ${service ?? 'the service'} receives messages)`, endpoint: '', rules: [], causes: [changed] });
+          continue;
+        }
+      }
       // framework settings that configure one client bean (mail, a message broker, a cache store): the code that uses that bean
       const client = CLIENT_KEYS.find(([re]) => re.test(key));
       const users: { at: string; lead: Hop[] }[] = [];
@@ -853,7 +967,7 @@ export function followChanges(ctx: WhereCtx): void {
         }
       }
       if (users.length) {
-        for (const u of users) for (const r of reachFrom(fh, u.at)) reached += entry(r, [changed, ...u.lead, ...r.hops], id, why);
+        for (const u of users) { ctx.affected?.push({ at: u.at, hop: changed }); for (const r of reachFrom(fh, u.at)) reached += entry(r, [changed, ...u.lead, ...r.hops], id, why); }
       } else if (/^(spring|server|management|logging)\./.test(key)) {
         // framework settings: every request of the service goes through them
         const note: Hop = { label: 'Read by the framework', file: cf.path, line: lines[0]!, quote: snippet(atHead ? now : before), rule: `${key.split('.').slice(0, 2).join('.')} configures ${service ?? 'the service'} as a whole`, ...(atHead ? {} : { side: 'base' as const }) };
@@ -861,6 +975,7 @@ export function followChanges(ctx: WhereCtx): void {
       } else {
         for (const rd of configReaders(fh, key)) {
           const hop: Hop = { label: 'Reads it', file: rd.file, line: rd.line, quote: rd.quote, rule: rd.how };
+          ctx.affected?.push({ at: rd.at, hop });
           for (const r of reachFrom(fh, rd.at)) reached += entry(r, [changed, hop, ...r.hops], id, why);
         }
       }
@@ -959,6 +1074,17 @@ export function followChanges(ctx: WhereCtx): void {
               reached++;
             }
           }
+        }
+        // jobs and listeners that write it (or load it, when every query breaks) fail the same way, with no screen to show it
+        if (breaks === 'writes' || breaks === 'all') for (const l of fh.listeners) {
+          const pseudo = { cls: l.cls, method: l.method, returns: '', body: null } as unknown as Endpoint;
+          if (!(breaks === 'all' ? loadsEntity(fh, pseudo, ent.name) : savesEntity(fh, pseudo, ent.name))) continue;
+          const sid = `job:${l.cls}.${l.method}`;
+          const why = op.kind === 'unique' ? `the database now refuses a second ${ent.name} with the same ${op.column}` : op.kind === 'retype' ? `${op.table}.${op.column} ${op.text.replace(/^changes \S+ /, 'becomes ')}, so a value that does not fit is refused or cut` : `${op.table} changed under ${ent.name}`;
+          ctx.surface({ id: sid, kind: 'job', name: `${l.cls}.${l.method}() ${l.kind}`, where: l.file, tier: 'test-first' });
+          ctx.affected?.push({ at: `${l.cls}.${l.method}`, hop: opHop });
+          ctx.addCase({ surface: sid, delta: id, tier: 'test-first', do: `Let ${l.cls}.${l.method}() run (or trigger it) after the migration.`, expect: `It ${breaks === 'writes' ? 'saves' : 'reads and saves'} ${words(ent.name)} rows as before. Risk: a database error, because ${why}.`, before: 'Worked.', after: 'Database error.', proof: 'derived', hops: [opHop, entHop, { label: 'Job', file: l.file, line: l.line, quote: l.kind.replace('@', ''), rule: `${l.cls}.${l.method}() ${l.kind} ${breaks === 'writes' ? 'saves' : 'loads'} ${ent.name}` }] });
+          reached++;
         }
       } else ctx.unseen.push({ what: `the ${op.table} table (${op.text})`, why: 'no entity in this repository maps it; another service or a report may read it', resolve: `search other repositories and reports for ${op.table}`, files: [cf.path] });
       if (reached) for (const n of op.lines) ctx.follow(cf.path, n);
@@ -1147,10 +1273,42 @@ export function followChanges(ctx: WhereCtx): void {
         if (real.every((n) => handled.has(n))) continue;
       }
     }
-    if (atHead && real.length && real.every((n) => movedLines.has(n))) continue;
-    if (!real.length) continue;
+    // a navigation guard runs on every navigation: the screens whose route meta it tests, or every screen
+    const guardLines = { head: [] as number[], base: [] as number[] };
+    {
+      const inG = (gs: readonly { file: string; line: number; endLine: number }[], n: number): boolean => gs.some((g) => g.file === cf.path && g.line <= n && n <= g.endLine);
+      if (atHead) guardLines.head = real.filter((n) => inG(ui.guards ?? [], n));
+      guardLines.base = cf.baseLines.filter((n) => inG(ub.guards ?? [], n) && !trivial((B.line(cf.path, n) ?? '').trim()));
+      if (guardLines.head.length || guardLines.base.length) {
+        const hitG = [...(ui.guards ?? []).filter((g) => g.file === cf.path && guardLines.head.some((n) => g.line <= n && n <= g.endLine)), ...(ub.guards ?? []).filter((g) => g.file === cf.path && guardLines.base.some((n) => g.line <= n && n <= g.endLine))];
+        const keys = new Set(hitG.flatMap((g) => g.meta));
+        const gHop: Hop = guardLines.head.length
+          ? { label: 'Guard changed', file: cf.path, line: guardLines.head[0]!, quote: snippet(H.line(cf.path, guardLines.head[0]!)), rule: `a navigation guard in ${fileName(cf.path)} changed; it runs before every screen opens` }
+          : { label: 'Guard changed', file: cf.path, line: guardLines.base[0]!, quote: snippet(B.line(cf.path, guardLines.base[0]!)), side: 'base', rule: `a navigation guard in ${fileName(cf.path)} changed or was removed; it ran before every screen opened` };
+        const guarded = [...new Map([...ui.routes, ...ub.routes].filter((r) => r.meta?.some((k) => keys.has(k))).map((r) => [r.path, r])).values()];
+        if (guarded.length) for (const r of guarded) {
+          const sid = `screen:${r.path}`;
+          const title = screenTitle(ui.components.get(r.component) ?? ub.components.get(r.component), r.path);
+          ctx.surface({ id: sid, kind: 'screen', name: title, where: r.path, tier: 'test-first' });
+          ctx.addCase({ surface: sid, delta: `ui:${cf.path}`, tier: 'test-first', do: `Open ${r.path} as a user the guard should stop, and as one it should let through.`, expect: 'Only the users it should let in get in.', before: 'Guarded as released.', after: 'Guard changed.', proof: 'derived', hops: [gHop, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path} has meta ${r.meta!.filter((k) => keys.has(k)).join(', ')}, which the guard tests` }] });
+        }
+        else {
+          ctx.surface({ id: 'screen:*', kind: 'screen', name: 'Every screen', where: `${ui.routes.length} screens`, tier: 'test-next' });
+          ctx.addCase({ surface: 'screen:*', delta: `ui:${cf.path}`, tier: 'test-next', do: 'Open each screen, directly and by its links, signed in and signed out.', expect: 'Each opens for the users it should, as before.', before: 'As released.', after: 'Guard changed.', proof: 'derived', hops: [gHop] });
+        }
+        for (const n of guardLines.head) ctx.follow(cf.path, n);
+        for (const n of guardLines.base) ctx.follow(cf.path, n, 'base');
+        if (!ctx.deltas.some((d) => d.id === `ui:${cf.path}`)) ctx.deltas.push({ id: `ui:${cf.path}`, kind: 'ui-changed', title: `${fileName(cf.path)}: navigation guard changed`, endpoint: '', rules: [], causes: [gHop] });
+      }
+    }
+    if (atHead && real.length && real.every((n) => movedLines.has(n) || guardLines.head.includes(n))) continue;
+    // lines only removed (a link, a column): the screens that run the file lost them
+    const removedOnly = atHead && !real.length ? cf.baseLines.filter((n) => !erasedBase.has(n) && !trivial((B.line(cf.path, n) ?? '').trim()) && !guardLines.base.includes(n) && !movedLines.has(n)) : [];
+    if (!real.length && !removedOnly.length) continue;
     ctx.touchedUi.add(cf.path);
-    const changedHop: Hop = atHead
+    const changedHop: Hop = atHead && !real.length
+      ? { label: 'Removed', file: cf.path, line: removedOnly[0]!, quote: snippet(B.line(cf.path, removedOnly[0]!)), side: 'base', rule: `${fileName(cf.path)} lost ${removedOnly.length} line${removedOnly.length === 1 ? '' : 's'}` }
+      : atHead
       ? { label: 'Changed', file: cf.path, line: real[0]!, quote: snippet(H.line(cf.path, real[0]!)), rule: `${fileName(cf.path)} changed (${real.length} line${real.length === 1 ? '' : 's'})` }
       : { label: 'Deleted', file: cf.path, line: 1, quote: '', side: 'base', rule: `${fileName(cf.path)} was deleted` };
     // styles: whoever imports them by name
@@ -1186,11 +1344,35 @@ export function followChanges(ctx: WhereCtx): void {
     const changedEls = comp ? comp.elements.filter((e) => (e.file ?? comp.file) === cf.path && real.includes(e.line)).map((e) => describe(e, comp)) : [];
     const changedCalls = u.calls.filter((c) => c.file === cf.path && real.includes(c.line));
     const what = kind === 'style' ? 'how it looks (styles changed)' : changedEls.length ? [...new Set(changedEls)].slice(0, 6).join(', ') : `what ${fileName(cf.path)} draws or does`;
+    // every changed line inside named members of a module (an API object's method, a store's getter, a helper): the screens that use those members
+    const memberOnly = ((): { owner: string; member: string }[] | null => {
+      const mem = u.components.get(cf.path)?.members;
+      const memB = ub.components.get(cf.path)?.members;
+      if (!mem || kind !== 'frontend' || cf.path.endsWith('.vue')) return null;
+      const hit: { owner: string; member: string }[] = [];
+      const inMem = (ms: typeof mem, n: number): boolean => { const m = ms.filter((x) => x.start <= n && n <= x.end).sort((a, b) => (a.end - a.start) - (b.end - b.start))[0]; if (!m) return false; if (!hit.some((h) => h.owner === m.owner && h.member === m.member)) hit.push({ owner: m.owner, member: m.member }); return true; };
+      if (!real.every((n) => inMem(mem, n))) return null;
+      if (!(atHead ? cf.baseLines.filter((n) => !trivial((B.line(cf.path, n) ?? '').trim()) && !erasedBase.has(n)) : []).every((n) => memB && inMem(memB, n))) return null;
+      // a member another member of the module uses changes that one too
+      const text = S.read(cf.path) ?? '';
+      const lines = text.split('\n');
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const mm of mem) {
+          if (hit.some((h) => h.owner === mm.owner && h.member === mm.member)) continue;
+          const body = lines.slice(mm.start - 1, mm.end).join('\n');
+          if (hit.some((h) => new RegExp(`\\b${h.member === '()' ? h.owner : h.member}\\b`).test(body))) { hit.push({ owner: mm.owner, member: mm.member }); grew = true; }
+        }
+      }
+      return hit.length ? hit : null;
+    })();
+    if (memberOnly) ctx.uiMembers?.set(cf.path, memberOnly.map((m) => ({ ...m, line: (u.components.get(cf.path)?.members ?? []).find((x) => x.owner === m.owner && x.member === m.member)?.start ?? 1 })));
+    const usesMember = (files: ReadonlySet<string>): boolean => !memberOnly || usesMembers(u, files, cf.path, memberOnly);
     const screens = targets.includes('*') || everyScreen(u, S, cf.path) ? null : allScreens(u).filter((r) => targets.some((t) => {
       const seen = new Set<string>();
       const walk = (f: string, d: number): boolean => { if (f === t) return true; if (seen.has(f) || d > 8) return false; seen.add(f); return (u.components.get(f)?.deps ?? []).some((x) => walk(x, d + 1)); };
       return walk(r.component, 0);
-    }));
+    }) && (!memberOnly || usesMember(ctx.closure(r.component)) || !ctx.closure(r.component).has(cf.path) ));
     let reached = 0;
     const defined = u.routes.filter((r) => r.file === cf.path && real.some((n) => Math.abs(n - r.line) <= 1));
     for (const r of defined) {
@@ -1231,6 +1413,38 @@ export function followChanges(ctx: WhereCtx): void {
       const via = (targets.map((t) => importChain(u, g.file, t)).find((x) => x) ?? []).map((h) => (atHead ? h : { ...h, side: 'base' as const }));
       ctx.addCase({ surface: sid, delta: id, tier: 'test-next', do: `Use <${g.tag}> and check ${what}.`, expect: `Works as before: it runs ${fileName(cf.path)}, which changed.`, before: 'As released.', after: 'Runs changed code.', proof: 'derived', hops: atHead ? [changedHop, ...via, { label: 'On every screen', file: g.root, line: g.line, quote: g.quote ?? `<${g.tag}`, rule: `<${g.tag}> is ${g.how ?? 'drawn beside <router-view>'}` }] : [changedHop, ...via] });
       reached++;
+    }
+    // a key the page now sends that no request type of the API has, in place of one it has: a renamed payload field
+    if (atHead && screens !== null && /\.(vue|[jt]sx?)$/.test(cf.path)) {
+      const fields = new Map<string, { dto: string; file: string; line: number; rules: string }>();
+      const seenT = new Set<string>();
+      const walkT = (module: string, type: string, depth: number): void => {
+        for (const id0 of type.match(/[A-Z]\w*/g) ?? []) {
+          const d = fh.dto(module, id0);
+          if (!d || seenT.has(`${module}|${id0}`) || depth > 3) continue;
+          seenT.add(`${module}|${id0}`);
+          for (const fl of d.fields) { if (!fields.has(fl.json)) fields.set(fl.json, { dto: d.name, file: d.file, line: fl.line, rules: fl.constraints.map((x) => x.rule).join(' ') }); walkT(module, fl.type, depth + 1); }
+        }
+      };
+      for (const e of fh.endpoints) if (e.body) walkT(e.module, e.body.type, 0);
+      const keys = (S0: Snapshot, ns: readonly number[]): Map<string, number> => { const out = new Map<string, number>(); for (const n of ns) for (const m of (S0.line(cf.path, n) ?? '').matchAll(/[{,]\s*(\w+)\s*:/g)) if (!out.has(m[1]!)) out.set(m[1]!, n); return out; };
+      for (const h of cf.hunks) {
+        const kb = keys(B, h.base), kh = keys(H, h.head);
+        const gone = [...kb.keys()].filter((k) => !kh.has(k) && fields.has(k));
+        const added = [...kh.keys()].filter((k) => !kb.has(k) && !fields.has(k));
+        if (!gone.length || !added.length) continue;
+        const was = gone[0]!, now = added[0]!, fd = fields.get(was)!;
+        const did = `payload:${cf.path}:${was}`;
+        const keyHop: Hop = { label: 'The page now sends', file: cf.path, line: kh.get(now)!, quote: now, rule: `the payload key ${was} became ${now}` };
+        const apiHop: Hop = { label: 'The API reads', file: fd.file, line: fd.line, quote: was, rule: `${fd.dto}.${was}${fd.rules ? ` ${fd.rules}` : ''}; no request type of the API has a field ${now}` };
+        for (const r of screens) {
+          const sid = `screen:${r.path}`;
+          const title = screenTitle(u.components.get(r.component), r.path);
+          ctx.surface({ id: sid, kind: 'screen', name: title, where: r.path, tier: 'test-first' });
+          ctx.addCase({ surface: sid, delta: did, tier: 'test-first', field: was, do: `On ${title}, submit what sends ${now}.`, expect: `It is saved as before. Risk: the API reads ${was}, not ${now}: the value arrives empty${fd.rules ? `, and ${fd.rules} refuses it` : ''}.`, before: `Sent as ${was}.`, after: `Sent as ${now}.`, proof: 'derived', hops: [keyHop, apiHop, { label: 'Screen', file: r.file, line: r.line, quote: routeQuote(r), rule: `route ${r.path}` }] });
+        }
+        if (!ctx.deltas.some((d) => d.id === did)) ctx.deltas.push({ id: did, kind: 'ui-changed', title: `${fileName(cf.path)} now sends ${now} where the API reads ${was} (${fd.dto})`, endpoint: '', rules: [], causes: [keyHop, apiHop] });
+      }
     }
     for (const c of changedCalls) {
       const ep = fh.endpoints.find((e) => browserCalls(fh, { ...u, calls: [c] }, e).length);

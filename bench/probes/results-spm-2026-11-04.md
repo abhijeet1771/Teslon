@@ -1,6 +1,6 @@
 # Probe catalog: spm
 
-9 probes · 9 trusted · 0 trust failures · 0 imprecise · extra screens 1.2% (P1 ≤ 5%) · held screens 0.0% (P2 ≤ 10%) · 10 logic units covered · slowest 1541 ms
+9 probes · 9 trusted · 0 trust failures · 0 imprecise · extra screens 1.2% (P1 ≤ 5%) · held screens 0.0% (P2 ≤ 10%) · 10 logic units covered · slowest 1579 ms
 
 | probe | logic | Teslon said | result |
 |---|---|---|---|

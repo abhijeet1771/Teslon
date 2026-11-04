@@ -64,8 +64,30 @@ export interface CallEdge extends Located {
 /** A method an AI model can call: `@Tool`, or a `@Bean` function handed to a chat client by name. */
 export interface Tool extends Located { readonly cls: string; readonly method: string; readonly mark: string }
 export interface ToolWiring extends Located { readonly toolsClass: string; readonly holder: string; readonly expr: string }
+/** A topic or queue name, and how it was worked out from the code. */
+export interface Channel { readonly name: string; readonly how: string; readonly pattern?: boolean }
+/** A place that publishes to a message broker: `kafkaTemplate.send(Topics.X, key, message)`. */
+export interface Producer extends Located {
+  /** The method that sends: `OrderEventsPublisher.orderPlaced`. */
+  readonly from: string;
+  /** The topic, when it could be worked out; `expr` is what the code writes. */
+  readonly channel: Channel | null;
+  readonly expr: string;
+  /** The type of the record value sent, when known. */
+  readonly payload?: string;
+  /** The key argument as written. */
+  readonly key?: string;
+  readonly module: string;
+}
 export interface Listener extends Located {
   readonly kind: string; readonly cls: string; readonly method: string; readonly mentions: readonly string[];
+  /** Topics or queues a broker listener takes records from, resolved through constants and settings. */
+  readonly channels?: readonly Channel[];
+  /** The consumer group, as resolved. */
+  readonly group?: string;
+  /** Line of the last line of its annotation list: a change in between is a change to how it listens. */
+  readonly annEnd?: number;
+  readonly module?: string;
   /** Simple types of its parameters: for an @EventListener, the event it takes. */
   readonly takes: readonly string[];
   /** @Async: it runs on another thread, and the request that started it does not wait for it. */
@@ -86,6 +108,12 @@ export interface SpringFacts {
   readonly tools: readonly Tool[];
   readonly wiring: readonly ToolWiring[];
   readonly listeners: readonly Listener[];
+  /** Places that publish to a message broker. */
+  readonly producers: readonly Producer[];
+  /** `static final String` constants: `Topics.ORDER_PLACED` → "shop.orders.placed". */
+  readonly constants: ReadonlyMap<string, string>;
+  /** Settings of each module's application.yml / .properties, flattened: `billing.tax-rate` → "0.19". */
+  readonly settings: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly timed: readonly Timed[];
   readonly gateway: readonly GatewayRoute[];
   readonly gatewayService: string | null;
@@ -147,6 +175,28 @@ function callArgs(body: readonly Tok[], i: number): Tok[][] {
   return out;
 }
 
+/** A YAML file's scalar settings, flattened to dotted keys. Lists and multi-line values are left out. */
+export function flattenYaml(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const stack: { indent: number; key: string }[] = [];
+  for (const raw of text.split('\n')) {
+    if (/^---/.test(raw)) { stack.length = 0; continue; }
+    if (!raw.trim() || /^\s*#/.test(raw) || /^\s*-/.test(raw)) continue;
+    const m = /^(\s*)(["']?[\w.\-[\]]+["']?)\s*:(?:\s+(.*))?$/.exec(raw);
+    if (!m) continue;
+    const indent = m[1]!.length;
+    while (stack.length && stack[stack.length - 1]!.indent >= indent) stack.pop();
+    const seg = m[2]!.replace(/^['"]|['"]$/g, '');
+    const key = [...stack.map((x) => x.key), seg].join('.');
+    const v = (m[3] ?? '').replace(/\s+#.*$/, '').trim();
+    if (v === '' || v === '|' || v === '>') stack.push({ indent, key: seg });
+    else if (!out.has(key)) out.set(key, v.replace(/^['"]|['"]$/g, ''));
+  }
+  return out;
+}
+
+const MESSAGE_TEMPLATES = /^(KafkaTemplate|KafkaOperations|ReactiveKafkaProducerTemplate)$/;
+
 export function readSpring(snap: Snapshot): SpringFacts {
   // ---- modules and service names
   const services = new Map<string, string>();
@@ -159,6 +209,18 @@ export function readSpring(snap: Snapshot): SpringFacts {
   const modules = [...services.keys()].sort((a, b) => b.length - a.length);
   const moduleOf = (file: string): string => modules.find((d) => d === '' || file.startsWith(d + '/')) ?? '';
   const serviceOf = (file: string): string | null => services.get(moduleOf(file)) ?? null;
+  // each module's own settings (the default profile): what a ${placeholder} in its code resolves to
+  const settings = new Map<string, Map<string, string>>();
+  for (const f of snap.files) {
+    const m = /^(.*?)\/?src\/main\/resources\/application\.(ya?ml|properties)$/.exec(f);
+    if (!m) continue;
+    const text = snap.read(f) ?? '';
+    const flat = m[2] === 'properties' ? new Map([...text.matchAll(/^\s*([\w.\-[\]]+)\s*[=:]\s*(.*?)\s*$/gm)].map((x) => [x[1]!, x[2]!] as [string, string])) : flattenYaml(text);
+    const mod = moduleOf(f) || m[1] || '';
+    const cur = settings.get(mod) ?? new Map<string, string>();
+    for (const [k, v] of flat) if (!cur.has(k)) cur.set(k, v);
+    settings.set(mod, cur);
+  }
 
   // ---- java
   const javaFiles = new Map<string, JavaFile>();
@@ -171,6 +233,32 @@ export function readSpring(snap: Snapshot): SpringFacts {
   }
   const allTypes: { file: string; t: JType }[] = [];
   for (const [file, jf] of javaFiles) for (const t of jf.types) allTypes.push({ file, t });
+  // string constants: Topics.ORDER_PLACED, and ORDER_PLACED alone when only one class has it (a static import)
+  const constants = new Map<string, string>();
+  const bare = new Map<string, string[]>();
+  for (const { t } of allTypes) for (const fl of t.fields) {
+    if (fl.init.length !== 1 || !/^"/.test(fl.init[0]!.t) || !(fl.mods?.includes('static') || t.kind === 'interface')) continue;
+    const v = fl.init[0]!.t.slice(1, -1);
+    constants.set(`${t.name.split('.').pop()}.${fl.name}`, v);
+    bare.set(fl.name, [...(bare.get(fl.name) ?? []), v]);
+  }
+  for (const [k, vs] of bare) if (new Set(vs).size === 1 && !constants.has(k)) constants.set(k, vs[0]!);
+  /** A topic expression → its name: "a.b", Topics.X, X, "${key}" through the module's settings. */
+  const resolveChannel = (expr: string, module: string, own: ReadonlyMap<string, string>): Channel | null => {
+    const e = expr.trim();
+    const lit = /^"(.*)"$/.exec(e);
+    if (lit) {
+      const ph = /^\$\{([^}:]+)(?::([^}]*))?\}$/.exec(lit[1]!);
+      if (!ph) return { name: lit[1]!, how: `"${lit[1]}"` };
+      const v = settings.get(module)?.get(ph[1]!) ?? ph[2];
+      return v === undefined ? null : { name: v, how: `\${${ph[1]}} = ${v} (${settings.get(module)?.has(ph[1]!) ? 'application settings' : 'its default'})` };
+    }
+    const q = /^(\w+)\s*\.\s*(\w+)$/.exec(e);
+    if (q && constants.has(`${q[1]}.${q[2]}`)) return { name: constants.get(`${q[1]}.${q[2]}`)!, how: `${q[1]}.${q[2]} = "${constants.get(`${q[1]}.${q[2]}`)}"` };
+    if (/^\w+$/.test(e) && own.has(e)) return { name: own.get(e)!, how: `${e} = "${own.get(e)}"` };
+    if (/^\w+$/.test(e) && constants.has(e)) return { name: constants.get(e)!, how: `${e} = "${constants.get(e)}"` };
+    return null;
+  };
 
   // ---- DTOs: any record or class with fields; constraints and JSON names on them
   const dtos = new Map<string, Dto>();
@@ -239,11 +327,20 @@ export function readSpring(snap: Snapshot): SpringFacts {
     for (const fl of t.fields) ft.set(fl.name, fl.type.replace(/<.*$/, ''));
     fieldTypes.set(cls, ft);
   }
+  // what a getter returns, by property: order.getCustomer() is a Customer wherever a class has a field customer of that type
+  const propTypes = new Map<string, Set<string>>();
+  for (const { t } of allTypes) for (const fl of t.fields) {
+    const ty = fl.type.replace(/<.*$/, '').split('.').pop()!;
+    if (!/^[A-Z]/.test(ty) || /^(String|Long|Integer|Boolean|Double|BigDecimal|Instant|LocalDate|LocalDateTime|List|Set|Map|Optional|Collection)$/.test(ty)) continue;
+    if (!propTypes.has(fl.name)) propTypes.set(fl.name, new Set());
+    propTypes.get(fl.name)!.add(ty);
+  }
   const callEdges: CallEdge[] = [];
   const calls: JavaCall[] = [];
   const tools: Tool[] = [];
   const wiring: ToolWiring[] = [];
   const listeners: Listener[] = [];
+  const producers: Producer[] = [];
   const published: { from: string; type: string; file: string; line: number }[] = [];
   const timed: Timed[] = [];
   const functionRefs: { name: string; holder: string; file: string; line: number; call: string }[] = [];
@@ -278,7 +375,15 @@ export function readSpring(snap: Snapshot): SpringFacts {
       const la = m.annotations.find((a) => LISTENERS.has(a.name));
       if (la) {
         const words = new Set(m.body.map((x) => x.t));
-        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e) || m.params.some((p) => p.type.replace(/<.*$/, '').split('.').pop() === e)), takes: m.params.map((p) => p.type.replace(/<.*$/, '').split('.').pop()!), ...(hasAnn(m.annotations, 'Async') || hasAnn(t.annotations, 'Async') ? { async: true } : {}) });
+        // a broker listener's topics or queues: topics = X, topics = {A, B}, queues = "…", destination = "…"
+        const pairs = annPairs(la);
+        const raw = pairs.get('topics') ?? pairs.get('queues') ?? pairs.get('destination') ?? pairs.get('topicPattern') ?? (/^(RabbitListener|JmsListener|SqsListener)$/.test(la.name) ? pairs.get('value') : undefined);
+        const own = new Map([...consts]);
+        const channels = raw === undefined ? undefined : raw.replace(/^\{|\}$/g, '').split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((x) => x.trim()).filter(Boolean).map((x) => resolveChannel(x, moduleOf(file), own) ?? { name: x, how: `${x} (not resolved)` }).map((c) => (pairs.has('topicPattern') ? { ...c, pattern: true } : c));
+        const groupRaw = pairs.get('groupId') ?? pairs.get('id');
+        const group = groupRaw ? (resolveChannel(groupRaw, moduleOf(file), own)?.name ?? groupRaw) : (/^KafkaListener$/.test(la.name) ? settings.get(moduleOf(file))?.get('spring.kafka.consumer.group-id') : undefined);
+        const annEnd = Math.max(...m.annotations.map((a) => a.line + Math.max(0, ...a.args.map((x) => x.line - a.line))));
+        listeners.push({ kind: `@${la.name}`, cls, method: m.name, file, line: la.line, mentions: [...entityNames].filter((e) => words.has(e) || m.params.some((p) => p.type.replace(/<.*$/, '').split('.').pop() === e)), takes: m.params.map((p) => p.type.replace(/<.*$/, '').split('.').pop()!), ...(hasAnn(m.annotations, 'Async') || hasAnn(t.annotations, 'Async') ? { async: true } : {}), ...(channels ? { channels } : {}), ...(group ? { group } : {}), annEnd, module: moduleOf(file) });
       }
       const locals = new Map<string, string>(m.params.map((p) => [p.name, p.type.replace(/<.*$/, '')]));
       const body = m.body;
@@ -294,10 +399,24 @@ export function readSpring(snap: Snapshot): SpringFacts {
           if (x.t === 'this' && own.has(body[k + 2]!.t)) edge(`${cls}.${body[k + 2]!.t}`, body[k + 2]!.line);
           else if (type && fieldTypes.has(type)) edge(`${type}.${body[k + 2]!.t}`, body[k + 2]!.line);
         }
+        // a broker send: kafkaTemplate.send(topic, [key,] value), or send(new ProducerRecord<>(topic, key, value))
+        if (x.t === 'send' && body[k - 1]?.t === '.' && body[k + 1]?.t === '(' && MESSAGE_TEMPLATES.test(ft.get(body[k - 2]?.t ?? '') ?? locals.get(body[k - 2]?.t ?? '') ?? '')) {
+          let args = callArgs(body, k + 1);
+          if (args.length === 1 && args[0]![0]?.t === 'new' && args[0]![1]?.t === 'ProducerRecord') { const at = args[0]!.findIndex((y) => y.t === '('); args = at >= 0 ? callArgs(args[0]!, at) : args; }
+          const expr = (args[0] ?? []).map((y) => y.t).join(' ').replace(/\s*\.\s*/g, '.');
+          const val = args.length >= 3 ? args[2]! : args.length === 2 ? args[1]! : [];
+          const payload = val[0]?.t === 'new' ? val[1]?.t : val.length === 1 ? (locals.get(val[0]!.t) ?? ft.get(val[0]!.t))?.split('.').pop() : undefined;
+          producers.push({ from: `${cls}.${m.name}`, file, line: x.line, channel: resolveChannel(expr, moduleOf(file), consts), expr, ...(payload ? { payload } : {}), ...(args.length >= 3 ? { key: args[1]!.map((y) => y.t).join('') } : {}), module: moduleOf(file) });
+        }
         // events: publishEvent(new OrderPlacedEvent(…)), or a local or parameter of the event's type
         if (x.t === 'publishEvent' && body[k + 1]?.t === '(') {
           const a = body[k + 2]?.t === 'new' ? body[k + 3]?.t : locals.get(body[k + 2]?.t ?? '')?.split('.').pop();
           if (a && /^[A-Z]/.test(a)) published.push({ from: `${cls}.${m.name}`, type: a, file, line: x.line });
+        }
+        // a call on what a getter returns: o.getCustomer().getName() calls Customer.getName
+        if (/^(get|is)[A-Z]\w*$/.test(x.t) && body[k - 1]?.t === '.' && body[k + 1]?.t === '(' && body[k + 2]?.t === ')' && body[k + 3]?.t === '.' && /^[a-z]\w*$/.test(body[k + 4]?.t ?? '') && body[k + 5]?.t === '(') {
+          const prop = x.t.replace(/^(get|is)/, '').replace(/^./, (c) => c.toLowerCase());
+          for (const ty of propTypes.get(prop) ?? []) if (fieldTypes.has(ty)) edge(`${ty}.${body[k + 4]!.t}`, body[k + 4]!.line);
         }
         // calls inside the class: helper(…), and to static methods: Other.helper(…)
         if (/^[a-z]\w*$/.test(x.t) && body[k + 1]?.t === '(' && body[k - 1]?.t !== '.' && body[k - 1]?.t !== 'new' && own.has(x.t)) edge(`${cls}.${x.t}`, x.line);
@@ -401,12 +520,23 @@ export function readSpring(snap: Snapshot): SpringFacts {
   }
   const supertypes = new Map<string, string[]>();
   for (const { t } of allTypes) supertypes.set(t.name.split('.').pop()!, t.supertypes.map((x) => x.split('.').pop()!.replace(/<.*$/, '')));
+  // a MapStruct mapper's generated code calls its own methods for nested types: toDto(Order) calls toLineDto for List<OrderLineDto>
+  for (const { file, t } of allTypes) {
+    if (!t.annotations.some((a) => a.name === 'Mapper')) continue;
+    const cls = t.name.split('.').pop()!;
+    for (const a of t.methods) {
+      const out = dtos.get(`${moduleOf(file)}|${a.returnType.replace(/<.*$/, '').split('.').pop()}`);
+      if (!out) continue;
+      const nested = new Set(out.fields.flatMap((fl) => fl.type.match(/[A-Z]\w*/g) ?? []));
+      for (const b of t.methods) if (b !== a && nested.has(b.returnType.replace(/^.*<|>.*$/g, '').split('.').pop()!)) callEdges.push({ from: `${cls}.${a.name}`, to: `${cls}.${b.name}`, file, line: a.line, quote: a.name, how: `MapStruct's ${cls}.${a.name}() maps ${b.returnType} with ${b.name}()` });
+    }
+  }
   // an in-process listener that is not @Async runs inside the call that publishes: the request waits for it, and its failure is the request's
   for (const p of published) for (const l of listeners) {
     if (l.async || !/^@(EventListener|TransactionalEventListener)$/.test(l.kind) || !l.takes.includes(p.type)) continue;
     callEdges.push({ from: p.from, to: `${l.cls}.${l.method}`, file: p.file, line: p.line, quote: 'publishEvent', how: `${p.from}() publishes ${p.type}, and ${l.cls}.${l.method}() (${l.kind}) runs inside that call` });
   }
-  return { services, javaFiles, unreadable, endpoints, dtos, entities, calls, callEdges, tools, wiring, listeners, timed, gateway, gatewayService, configRepos, supertypes, moduleOf, serviceOf, dto };
+  return { services, javaFiles, unreadable, endpoints, dtos, entities, calls, callEdges, tools, wiring, listeners, producers, constants, settings, timed, gateway, gatewayService, configRepos, supertypes, moduleOf, serviceOf, dto };
 }
 
 /** Where an external path through the gateway really lands. */

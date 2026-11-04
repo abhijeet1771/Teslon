@@ -4,6 +4,60 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 
 ## Unreleased
 
+### Added (iteration 8: Kafka, mappers and Vue, on ShopFlow)
+- **ShopFlow** (`fixtures/shopflow`): four Spring Boot services on Kafka and
+  Feign, MapStruct and builders, a gateway, and a Vue 3 front end with Pinia.
+  It has 79 probes with truth written first
+  (`bench/probes/catalog-shopflow.mjs`; `--app shopflow`). The first run
+  trusted 2 of 79; all 79 are trusted now.
+- **Kafka.** Producers (`kafkaTemplate.send`) and listeners are joined by
+  topic. Topics are worked out through constants and `${…}` settings. Teslon
+  follows:
+  - a topic, consumer group or consumer setting that changed;
+  - a message type whose fields changed (only the consumers whose code reads
+    those fields);
+  - what a producer puts on a topic, and a listener removed.
+
+  It names a topic nothing publishes any more, and one nothing in the
+  repository consumes. It follows the chain to what each listener writes, and
+  to the listeners of what that listener publishes in turn.
+- **Vue:**
+  - lazy routes (`() => import(...)`);
+  - axios instances and their `baseURL`;
+  - template-literal URLs, and `<RouterLink>` in PascalCase;
+  - navigation guards and route `meta`;
+  - components the root draws beside `<RouterView>`;
+  - the app's own Pinia stores, read as modules;
+  - a payload key the API's request type does not have.
+
+  A screen that imports an API module or store, but uses none of its changed
+  members, is skipped with those members as proof.
+- **MapStruct:** a changed `@Mapping` names its field. Mapping into a
+  `@MappingTarget` entity is a write, and nested mappers call each other.
+- **Feign:** a field the provider no longer sends is named where another
+  service reads it.
+- `@EnableAsync`, `@EnableScheduling` and the other switches reach every method
+  they govern. An implementation the settings switch off is said, and its
+  data is not held.
+
+### Fixed (iteration 8)
+- Data written was followed only from the changed line itself. These now
+  change what is written too:
+  - a changed or removed line before a write in the same method (a guard, a
+    builder step);
+  - a value passed on to a call that writes;
+  - a factory's result saved by its caller.
+- A setter is attributed to the entity its receiver is typed as. Before, it
+  went to every entity with a field of that name.
+- Migrations and entity column renames reach the jobs that write the table,
+  not only the APIs.
+- Java code that reads an accessor through a getter
+  (`o.getCustomer().getName()`) is followed.
+- A screen shows written data only through a read (GET). A form that only
+  posts is not held for it.
+- A new constant nothing names is "no app effect".
+- Feign call citations quote the mapping, not `uri`.
+
 ### Changed
 - **The report is built around the decision QA makes.** The cockpit, the PR
   comment, the run summary and the terminal all lead with the same brief:

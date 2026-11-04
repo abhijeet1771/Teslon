@@ -43,6 +43,9 @@ jobs:
         # miss, wrong skip, unsaid risk, failed citation or crash fails the build.
         run: node bench/probes/run.mjs --md probes.md && cat probes.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Probe catalog on ShopFlow (Kafka, mappers, Vue)
+        run: node bench/probes/run.mjs --app shopflow --md probes-shopflow.md && cat probes-shopflow.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Invariants must be covered, not merely passing
         run: |
           # A green suite that stopped asserting the invariants is worse than

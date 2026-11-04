@@ -19,6 +19,9 @@ measures it.
 | 7a: 92 API-contract probes written | ✓ | **1 wrong skip** (h10) | ✓ | ✓ | ✓ | 91 / 92 | 7.2% | 10.3% | 19 |
 | 7b: 42 hardest probes written | ✓ | **5 wrong skips** (z28, z29, z32, z33, z42 silent) | ✓ | ✓ | **3 misses** (z42) | 37 / 42 | 21.4% | 16.3% | 22 |
 | 7c: all fixed | ✓ | ✓ (3 more found by the new skip rule, fixed) | ✓ | ✓ | ✓ | **178 / 178** | **4.4%** ✓ | **2.9%** ✓ | 70 |
+| 8a: ShopFlow written (Kafka, mappers, Vue), first run | **silent on 8 of 9 screens** | **wrong skips in most Kafka probes** | **1 citation bug** (Feign) | ✓ | **8 screens with no answer** | **2 / 79** | — | — | 46 |
+| 8b: Vue reader and Kafka model | ✓ (5 fields not said) | **12 wrong skips** (a removed guard under a listener, a builder step, links to a renamed route, a migration's job) | ✓ | ✓ | ✓ | 68 / 79 | 4.9% ✓ | 14.9% | 46 |
+| 8c: all fixed | ✓ | ✓ (1 OrderDesk regression found, fixed) | ✓ | ✓ | ✓ | **79 / 79** ShopFlow, **178 / 178** OrderDesk | **3.9%** ✓ / **4.4%** ✓ | **5.3%** ✓ / **2.6%** ✓ | 46 + 70 |
 
 ## What each iteration found and fixed
 
@@ -236,21 +239,118 @@ written first had missed something:
 - the customer and product APIs call repositories directly, so a service
   aspect does not wrap them.
 
+### Iteration 8: Kafka, mappers and Vue (`fixtures/shopflow`, `catalog-shopflow.mjs`)
+
+ShopFlow is a new app built for this round. It has four Spring Boot services:
+- orders-service publishes `shop.orders.placed` and `shop.orders.cancelled`;
+- billing-service invoices and charges, then publishes `shop.payments.result`;
+- catalog-service reserves stock;
+- notification-service sends mail and logs it.
+
+Around them are Feign between services, MapStruct and hand-written mappers,
+Lombok and hand-written builders, two payment providers switched by a
+setting, a gateway, and a Vue 3 front end on Pinia stores, an axios
+instance, a composable and lazy routes.
+
+The suite has 79 PRs with truth written from the code first, in four groups:
+- 21 on Kafka;
+- 15 on mappers and builders;
+- 22 on Vue;
+- 21 on services, Feign, settings and `@Async`.
+
+**The first run trusted 2 of 79.** This is the honest measure of how Teslon
+does on a stack it had not been taught:
+- Vue routes written as `() => import(...)` were not read, so 8 of 9 screens
+  had no answer;
+- calls through `axios.create({ baseURL: '/api' })` were missed, and so were
+  template-literal URLs;
+- nothing joined a Kafka producer to its consumers: changing a topic left
+  every consumer "safe";
+- what a listener writes never reached the screens that show it;
+- a Feign citation quoted `uri` on a `@GetMapping` line.
+
+**Fixed, generally:**
+- **Vue:**
+  - lazy routes;
+  - axios instances and their base;
+  - `<RouterLink>`;
+  - guards and route `meta`;
+  - root widgets;
+  - the app's own Pinia stores;
+  - module members (`ordersApi.cancel`, a store's `open` getter);
+  - payload keys the API does not have.
+- **Kafka:**
+  - topics through constants and `${…}` settings;
+  - groups;
+  - consumer settings;
+  - message shape, matched to the fields each consumer reads;
+  - what a producer sends;
+  - removed listeners;
+  - topics nothing publishes, or nothing consumes;
+  - the chain across services.
+- **Data:**
+  - lines before a write;
+  - results passed on;
+  - factories saved by their caller;
+  - setters by receiver type;
+  - migrations and column renames to jobs;
+  - accessors read by Java.
+- **Contracts and settings:**
+  - Feign readers of a field no longer sent;
+  - MapStruct `@Mapping`;
+  - `@Enable…` switches;
+  - implementations a setting switches off;
+  - unused new constants.
+
+**A regression this round found on OrderDesk.** z07 (a customer name trimmed
+in its getter) had passed for a weak reason: the order list was held because
+of a POST it imports but never makes. Once only reads count as showing data,
+it was skipped. The real path is `o.getCustomer().getName()` in
+`OrderService.list`, which Teslon did not follow. Calls on a getter's result
+are now call edges, and Java readers of a changed accessor are followed.
+
+**Truth corrections (Teslon was right).** In each case Teslon traced a real
+chain that the first truth had missed:
+- billing that cannot read a record sends no payment result, so orders stay
+  PLACED on `/`, `/orders` and the order page (k02, k03, k04, k19, f08,
+  f12);
+- stock shows on the new-order page and in the product editor as well (k07,
+  k21);
+- the new-order page shows product prices (m05);
+- an order that fails to save shows nowhere (m09, m12).
+
+The other suites are unchanged:
+
+| Suite | Result |
+|---|---|
+| Unit tests | 207 pass (18 new, one per rule above) |
+| OrderDesk probes | 178 / 178, extra 4.4%, held 2.6% |
+| spring-petclinic-microservices probes | 9 / 9 |
+| Proving ground | 33 / 33, ideal 16 / 16 |
+| Bench | 18 / 18, no silent misses, no wrong skips |
+| 60-commit history scans, spm and JHipster | 0 citation failures, 0 crashes; held areas on JHipster 435 → 431 |
+
 ## Not yet perfect
 
-- **C4 coverage of every logic unit.** The catalog covers the Spring +
-  Angular logic on OrderDesk (35 tags). The Vue reader, gateways, Feign
-  clients, AI tools, dashboards and JMeter plans are covered by the bench
-  (spring-petclinic-microservices) and the unit tests, not by catalog probes
-  with written truth.
+How far Teslon is from the whole expectation, part by part, is in
+[EXPECTATION-SCORECARD-2026-11-04.md](EXPECTATION-SCORECARD-2026-11-04.md).
+- **C4 coverage of every logic unit.** Two sets of logic are covered:
+  - the Spring + Angular logic, on OrderDesk (70 tags);
+  - Kafka, mappers and Vue, on ShopFlow (46 tags).
+
+  AI tools, dashboards and JMeter plans are covered by the bench and the unit
+  tests only.
 - **Next probes:**
-  - mappers and builders;
-  - Kafka listeners;
-  - `@Async`;
-  - a second implementation of an interface;
-  - Feign clients and the gateway on a microservice app;
-  - Vue screens.
+  - React and Next.js;
+  - several repositories read together;
+  - RabbitMQ routing and Spring Cloud Stream;
+  - GraphQL, gRPC, WebFlux functional routes, Spring Batch;
+  - Kotlin.
 - **Precision still to gain:**
+  - on Vue, a mapper or DTO field change lists every screen that loads the
+    DTO, not only those that show the field (7 ShopFlow probes);
+  - a direct write of a shown field holds the screen instead of listing it
+    (a01);
   - framework JSON settings (`spring.jackson.*`) still reach every screen,
     not only the screens that read dates or nulls;
   - a changed getter on an entity reaches every screen of that entity, not

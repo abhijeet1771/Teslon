@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: catalog-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/catalog
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: catalog
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.shopflow.events
+server:
+  port: 8083

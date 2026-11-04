@@ -40,7 +40,9 @@ export interface TemplateFacts {
 
 const KEEP = /^(input|select|textarea|option|label|h[1-6]|button|dt|th|td|dd|a|form|legend|caption)$/;
 
-const isComponentTag = (tag: string): boolean => /^[A-Z]/.test(tag) || (tag.includes('-') && !/^(router-view|router-link|transition|keep-alive|component|slot|teleport|suspense)$/.test(tag));
+const isComponentTag = (tag: string): boolean => (/^[A-Z]/.test(tag) && !/^(RouterView|RouterLink|Transition|KeepAlive|Component|Slot|Teleport|Suspense)$/.test(tag)) || (tag.includes('-') && !/^(router-view|router-link|transition|keep-alive|component|slot|teleport|suspense)$/.test(tag));
+/** `<router-link>` and `<RouterLink>` are the same component. */
+const isLink = (tag: string): boolean => tag === 'router-link' || tag === 'RouterLink';
 
 function rawName(p: AttributeNode | DirectiveNode): string {
   if (p.type === NodeTypes.ATTRIBUTE) return p.name;
@@ -115,11 +117,11 @@ export function readTemplate(source: string, lineOffset: number): TemplateFacts 
       const myLoops = loop ? [...loops, loop] : loops;
       const text = el.children.map(textOf).join(' ').replace(/\s+/g, ' ').trim();
       if (isComponentTag(el.tag)) uses.add(el.tag);
-      if (KEEP.test(el.tag) || Object.keys(attrs).some((k) => k.startsWith('v-model')) || el.tag === 'router-link' || isComponentTag(el.tag)) {
+      if (KEEP.test(el.tag) || Object.keys(attrs).some((k) => k.startsWith('v-model')) || isLink(el.tag) || isComponentTag(el.tag)) {
         elements.push({ tag: el.tag, line: line(el.loc.start.line), attrs, text: text.slice(0, 120), when: myWhen, on, loops: myLoops });
       }
       if (/^(dt|th|label|legend)$/.test(el.tag) && text && !text.includes('{{')) lastLabel = text;
-      if (el.tag === 'router-link') links.push({ target: attrs[':to'] ?? attrs['to'] ?? '', line: line(el.loc.start.line), text: text.slice(0, 60) });
+      if (isLink(el.tag)) links.push({ target: attrs[':to'] ?? attrs['to'] ?? '', line: line(el.loc.start.line), text: text.slice(0, 60) });
       walk(el.children, myWhen, myLoops);
     }
   };

@@ -1,0 +1,22 @@
+:root {
+  --brand: #2563eb;
+  --danger: #dc2626;
+  --muted: #6b7280;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+}

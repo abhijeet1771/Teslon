@@ -16,5 +16,6 @@ export function readFrontend(snap: Snapshot): FrontendFacts {
     unread: v.unread.filter((u) => u.framework !== 'Angular'),
     ...(a.shell ? { shell: a.shell } : {}),
     ...(a.memberCalls ? { memberCalls: a.memberCalls } : {}),
+    ...(v.guards ? { guards: v.guards } : {}),
   };
 }

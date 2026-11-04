@@ -1,6 +1,6 @@
 import { snapshot, changedFiles } from './snapshot.js';
 import { readSpring, exposedAs, templateHits, type SpringFacts, type Endpoint, type DtoField } from './spring.js';
-import { targetsRoute, routeQuote, callMadeBy, usesSeen, membersUsed, type Component, type Route } from './vue.js';
+import { targetsRoute, routeQuote, callMadeBy, usesSeen, usesMembers, membersUsed, type Component, type Route } from './vue.js';
 import { readFrontend } from './frontend.js';
 import { readDashboards, promKeeps, readRequestPlans, readSeedRows, breaks, probe } from './outside.js';
 import { followChanges, browserCalls, type WhereCtx } from './where.js';
@@ -233,12 +233,14 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const touched = new Set<Endpoint>();
   const noEffectFiles = new Map<string, string>();
   const touchedUi = new Set<string>();
+  const uiMembers = new Map<string, { owner: string; member: string; line: number }[]>();
   const whereCtx: WhereCtx = {
     B, H, fb, fh, ui, ub, changes, deltas, unseen,
     surface: (x) => surface(x), addCase, closure,
     explained: (file, line) => explainedLines.get(file)?.has(line) ?? false,
     follow, touched, touchedUi,
     noEffect: (file, reason) => noEffectFiles.set(file, reason),
+    receiving: [], affected: [], uiMembers,
   };
 
   /* ---------- 1a. response shape: JSON fields renamed, removed or retyped ---------- */
@@ -322,7 +324,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     for (const jc of fh.calls) {
       if (jc.service !== e.service || jc.verb !== e.verb || !templateHits(jc.tpl, e.path)) continue;
       const sentDto = jc.bodyType ? fh.dto(jc.module, jc.bodyType) : undefined;
-      const callHop: Hop = { label: 'Another service calls it', file: jc.file, line: jc.line, quote: 'uri', rule: `${jc.cls}.${jc.method}() · ${jc.how}` };
+      const callHop: Hop = { label: 'Another service calls it', file: jc.file, line: jc.line, quote: jc.how.startsWith('@FeignClient') ? 'Mapping' : 'uri', rule: `${jc.cls}.${jc.method}() · ${jc.how}` };
       const handling: Hop | null = jc.handles4xx ? null : { label: 'No error handling', file: jc.file, line: jc.line, quote: 'uri', rule: 'no onStatus or catch on this call: a 400 becomes an exception' };
       // which tools or endpoints reach this method
       const chains = upstream(`${jc.cls}.${jc.method}`);
@@ -532,7 +534,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const used = l.mentions.filter((m) => types.has(m));
     const ev: Hop = { label: 'Listener', file: l.file, line: l.line, quote: l.kind, rule: `${l.cls}.${l.method}() ${l.kind}` };
     // a job that reads what changed code writes shows the change, though it runs none of it
-    const reads = writtenEntities.filter((e) => l.mentions.includes(e));
+    const reads = writtenEntities.filter((e) => l.mentions.includes(e) || flow.usesEntity(`${l.cls}.${l.method}`, e));
     if (!used.length && reads.length && !surfaces.has(`job:${l.cls}.${l.method}`)) {
       dataHeldJobs.push({ id: `job:${l.cls}.${l.method}`, name: `${l.cls}.${l.method}()`, where: l.file, why: `reads ${reads.join(', ')}, and this PR changes what is written to ${reads.map(writeWords).join('; ')}`, evidence: [writeOf(reads[0]!), ev] });
       continue;
@@ -623,7 +625,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     const hit = hits.find((c) => callMadeBy(ui, files, c));
     if (hit) { notRuledOut.push(`${r.path} (calls ${hit.verbs.join('/')} ${hit.tpl}, which changed)`); hold(r, `calls ${hit.verbs.join('/')} ${hit.tpl}, which runs changed code, but nothing on this screen was traced to a visible change`); heldScreens.at(-1)!.evidence.push({ label: 'Calls', file: hit.file, line: hit.line, quote: callText(hit), rule: `${hit.verbs.join('/')} ${hit.tpl}` }); continue; }
     // a screen that shows rows changed code writes shows the change, though it runs none of it
-    const shows = own.map((c) => ({ c, e: readers.find((x) => x.calls.has(c)) })).find((x) => x.e);
+    const shows = own.filter((c) => c.verbs.includes('GET')).map((c) => ({ c, e: readers.find((x) => x.calls.has(c)) })).find((x) => x.e);
     if (shows?.e) {
       heldShowsData.push(id);
       hold(r, `shows ${shows.e.entities.join(', ')} data, and this PR changes what is written to ${shows.e.entities.map(writeWords).join('; ')}`);
@@ -644,6 +646,14 @@ export function impact(opts: ImpactOptions): ImpactReport {
     }
     const imported = hits[0];
     if (imported) { notRuledOut.push(`${r.path} (imports ${fileName(imported.file)}, whose ${imported.verbs.join('/')} ${imported.tpl} changed)`); hold(r, `imports ${fileName(imported.file)}, whose ${imported.verbs.join('/')} ${imported.tpl} runs changed code; whether this screen uses that call was not traced`); heldScreens.at(-1)!.evidence.push({ label: 'Imports a call', file: imported.file, line: imported.line, quote: callText(imported), rule: `${imported.verbs.join('/')} ${imported.tpl}` }); continue; }
+    // it imports a module where only some members changed, and uses none of them: safe, with the members as proof
+    const touchedHere = [...files].filter((f) => touchedUi.has(f));
+    if (touchedHere.length && touchedHere.every((f) => uiMembers.has(f) && !usesMembers(ui, files, f, uiMembers.get(f)!)) && !opaqueOf(files).length) {
+      const f0 = touchedHere[0]!, ms = uiMembers.get(f0)!;
+      const used = [...new Set([...files].flatMap((f) => (ui.components.get(f)?.uses ?? []).filter((u) => ms.some((m) => u.startsWith(`${m.owner}.`)))))];
+      surfaces.set(id, { id, kind: 'screen', name: screenName(comp, r.path), where: r.path, tier: 'skip', reason: `imports ${fileName(f0)}, but uses none of what changed in it (${ms.map((m) => (m.member === '()' ? m.owner : `${m.owner}.${m.member}`)).join(', ')})${used.length ? `; it uses ${used.slice(0, 5).join(', ')}` : ''}`, evidence: ms.slice(0, 2).map((m) => ({ label: 'Changed member', file: f0, line: m.line, quote: m.member === '()' ? m.owner : m.member, rule: `${m.member === '()' ? m.owner : `${m.owner}.${m.member}`} changed, and no file of this screen uses it` })) });
+      continue;
+    }
     if ([...files].some((f) => touchedUi.has(f))) { notRuledOut.push(`${r.path} (runs changed code)`); hold(r, 'runs changed front-end code, but nothing on this screen was traced to a visible change'); continue; }
     const opaque = [...files].flatMap((f) => (ui.components.get(f)?.opaque ?? []).map((o) => `${o.what} at ${fileName(f)}:${o.line}`));
     if (opaque.length) { notRuledOut.push(`${r.path} (${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''})`); hold(r, `gets data in a way Teslon does not follow: ${opaque.slice(0, 2).join('; ')}${opaque.length > 2 ? ` +${opaque.length - 2}` : ''}`); continue; }

@@ -25,8 +25,10 @@ const outJson = flag('--json');
 const outMd = flag('--md');
 // --app spm=<clone>: probes on a real app, from its own catalog, with the clone's HEAD as the base
 const app = flag('--app');
-const [appName, appPath] = app ? app.split('=') : ['orderdesk', null];
-const { probes, SCREENS } = appName === 'orderdesk' ? orderdesk : await import(`./catalog-${appName}.mjs`);
+const [appName, appPath] = app ? [app.split('=')[0], app.split('=')[1] ?? null] : ['orderdesk', null];
+const { probes, SCREENS, APP: appDir } = appName === 'orderdesk' ? orderdesk : await import(`./catalog-${appName}.mjs`);
+// a catalog on another fixture in this repository names it: --app shopflow
+const APP_DIR = appDir ? join(ROOT, appDir) : APP;
 const grep = flag('--grep');
 const only = new Set(args);
 const ENV = { ...process.env, GIT_AUTHOR_DATE: '2026-11-01T10:00:00Z', GIT_COMMITTER_DATE: '2026-11-01T10:00:00Z' };
@@ -83,7 +85,7 @@ for (const p of probes) {
   let res;
   try {
     if (appPath) { rmSync(d, { recursive: true, force: true }); git(tmpdir(), 'clone', '-q', '--shared', appPath, d); }
-    else { cpSync(APP, d, { recursive: true }); git(d, 'init', '-q', '-b', 'main'); }
+    else { cpSync(APP_DIR, d, { recursive: true }); git(d, 'init', '-q', '-b', 'main'); }
     git(d, 'config', 'user.email', 'dev@orderdesk.example'); git(d, 'config', 'user.name', 'Dev'); git(d, 'config', 'commit.gpgsign', 'false');
     p.base?.(tools(d));
     git(d, 'add', '-A'); if (git(d, 'status', '--porcelain')) git(d, 'commit', '-qm', 'base'); const base = git(d, 'rev-parse', 'HEAD');

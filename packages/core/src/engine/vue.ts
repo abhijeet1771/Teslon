@@ -17,7 +17,12 @@ export interface Route {
   readonly line: number;
   /** Text on that line that names the route, when the full path is not written there (a child route file). */
   readonly quote?: string;
+  /** Keys of the route's `meta` (`requiresAdmin`): what a navigation guard can test it by. */
+  readonly meta?: readonly string[];
 }
+
+/** `router.beforeEach(…)`: runs on every navigation. The route meta keys it reads say which screens it stops. */
+export interface Guard { readonly file: string; readonly line: number; readonly endLine: number; readonly meta: readonly string[] }
 
 /** What the route's line must say, for its hop to re-check. */
 export const routeQuote = (r: Route): string => r.quote ?? r.path.split('/').filter(Boolean)[0] ?? "'/'";
@@ -77,6 +82,8 @@ export interface Component {
   readonly injects?: readonly string[];
   /** App classes whose instance this file hands on whole (an argument, a copy, a template binding): its members are not all seen. */
   readonly escapes?: readonly string[];
+  /** A module's named members and the lines each spans: `ordersApi.cancel`, a store's `open` getter, `formatDate`. */
+  readonly members?: readonly { readonly owner: string; readonly member: string; readonly start: number; readonly end: number }[];
 }
 
 export interface Global {
@@ -100,6 +107,8 @@ export interface FrontendFacts {
   readonly shell?: ReadonlyMap<string, { readonly from: string; readonly line: number }>;
   /** `Cls.m` → members of the same class it uses through `this.` */
   readonly memberCalls?: ReadonlyMap<string, readonly string[]>;
+  /** Navigation guards registered on the router. */
+  readonly guards?: readonly Guard[];
 }
 
 /**
@@ -130,6 +139,20 @@ export function callMadeBy(ui: FrontendFacts, files: ReadonlySet<string>, c: Api
     const u = queue.shift()!;
     if (u === want) return true;
     for (const n of ui.memberCalls?.get(u) ?? []) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+  }
+  return false;
+}
+
+/** Do these files (other than the module itself) use any of these members of it, or hand its owner on whole? */
+export function usesMembers(ui: FrontendFacts, files: ReadonlySet<string>, file: string, members: readonly { readonly owner: string; readonly member: string }[]): boolean {
+  for (const f of files) {
+    if (f === file) continue;
+    const k = ui.components.get(f);
+    if (!k) continue;
+    for (const m of members) {
+      if (k.escapes?.includes(m.owner)) return true;
+      if (m.member === '()' ? (k.uses ?? []).some((x) => x.startsWith(`${m.owner}.`)) : (k.uses ?? []).includes(`${m.owner}.${m.member}`) || (k.uses ?? []).includes(`${m.owner}.()`) && !(k.uses ?? []).some((x) => x.startsWith(`${m.owner}.`) && x !== `${m.owner}.()`)) return true;
+    }
   }
   return false;
 }
@@ -215,19 +238,45 @@ export function readVue(snap: Snapshot): FrontendFacts {
   const components = new Map<string, Component>();
   const registered: { tag: string; file: string }[] = [];
   const roots: { file: string; template: string; line: number }[] = [];
+  const guards: Guard[] = [];
+  /** Components each file draws in its template, by the tag written there. */
+  const drawnBy = new Map<string, { tag: string; file: string }[]>();
   const foreign = new Map<string, string[]>();
   const usesByFile = new Map<string, readonly string[]>();
   let vueSeen = files.some((f) => f.endsWith('.vue'));
   const wrappers = new Set<string>();
+  // axios instances: `export const http = axios.create({ baseURL: '/api' })`, by file and exported name, with their base
+  const instances = new Map<string, Map<string, { base: string; assumed: boolean }>>();
   for (const f of files) {
     if (f.endsWith('.vue')) continue;
     const raw = snap.read(f);
     if (!raw || !/\b(fetch|axios|http)\b/.test(raw)) continue;
     const sf0 = ts.createSourceFile(f, raw, ts.ScriptTarget.Latest, true, f.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    const baseOf = (call: ts.CallExpression): { base: string; assumed: boolean } => {
+      const o = call.arguments[0];
+      const p = o && ts.isObjectLiteralExpression(o) ? o.properties.find((x) => ts.isPropertyAssignment(x) && x.name.getText(sf0) === 'baseURL') : undefined;
+      if (!p || !ts.isPropertyAssignment(p)) return { base: '', assumed: false };
+      const v = p.initializer;
+      if (ts.isStringLiteral(v) || ts.isNoSubstitutionTemplateLiteral(v)) return { base: v.text.replace(/^https?:\/\/[^/]+/, '').replace(/\/$/, ''), assumed: false };
+      // `import.meta.env.VITE_API ?? '/api'`: the literal is the fallback
+      const lit = /['"`](\/[^'"`]*)['"`]/.exec(v.getText(sf0));
+      return { base: lit ? lit[1]!.replace(/\/$/, '') : '', assumed: true };
+    };
+    const isCreate = (e: ts.Expression | undefined): e is ts.CallExpression => !!e && ts.isCallExpression(e) && /^axios\.create$/.test(e.expression.getText(sf0));
     const visit0 = (n: ts.Node): void => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isCreate(n.initializer)) {
+        if (!instances.has(f)) instances.set(f, new Map());
+        instances.get(f)!.set(n.name.text, baseOf(n.initializer));
+      }
+      if (ts.isExportAssignment(n) && isCreate(n.expression)) {
+        if (!instances.has(f)) instances.set(f, new Map());
+        instances.get(f)!.set('default', baseOf(n.expression));
+      }
       if (ts.isCallExpression(n) && n.arguments[0] && HTTP_CALL.test(n.expression.getText(sf0).replace(/^this\./, ''))) {
         const enc = enclosing(n, n.arguments[0]);
-        if (enc?.usesParam && enc.name) wrappers.add(enc.name);
+        // a wrapper takes the URL itself: `get(url)`, `${base}${path}`; a call that only fills a hole (`/orders/${id}`) is a call
+        const tpl = urlTemplate(n.arguments[0], new Map());
+        if (enc?.usesParam && enc.name && (!tpl || tpl.startsWith('{*}'))) wrappers.add(enc.name);
       }
       ts.forEachChild(n, visit0);
     };
@@ -261,6 +310,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const off = f.endsWith('.vue') ? scriptStart : 0;
     const lineOfNode = (n: ts.Node): number => lineAt(text, off + n.getStart(sf));
     const imports = new Map<string, string>();
+    /** Local name → the name its module exports it under ('default' for a default import). */
+    const importName = new Map<string, string>();
     const importLine = new Map<string, number>();
     const packages = new Set<string>();
     const consts = new Map<string, ts.Expression>();
@@ -271,6 +322,18 @@ export function readVue(snap: Snapshot): FrontendFacts {
     // absolute offsets into the file, whichever way the template is written
     let template: { start: number; end: number } | null = templateRange ? { start: templateRange[0], end: templateRange[1] } : null;
 
+    const ownerOf = (n: ts.Node): { owner: string; member: string } | null => {
+      let member: string | null = null;
+      for (let x: ts.Node | undefined = n.parent; x; x = x.parent) {
+        if ((ts.isPropertyAssignment(x) || ts.isMethodDeclaration(x)) && x.name && !member) member = x.name.getText(sf);
+        if (ts.isVariableDeclaration(x) && ts.isIdentifier(x.name) && ts.isSourceFile(x.parent.parent.parent)) {
+          // a store: `defineStore('orders', { actions: { load() {…} } })` or a setup function
+          return member ? { owner: x.name.text, member } : { owner: x.name.text, member: '()' };
+        }
+        if (ts.isFunctionDeclaration(x) && x.name && ts.isSourceFile(x.parent)) return { owner: x.name.text, member: '()' };
+      }
+      return null;
+    };
     const visit = (n: ts.Node): void => {
       if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
         const spec = n.moduleSpecifier.text;
@@ -281,8 +344,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
         if (target && !n.importClause) imports.set(`#side:${target}`, target);
         const cl = n.importClause;
         if (target && cl) {
-          if (cl.name) imports.set(cl.name.text, target);
-          if (cl.namedBindings && ts.isNamedImports(cl.namedBindings)) for (const el of cl.namedBindings.elements) imports.set(el.name.text, target);
+          if (cl.name) { imports.set(cl.name.text, target); importName.set(cl.name.text, 'default'); }
+          if (cl.namedBindings && ts.isNamedImports(cl.namedBindings)) for (const el of cl.namedBindings.elements) { imports.set(el.name.text, target); importName.set(el.name.text, el.propertyName?.text ?? el.name.text); }
         }
       }
       if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
@@ -300,31 +363,50 @@ export function readVue(snap: Snapshot): FrontendFacts {
       }
       // routes: { path: '...', component: X }
       if (ts.isObjectLiteralExpression(n)) {
-        let path: ts.StringLiteral | null = null, comp: ts.Identifier | null = null;
+        let path: ts.StringLiteral | null = null, comp: string | null = null;
+        let meta: string[] | undefined;
         for (const p of n.properties) {
           if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) continue;
+          if (p.name.text === 'meta' && ts.isObjectLiteralExpression(p.initializer)) meta = p.initializer.properties.flatMap((x) => (x.name ? [x.name.getText(sf).replace(/^['"]|['"]$/g, '')] : []));
           if (p.name.text === 'path' && ts.isStringLiteral(p.initializer)) path = p.initializer;
-          if (p.name.text === 'component' && ts.isIdentifier(p.initializer)) comp = p.initializer;
+          if (p.name.text === 'component' && ts.isIdentifier(p.initializer)) comp = p.initializer.text;
+          // a lazy route: `component: () => import('../views/Orders.vue')`, also through defineAsyncComponent
+          if (p.name.text === 'component' && !ts.isIdentifier(p.initializer)) {
+            const spec = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(p.initializer.getText(sf))?.[1];
+            const target = spec ? resolveRel(f, spec, fileSet) : null;
+            if (target) comp = target;
+          }
         }
-        if (path && comp) routes.push({ path: path.text, component: comp.text, file: f, line: lineOfNode(path) });
+        if (path && comp) routes.push({ path: path.text, component: comp, file: f, line: lineOfNode(path), ...(meta?.length ? { meta } : {}) });
       }
       if (ts.isNewExpression(n) && /^(XMLHttpRequest|WebSocket|EventSource)$/.test(n.expression.getText(sf))) opaque.push({ what: `new ${n.expression.getText(sf)}()`, line: lineOfNode(n) });
       if (ts.isCallExpression(n)) {
         const callee = n.expression.getText(sf).replace(/^this\./, '');
-        if (OPAQUE_CALL.test(callee)) opaque.push({ what: `${callee}()`, line: lineOfNode(n) });
+        // a store defined in this app (`useCartStore` from '../stores/cart') is read like any module; one from a package is not
+        const localStore = /^use[A-Z]\w*Store$/.test(callee) && imports.has(callee);
+        if (OPAQUE_CALL.test(callee) && !localStore) opaque.push({ what: `${callee}()`, line: lineOfNode(n) });
         // app.component('chat-box', ChatBox)
         if (/\.component$/.test(callee) && n.arguments.length === 2 && ts.isStringLiteral(n.arguments[0]!) && ts.isIdentifier(n.arguments[1]!)) {
           registered.push({ tag: (n.arguments[0] as ts.StringLiteral).text, file: `${f}#${(n.arguments[1] as ts.Identifier).text}` });
+        }
+        if (/^\w*router\.(beforeEach|beforeResolve|afterEach)$/i.test(callee) && n.arguments[0]) {
+          const body = n.arguments[0].getText(sf);
+          guards.push({ file: f, line: lineOfNode(n), endLine: lineAt(text, off + n.getEnd()), meta: [...new Set([...body.matchAll(/\.meta\??\.(\w+)|\.meta\[['"](\w+)['"]\]/g)].map((m) => m[1] ?? m[2]!))] });
         }
         if (/(^|\.)push$/.test(callee) && /router/.test(callee) && n.arguments[0]) {
           const tp = urlTemplate(n.arguments[0], consts);
           if (tp) pushes.push({ target: tp, line: lineOfNode(n) });
         }
-        const isApi = HTTP_CALL.test(callee) || wrappers.has(callee);
+        // `http.get(…)` on an axios instance made here or imported: its base comes first
+        const inst = /^(\w+)\.(get|post|put|patch|delete|request)$/.exec(callee);
+        const instance = inst ? (instances.get(f)?.get(inst[1]!) ?? (imports.has(inst[1]!) ? instances.get(imports.get(inst[1]!)!)?.get(importName.get(inst[1]!)!) : undefined)) : undefined;
+        const isApi = HTTP_CALL.test(callee) || wrappers.has(callee) || !!instance;
         // inside a wrapper, the URL is the wrapper's parameter: its callers are the calls
-        const insideWrapper = isApi && n.arguments[0] ? enclosing(n, n.arguments[0])?.usesParam === true : false;
+        const tpl0 = isApi && n.arguments[0] ? urlTemplate(n.arguments[0], consts) : null;
+        const insideWrapper = isApi && n.arguments[0] ? enclosing(n, n.arguments[0])?.usesParam === true && (!tpl0 || tpl0.startsWith('{*}')) : false;
         if (isApi && n.arguments[0] && !insideWrapper) {
-          const tpl = urlTemplate(n.arguments[0], consts);
+          const raw0 = tpl0;
+          const tpl = instance && raw0 !== null && !/^https?:/.test(raw0) ? `${instance.base}/${raw0.replace(/^\//, '')}`.replace(/\/$/, '') || '/' : raw0;
           if (!tpl || !tpl.startsWith('/')) opaque.push({ what: `${callee}() to a URL this reader cannot resolve`, line: lineOfNode(n) });
           if (tpl && tpl.startsWith('/')) {
             let verbs = ['GET'];
@@ -373,7 +455,8 @@ export function readVue(snap: Snapshot): FrontendFacts {
             };
             if (opts) scan(opts);
             const line = lineOfNode(n);
-            localCalls.push({ file: f, line, tpl: tpl.replace(/\$\{[^}]*\}/g, '{*}').replace(/(\{\*\})+/g, '{*}'), verbs, ...(verbChoice ? { verbChoice } : {}), ...(payload ? { payload } : {}), code: (text.split('\n')[line - 1] ?? '').trim() });
+            const own = ownerOf(n);
+            localCalls.push({ file: f, line, tpl: tpl.replace(/\$\{[^}]*\}/g, '{*}').replace(/(\{\*\})+/g, '{*}'), verbs, ...(verbChoice ? { verbChoice } : {}), ...(payload ? { payload } : {}), code: (text.split('\n')[line - 1] ?? '').trim(), ...(instance?.assumed ? { baseAssumed: true } : {}), ...(own && !f.endsWith('.vue') ? own : {}) });
           }
         }
       }
@@ -386,14 +469,84 @@ export function readVue(snap: Snapshot): FrontendFacts {
     const tplInfo = tr ? readTemplate(text.slice(tr.start, tr.end), lineAt(text, tr.start) - 1) : { elements: [], shows: [], links: [], uses: [], errors: [] };
     for (const e of tplInfo.errors.slice(0, 1)) opaque.push({ what: `a template Vue could not fully parse (${e})`, line: tr ? lineAt(text, tr.start) : 1 });
     // components drawn in the template are part of the screen too, imported or not
-    const drawn = tplInfo.uses.map((tag) => imports.get(tag) ?? imports.get(tag.replace(/(^|-)(\w)/g, (_m, _d, c: string) => c.toUpperCase())) ?? null).filter((x): x is string => !!x);
+    const drawnTags = tplInfo.uses.map((tag) => ({ tag, file: imports.get(tag) ?? imports.get(tag.replace(/(^|-)(\w)/g, (_m, _d, c: string) => c.toUpperCase())) ?? null })).filter((x): x is { tag: string; file: string } => !!x.file);
+    drawnBy.set(f, drawnTags);
+    const drawn = drawnTags.map((x) => x.file);
     usesByFile.set(f, tplInfo.uses);
-    const depLines: Record<string, number> = Object.fromEntries(importLine);
-    if (scriptSrc) depLines[scriptSrc] = lineAt(text, scriptStart);
-    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set([...imports.values(), ...drawn, ...(scriptSrc ? [scriptSrc] : [])])], depLines, packages: [...packages], opaque });
+    // a module's members, by the lines they span: top-level functions and consts, and the named parts inside them
+    const members: { owner: string; member: string; start: number; end: number }[] = [];
+    if (!f.endsWith('.vue')) {
+      const span = (n: ts.Node): [number, number] => [lineOfNode(n), lineAt(text, off + n.getEnd())];
+      const inner = (owner: string, n: ts.Node): void => {
+        const visitM = (x: ts.Node): void => {
+          if ((ts.isPropertyAssignment(x) || ts.isMethodDeclaration(x) || ts.isShorthandPropertyAssignment(x)) && x.name && !(ts.isPropertyAssignment(x) && ts.isObjectLiteralExpression(x.initializer))) { const [a, b] = span(x); members.push({ owner, member: x.name.getText(sf), start: a, end: b }); return; }
+          if (ts.isFunctionDeclaration(x) && x.name) { const [a, b] = span(x); members.push({ owner, member: x.name.text, start: a, end: b }); return; }
+          if (ts.isVariableStatement(x)) for (const d of x.declarationList.declarations) if (ts.isIdentifier(d.name)) { const [a, b] = span(x); members.push({ owner, member: d.name.text, start: a, end: b }); }
+          ts.forEachChild(x, visitM);
+        };
+        ts.forEachChild(n, visitM);
+      };
+      for (const st of sf.statements) {
+        if (ts.isFunctionDeclaration(st) && st.name) { const [a, b] = span(st); members.push({ owner: st.name.text, member: '()', start: a, end: b }); }
+        if (ts.isVariableStatement(st)) for (const d of st.declarationList.declarations) {
+          if (!ts.isIdentifier(d.name) || !d.initializer) continue;
+          const [a, b] = span(st);
+          const before = members.length;
+          inner(d.name.text, d.initializer);
+          // a member's span is the whole statement when nothing inside is named (`export const http = axios.create(…)`)
+          if (members.length === before) members.push({ owner: d.name.text, member: '()', start: a, end: b });
+        }
+      }
+    }
+    const uses = new Set<string>();
+    const escapes = new Set<string>();
+    // `const orders = useOrdersStore()`: orders.open is the store's open
+    const aliases = new Map<string, string>();
+    const findAliases = (n: ts.Node): void => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && ts.isCallExpression(n.initializer) && ts.isIdentifier(n.initializer.expression) && importName.has(n.initializer.expression.text)) aliases.set(n.name.text, importName.get(n.initializer.expression.text)!);
+      ts.forEachChild(n, findAliases);
+    };
+    findAliases(sf);
+    const walkAlias = (n: ts.Node): void => {
+      if (ts.isIdentifier(n) && aliases.has(n.text) && !(ts.isVariableDeclaration(n.parent) && n.parent.name === n) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n)) {
+        const name = aliases.get(n.text)!;
+        if (ts.isPropertyAccessExpression(n.parent) && n.parent.expression === n) uses.add(`${name}.${n.parent.name.text}`);
+        else escapes.add(name);
+      }
+      ts.forEachChild(n, walkAlias);
+    };
+    walkAlias(sf);
+    const walkUses = (n: ts.Node): void => {
+      if (ts.isImportDeclaration(n)) return;
+      if (ts.isIdentifier(n) && importName.has(n.text) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) && !(ts.isPropertyAssignment(n.parent) && n.parent.name === n)) {
+        const name = importName.get(n.text)!;
+        if (ts.isPropertyAccessExpression(n.parent) && n.parent.expression === n) uses.add(`${name}.${n.parent.name.text}`);
+        else {
+          uses.add(`${name}.()`);
+          // handed on whole (an argument, a spread, a shorthand): which members it reaches is not seen
+          if (!(ts.isCallExpression(n.parent) && n.parent.expression === n)) escapes.add(name);
+        }
+      }
+      ts.forEachChild(n, walkUses);
+    };
+    walkUses(sf);
     if (tr) {
       const tt = text.slice(tr.start, tr.end);
-      if (/<router-view/.test(tt)) roots.push({ file: f, template: tt, line: lineAt(text, tr.start) });
+      for (const [local, name] of aliases) {
+        for (const m of tt.matchAll(new RegExp(`(?<![\\w.$])${local}\\??\\.(\\w+)`, 'g'))) uses.add(`${name}.${m[1]}`);
+        if (new RegExp(`(?<![\\w.$])${local}(?![\\w$]|\\s*\\??\\.)`).test(tt)) escapes.add(name);
+      }
+      for (const [local, name] of importName) {
+        for (const m of tt.matchAll(new RegExp(`(?<![\\w.$])${local}\\??\\.(\\w+)`, 'g'))) uses.add(`${name}.${m[1]}`);
+        if (new RegExp(`(?<![\\w.$])${local}(?![\\w$]|\\s*\\??\\.)`).test(tt)) uses.add(`${name}.()`);
+      }
+    }
+    const depLines: Record<string, number> = Object.fromEntries(importLine);
+    if (scriptSrc) depLines[scriptSrc] = lineAt(text, scriptStart);
+    components.set(f, { file: f, elements: tplInfo.elements, shows: tplInfo.shows, routeParams, pushes, links: tplInfo.links, deps: [...new Set([...imports.values(), ...drawn, ...(scriptSrc ? [scriptSrc] : [])])], depLines, packages: [...packages], opaque, uses: [...uses], injects: [...new Set(importName.values())], ...(escapes.size ? { escapes: [...escapes] } : {}), ...(members.length ? { members } : {}) });
+    if (tr) {
+      const tt = text.slice(tr.start, tr.end);
+      if (/<(router-view|RouterView)\b/.test(tt)) roots.push({ file: f, template: tt, line: lineAt(text, tr.start) });
     }
     // resolve route components to files
     for (const r of routes) if (r.file === f && imports.has(r.component)) (r as { component: string }).component = imports.get(r.component)!;
@@ -417,6 +570,14 @@ export function readVue(snap: Snapshot): FrontendFacts {
       if (at >= 0) globals.push({ tag: g.tag, file: g.file, root: r.file, line: r.line + r.template.slice(0, at).split('\n').length - 1 });
     }
   }
+  // a component the root draws beside <RouterView> (imported there, not registered by name) is on every screen too
+  for (const r of roots) for (const d of drawnBy.get(r.file) ?? []) {
+    if (globals.some((g) => g.file === d.file && g.root === r.file)) continue;
+    const at = r.template.search(new RegExp(`<${d.tag}[\\s>/]`));
+    if (at >= 0) globals.push({ tag: d.tag, file: d.file, root: r.file, line: r.line + r.template.slice(0, at).split('\n').length - 1 });
+  }
+  // member uses are read the Vue way only in a Vue app: in another app, a plain module's imports are not instances it holds
+  if (!vueSeen) for (const [f, c] of components) { const { uses: _u, injects: _i, escapes: _e, members: _m, ...rest } = c; components.set(f, rest); }
   // without a Vue app, objects shaped like { path, component } are not screens
   const unread = [...foreign].map(([framework, fs]) => {
     const dirs = new Set(fs.map((f) => f.slice(0, f.lastIndexOf('/') + 1)));
@@ -424,7 +585,7 @@ export function readVue(snap: Snapshot): FrontendFacts {
     return { framework, files: fs.length, example: fs[0]!, paths: [...fs, ...html] };
   });
   // a route is a screen only when its component was read here: one drawn by another framework is that framework's (named as unread)
-  return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component) && components.has(r.component)) : [], calls, components, globals, files, unread };
+  return { routes: vueSeen ? routes.filter((r) => fileSet.has(r.component) && components.has(r.component)) : [], calls, components, globals, files, unread, ...(guards.length ? { guards } : {}) };
 }
 
 /** Does a link or push target land on this route path? */

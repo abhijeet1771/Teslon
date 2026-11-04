@@ -223,8 +223,9 @@ The first line of every report says which case it was.
 | | |
 |---|---|
 | Back end | Java / Spring: controllers, validation rules, services, records, `@ConfigurationProperties`, Spring AI tools, Maven. The JSON each type sends and reads, as Jackson writes it (`@JsonProperty`, `@JsonIgnore`, `transient`, `@JsonIgnoreProperties`) |
-| Front end | **Vue**: routes, templates, forms, fields, components, the calls each screen makes. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls, and every template read typed by the TypeScript checker (the column, the value, the form field, the dropdown). React and AngularJS code is detected and named under "could not see" until its reader ships |
-| Data and events | what changed code writes to an entity (setters, `save`, `delete`, a result its caller stores) and every screen and job that reads that entity; `publishEvent` and the listeners that take the event; Liquibase and Flyway column changes |
+| Front end | **Vue** (2 and 3): routes (lazy ones included), guards and route `meta`, templates, forms, fields, components, the calls each screen makes (through `fetch`, axios or an `axios.create` instance and its base URL), Pinia stores and composables, and which members of an API module or store a screen uses. **Angular**: routes (lazy route files included), resolvers and guards, templates, components drawn by selector, service calls, and every template read typed by the TypeScript checker (the column, the value, the form field, the dropdown). React and AngularJS code is detected and named under "could not see" until its reader ships |
+| Data and events | what changed code writes to an entity (setters, `save`, `delete`, a builder or factory result its caller stores, a guard before a write) and every screen and job that reads that entity; `publishEvent` and the listeners that take the event; Liquibase and Flyway column changes |
+| Between services | **Kafka**: who publishes to which topic and who listens, topics through constants and `${…}` settings, consumer groups and consumer settings, message shapes, and the chain to what each consumer writes. **Feign**, WebClient and RestClient calls, and the fields another service reads. Spring Cloud Gateway routes. MapStruct mappings |
 | Around the code | dashboards (PromQL panels), JMeter plans, Docker Compose and Kubernetes files, start and deploy scripts, images and fonts (to where the code names them), `pom.xml`, `package.json`, resources under `src/main/resources` |
 
 What each kind of change gets, what is said instead of followed, and where
@@ -244,6 +245,14 @@ and Python. A stack Teslon does not read yet is reported under
   - 20 were correctly "nothing to test in the app";
   - 0 cited lines failed to re-check
   ([research/coverage](research/coverage)).
+- **Probes with truth written first** ([bench/probes](bench/probes)):
+  - 178 PRs on OrderDesk (Spring + Angular);
+  - 79 on ShopFlow (four services on Kafka and Feign, MapStruct, Vue 3);
+  - 9 on spring-petclinic-microservices.
+
+  All are trusted. Extra screens are under 5% and held screens under 6%.
+  How far that is from the whole expectation is in
+  [research/EXPECTATION-SCORECARD-2026-11-04.md](research/EXPECTATION-SCORECARD-2026-11-04.md).
 - **Bench.** On the labelled bench ([bench/results](bench/results)), Spring +
   Vue and Spring + Angular:
   - 18 of 18 places found;

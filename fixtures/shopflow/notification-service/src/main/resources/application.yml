@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: notification-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/notifications
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: notifications
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.shopflow.events
+  mail:
+    host: smtp.shopflow.example
+    port: 587
+shopflow:
+  topics:
+    payments: shop.payments.result
+  mail:
+    from: orders@shopflow.example
+server:
+  port: 8084

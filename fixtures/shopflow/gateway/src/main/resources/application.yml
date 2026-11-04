@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: gateway
+  cloud:
+    gateway:
+      routes:
+        - id: orders
+          uri: lb://orders-service
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - StripPrefix=1
+        - id: invoices
+          uri: lb://billing-service
+          predicates:
+            - Path=/api/invoices/**
+          filters:
+            - StripPrefix=1
+        - id: products
+          uri: lb://catalog-service
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=1
+        - id: notifications
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/notifications/**
+          filters:
+            - StripPrefix=1
+server:
+  port: 8080
