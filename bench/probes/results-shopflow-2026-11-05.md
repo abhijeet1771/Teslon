@@ -1,6 +1,8 @@
 # Probe catalog: shopflow
 
-79 probes · 79 trusted · 0 trust failures · 7 imprecise · extra screens 3.9% (P1 ≤ 5%) · held screens 5.3% (P2 ≤ 10%) · 46 logic units covered · slowest 2011 ms
+79 probes · 79 trusted · 0 trust failures · 7 imprecise · extra screens 3.9% (P1 ≤ 5%) · held screens 5.3% (P2 ≤ 10%) · 46 logic units covered · slowest 2633 ms
+
+skip certificates: 766 skips checked · 765 certified (354 of them rely on content analysis) · 1 not proven, held · unknowns that blocked a skip: none · dangling calls 12.7%
 
 | probe | logic | Teslon said | result |
 |---|---|---|---|
@@ -16,7 +18,7 @@
 | k10-payment-listener-guard: Orders only records successful payments | kafka.consumers, data.writes | T1 S10 U4 · High · 1 held | ✓ |
 | k11-service-under-listener: A late payment result now overrides a cancellation | kafka.consumers, data.writes | T1 S10 U4 · High · 1 held | ✓ |
 | k12-topic-property: The payments topic property gets a typo | kafka.topics, config.placeholders | T1 S12 U2 · High | ✓ |
-| k13-topic-constant-split: The payments topic constant is renamed; the notification property is not | kafka.topics, config.placeholders | T2 S7 U6 · High · 1 held | ✓ |
+| k13-topic-constant-split: The payments topic constant is renamed; the notification property is not | kafka.topics, config.placeholders | T2 S6 U7 · High · 1 held | ✓ |
 | k14-listener-topics-list: Notifications stop listening for cancellations | kafka.consumers | T1 S12 U2 · High | ✓ |
 | k15-async-removed: The confirmation mail is sent on the listener thread | async, kafka.consumers | T1 S14 U0 · High | ✓ |
 | k16-producer-key: Placed orders are keyed by customer email | kafka.producers | T7 S0 U9 · High · 8 held | ✓ |

@@ -76,7 +76,7 @@ export interface Brief {
 }
 
 /** The skip rule, stated once, so a lead can defend every skip with it. */
-export const SKIP_RULE = 'An area is skipped only when every changed line was explained or followed to where it runs, none of it reaches the area, and every file the area runs was read. Each skip names the lines that show it.';
+export const SKIP_RULE = 'An area is skipped only when every changed line was explained or followed to where it runs, none of it reaches the area, and every file the area runs was read. An independent checker then rebuilds what the area runs from the facts of both commits, and a skip it cannot prove is held as unclear. Each skip names the lines that show it.';
 
 /**
  * What CI holds every build to. The proving ground fails the build on any

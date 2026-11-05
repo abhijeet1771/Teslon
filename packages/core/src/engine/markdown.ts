@@ -108,7 +108,9 @@ function header(r: ImpactReport, b: Brief, meta: PrMeta, full: boolean): string[
   const unfollowed = r.ledger.some((l) => l.status === 'not-modelled');
   L.push('| | Areas | |', '|---|---|---|');
   L.push(`| ${STATE_MARK.test} **Test** | **${b.test}** | ${b.test ? `${plural(b.cases, 'case')}${b.first ? `, ${b.first} first` : ''}${effort}` : 'nothing to run'} |`);
-  L.push(`| ${STATE_MARK.skip} **Safe to skip** | **${b.skip}** | ${b.skip ? 'each with proof' : unfollowed ? 'none until every changed line is followed' : 'nothing could be ruled out'} |`);
+  const cert = r.certification;
+  const checked = cert ? `each with proof, re-checked by an independent checker${cert.demoted.length ? `; ${plural(cert.demoted.length, 'skip')} it could not prove ${cert.demoted.length === 1 ? 'is' : 'are'} held as unclear` : ''}` : 'each with proof';
+  L.push(`| ${STATE_MARK.skip} **Safe to skip** | **${b.skip}** | ${b.skip ? checked : unfollowed ? 'none until every changed line is followed' : 'nothing could be ruled out'} |`);
   L.push(`| ${STATE_MARK.unclear} **Unclear** | **${b.unclear}** | ${b.unclear ? 'not ruled out: open each once' : 'none'} |`);
   L.push('');
   L.push(`**${b.confidence.level === 'low' ? 'Not proven' : `${b.confidence.title} confidence`}.** ${esc(b.confidence.detail)}`);

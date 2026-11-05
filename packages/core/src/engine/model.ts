@@ -1,3 +1,4 @@
+import type { Certificate, UnknownEntry } from './certify.js';
 /**
  * What the engine says about a change. Surfaces first: a QA engineer reads
  * screens, fields and data, not files. Every claim carries its hops, and every
@@ -147,5 +148,18 @@ export interface ImpactReport {
   readonly verification: { readonly hops: number; readonly failed: readonly Hop[] };
   /** Channels seen in the repo that no rule in this build covers. */
   readonly notModelled: readonly string[];
+  /**
+   * The skip certificates: every SKIP the engine reached, re-checked by an independent checker over the
+   * facts of both commits. A skip whose certificate fails is held instead. Absent in reports from before 0.5.
+   */
+  readonly certification?: {
+    readonly certified: number;
+    readonly demoted: readonly string[];
+    readonly proofs: readonly Certificate[];
+    readonly unknowns: readonly UnknownEntry[];
+    readonly changed: Readonly<Record<string, number>>;
+    readonly dangling: { readonly calls: number; readonly widened: number; readonly rate: number; readonly unmatched: number };
+    readonly assumptions: readonly { readonly text: string; readonly uses: number }[];
+  };
   readonly ms: number;
 }

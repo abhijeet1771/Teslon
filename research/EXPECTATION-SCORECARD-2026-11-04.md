@@ -2,6 +2,24 @@
 
 2026-11-04, after iteration 8 (ShopFlow: Kafka, mappers, Vue).
 
+> **Update 2026-11-05, after Phase A step 1** (skip certificates and an
+> independent checker; see
+> [CERTIFICATE-2026-11-05.md](CERTIFICATE-2026-11-05.md)).
+>
+> The score stays at **66%**: 83% on the stacks Teslon reads. That is on
+> purpose. Step 1 adds no stack and no precision. It changes how far part 1
+> (trust) can be believed beyond the probes:
+> - Every skip is now re-derived by a checker that shares facts but none of
+>   the engine's rules. A skip it cannot prove is held.
+> - On 748 areas the truth says are reached, the checker would certify none
+>   if the engine had skipped them.
+> - Precision held: OrderDesk 2.6% and ShopFlow 5.3% held screens, as before.
+>   spm went from 0% to 2.5%, for a real unknown it now names.
+>
+> Part 4 (first answer on an app it has not seen) is where this should show
+> next. A new app's blind spots are listed as unknowns before any skip
+> stands on them. The next new app is the test of that.
+
 ## The expectation
 
 A lead or a manager opens a pull request and asks: *which functionality must

@@ -92,7 +92,7 @@ for (const p of probes) {
     p.apply(tools(d));
     git(d, 'add', '-A'); git(d, 'commit', '-qm', p.title); const head = git(d, 'rev-parse', 'HEAD');
     const r = impact({ repo: d, base, head });
-    res = { ...score(p, r), ms: Date.now() - t0 };
+    res = { ...score(p, r), ms: Date.now() - t0, cert: r.certification ? { proofs: r.certification.proofs.length, certified: r.certification.certified, demoted: r.certification.demoted.length, relies: r.certification.proofs.filter((x) => x.ok && x.relies.length).length, unknowns: r.certification.unknowns.filter((u) => u.blocks.length).map((u) => u.kind), dangling: r.certification.dangling } : null };
   } catch (e) {
     res = { fails: [{ kind: 'CRASH', msg: String(e.stack ?? e).split('\n').slice(0, 3).join(' | ') }], extra: [], held: [], verdict: 'crashed', ms: Date.now() - t0 };
   } finally { rmSync(d, { recursive: true, force: true }); }
@@ -108,11 +108,16 @@ const screens = rows.length * SCREENS.length;
 const extra = rows.reduce((n, r) => n + r.extra.length, 0);
 const held = rows.reduce((n, r) => n + r.held.length, 0);
 const logic = [...new Set(rows.flatMap((r) => r.logic))].sort();
+const certs = rows.map((r) => r.cert).filter(Boolean);
+const proofs = certs.reduce((n, c) => n + c.proofs, 0), certified = certs.reduce((n, c) => n + c.certified, 0), demotedN = certs.reduce((n, c) => n + c.demoted, 0), reliesN = certs.reduce((n, c) => n + c.relies, 0);
+const uk = new Map(); for (const c of certs) for (const k of c.unknowns) uk.set(k, (uk.get(k) ?? 0) + 1);
+const dangling = certs.length ? certs.reduce((n, c) => n + c.dangling.rate, 0) / certs.length : 0;
+const certLine = `skip certificates: ${proofs} skips checked · ${certified} certified (${reliesN} of them rely on content analysis) · ${demotedN} not proven, held · unknowns that blocked a skip: ${uk.size ? [...uk].map(([k, v]) => `${k} ${v}`).join(', ') : 'none'} · dangling calls ${(100 * dangling).toFixed(1)}%`;
 const summary = `${rows.length} probes · ${rows.filter((r) => !r.trust).length} trusted · ${trustFails} trust failures · ${imprecise} imprecise · extra screens ${(100 * extra / screens).toFixed(1)}% (P1 ≤ 5%) · held screens ${(100 * held / screens).toFixed(1)}% (P2 ≤ 10%) · ${logic.length} logic units covered · slowest ${Math.max(...rows.map((r) => r.ms))} ms`;
-console.log(`\n${summary}`);
+console.log(`\n${summary}\n${certLine}`);
 if (outJson) writeFileSync(outJson, JSON.stringify({ summary, rows }, null, 2));
 if (outMd) {
-  const L = [`# Probe catalog: ${appName}`, '', summary, '', '| probe | logic | Teslon said | result |', '|---|---|---|---|'];
+  const L = [`# Probe catalog: ${appName}`, '', summary, '', certLine, '', '| probe | logic | Teslon said | result |', '|---|---|---|---|'];
   for (const r of rows) L.push(`| ${r.id}: ${r.title} | ${r.logic.join(', ')} | ${r.verdict}${r.extra.length ? ` · +${r.extra.length} extra` : ''}${r.held.length ? ` · ${r.held.length} held` : ''} | ${r.fails.length ? r.fails.map((f) => `**${f.kind}** ${f.msg.replace(/\|/g, '\\|')}`).join('<br>') : '✓'} |`);
   writeFileSync(outMd, L.join('\n') + '\n');
 }

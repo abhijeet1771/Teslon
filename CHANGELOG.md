@@ -4,6 +4,47 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 
 ## Unreleased
 
+### Added (Phase A, step 1: skip certificates and an independent checker)
+- **Every SKIP carries a certificate, re-derived by a checker that shares
+  facts with the engine but none of its rules**
+  (`packages/core/src/engine/certify.ts`).
+  - The checker builds one dependency graph over base ∪ head and walks it
+    forward from the area. The engine walks backward from the change.
+  - It works out on its own what changed, by comparing the definitions on
+    both sides: method tokens, members, route entries and setting keys.
+  - A skip whose area runs into changed code, or into something the facts
+    cannot pin down, is held as **UNCLEAR**. It gets the first blocker, its
+    path, and a citation that re-checks.
+- **Unknowns are facts**, ranked by how many skips each one blocks:
+  - a network call no fact records;
+  - an API call that matches nothing near it;
+  - a Java HTTP client with no call read;
+  - reflection;
+  - an interface nothing implements;
+  - an unresolved topic;
+  - a changed file no reader read;
+  - an area missing from the facts.
+- **Dangling-edge rate:** calls to app methods the facts did not resolve
+  are widened to every method of that name, and their share is printed.
+- **Run versus content.** Changed code the area runs refuses the skip. A
+  changed definition reached only as content is listed under `relies`, and
+  the skip rests on the engine's field-level and data-flow analysis there.
+  Content here means a type's shape, a data field, rows another method
+  writes, or what a producer and its callers send.
+- The report gains `certification`: proofs with sha256 digests, unknowns, Δ
+  by kind, the dangling rate, and the assumptions used. The PR comment says
+  skips were re-checked, and how many were held.
+- **A soundness test** (`bench/probes/certscan.mjs --truth`, now in CI): every
+  area a probe's truth says is reached is handed to the checker as if it had
+  been skipped. The run fails if one is certified with nothing to show.
+- Probe and history reports print the certificate counts.
+- **Fixed (Vue reader):** a static attribute such as `class="cart"` no longer
+  counts as the template handing a script value of that name on whole. Only
+  `{{ … }}` and bound attributes (`:x`, `v-*`, `@x`, `#slot`) are read as
+  expressions.
+- Design, decision and measurements are in
+  [research/CERTIFICATE-2026-11-05.md](research/CERTIFICATE-2026-11-05.md).
+
 ### Added (iteration 8: Kafka, mappers and Vue, on ShopFlow)
 - **ShopFlow** (`fixtures/shopflow`): four Spring Boot services on Kafka and
   Feign, MapStruct and builders, a gateway, and a Vue 3 front end with Pinia.

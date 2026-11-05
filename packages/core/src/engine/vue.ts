@@ -531,7 +531,10 @@ export function readVue(snap: Snapshot): FrontendFacts {
     };
     walkUses(sf);
     if (tr) {
-      const tt = text.slice(tr.start, tr.end);
+      // only expressions name script values: {{ … }} and bound attributes (:x, v-*, @x, #slot). A static
+      // attribute or plain text is a string, so `class="cart"` is not the cart store
+      const raw = text.slice(tr.start, tr.end);
+      const tt = [...raw.matchAll(/\{\{([\s\S]*?)\}\}/g), ...raw.matchAll(/(?:^|\s)(?::|v-[\w:.\[\]-]*|@|#)[\w.:\[\]-]*\s*=\s*"([^"]*)"/g), ...raw.matchAll(/(?:^|\s)(?::|v-[\w:.\[\]-]*|@|#)[\w.:\[\]-]*\s*=\s*'([^']*)'/g)].map((m) => m[1]!).join('\n');
       for (const [local, name] of aliases) {
         for (const m of tt.matchAll(new RegExp(`(?<![\\w.$])${local}\\??\\.(\\w+)`, 'g'))) uses.add(`${name}.${m[1]}`);
         if (new RegExp(`(?<![\\w.$])${local}(?![\\w$]|\\s*\\??\\.)`).test(tt)) escapes.add(name);

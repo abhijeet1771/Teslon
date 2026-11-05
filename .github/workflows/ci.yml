@@ -46,6 +46,11 @@ jobs:
       - name: Probe catalog on ShopFlow (Kafka, mappers, Vue)
         run: node bench/probes/run.mjs --app shopflow --md probes-shopflow.md && cat probes-shopflow.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Skip checker soundness (every truth-reached area, handed over as if skipped)
+        # The independent checker (packages/core/src/engine/certify.ts) must refuse each one, through code
+        # the area runs or as content it relies on. One it would certify with nothing to show fails the build.
+        run: set -o pipefail; node bench/probes/certscan.mjs --app=shopflow --truth | tail -5 | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Invariants must be covered, not merely passing
         run: |
           # A green suite that stopped asserting the invariants is worse than

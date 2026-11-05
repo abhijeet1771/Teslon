@@ -22,6 +22,7 @@ measures it.
 | 8a: ShopFlow written (Kafka, mappers, Vue), first run | **silent on 8 of 9 screens** | **wrong skips in most Kafka probes** | **1 citation bug** (Feign) | ✓ | **8 screens with no answer** | **2 / 79** | — | — | 46 |
 | 8b: Vue reader and Kafka model | ✓ (5 fields not said) | **12 wrong skips** (a removed guard under a listener, a builder step, links to a renamed route, a migration's job) | ✓ | ✓ | ✓ | 68 / 79 | 4.9% ✓ | 14.9% | 46 |
 | 8c: all fixed | ✓ | ✓ (1 OrderDesk regression found, fixed) | ✓ | ✓ | ✓ | **79 / 79** ShopFlow, **178 / 178** OrderDesk | **3.9%** ✓ / **4.4%** ✓ | **5.3%** ✓ / **2.6%** ✓ | 46 + 70 |
+| 9: skip certificates, an independent checker | ✓ | ✓, now re-derived: of 748 areas the truth says are reached, the checker would certify **0** if the engine had skipped them | ✓ | ✓ | ✓ | **79 / 79**, **178 / 178**, **9 / 9** spm | 3.9% ✓ / 4.4% ✓ | **5.3%** ✓ / **2.6%** ✓ (spm 2.5%) | 46 + 70 |
 
 ## What each iteration found and fixed
 
@@ -329,6 +330,35 @@ The other suites are unchanged:
 | Proving ground | 33 / 33, ideal 16 / 16 |
 | Bench | 18 / 18, no silent misses, no wrong skips |
 | 60-commit history scans, spm and JHipster | 0 citation failures, 0 crashes; held areas on JHipster 435 → 431 |
+
+### Iteration 9: skip certificates and an independent checker (Phase A, step 1)
+
+Every SKIP now carries a certificate. A checker that shares facts with the
+engine but none of its rules re-derives it from both commits: what the area
+depends on, what changed, and what the facts cannot pin down. A skip it
+cannot prove is held. Design and numbers are in
+[CERTIFICATE-2026-11-05.md](CERTIFICATE-2026-11-05.md).
+- **Soundness, measured.** Every area a probe's truth says is reached was
+  handed to the checker as if the engine had skipped it. That is 255 on
+  ShopFlow and 493 on OrderDesk.
+  - 57% are refused through code the area runs.
+  - The rest are found as content the skip relies on.
+  - None is certified with nothing to show.
+
+  The first such run certified 61 of ShopFlow's. Each miss was a hole in the
+  checker, fixed: links to a moved route, values made upstream of a write or
+  a send, a screen moved by a parent route, nested request rules, a MapStruct
+  `@MappingTarget` update.
+- **Precision kept.** Skips the checker refuses:
+  - 3 of 1950 on OrderDesk (a Spring Boot bump, which reaches everything);
+  - 1 of 766 on ShopFlow;
+  - 11 of 55 on spm.
+
+  The spm ones are a real unknown: a `WebClient` call the reader does not
+  read. Held screens are unchanged on OrderDesk (2.6%) and ShopFlow (5.3%).
+- **One reader bug found by the checker:** a static `class="cart"` attribute
+  made the NavBar "hand on" the cart store, so every screen used every store
+  member. Fixed in `vue.ts`.
 
 ## Not yet perfect
 

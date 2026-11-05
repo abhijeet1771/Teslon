@@ -7,6 +7,7 @@ import { followChanges, browserCalls, type WhereCtx } from './where.js';
 import { followWritesAndEvents } from './dataflow.js';
 import { responseShape, contractCheck } from './shape.js';
 import { fileKind, noAppEffect } from './kinds.js';
+import { certify } from './certify.js';
 import type { ImpactReport, Delta, Surface, Case, Hop, Unseen, LedgerEntry, Tier, FileKind, Triage, Held } from './model.js';
 
 /**
@@ -687,6 +688,29 @@ export function impact(opts: ImpactOptions): ImpactReport {
       heldScreens.push({ id: s.id, kind: 'job', name: s.name, where: s.where, why: `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this job cannot be ruled out`, evidence: s.evidence ?? [] });
     }
   }
+  /* ---------- 3b. a skip is a proof: the independent checker certifies each one, or it is held ---------- */
+  const toCertify = [...surfaces.values()].filter((s) => s.tier === 'skip' && (s.kind === 'screen' || s.kind === 'job')).map((s) => s.id);
+  const cert = certify({ base: B, head: H, fb, fh, ub, uh: ui, changes, areas: toCertify });
+  const demoted: string[] = [];
+  for (const p of cert.proofs) {
+    if (p.ok) continue;
+    const s = surfaces.get(p.area);
+    if (!s) continue;
+    surfaces.delete(p.area);
+    demoted.push(p.area);
+    const b0 = p.blockers[0]!;
+    const n = p.blockers.length;
+    const how = b0.chain.length > 1 ? ` (${b0.chain.slice(0, 6).join(' → ')}${b0.chain.length > 6 ? ' → …' : ''})` : '';
+    const text = (b0.at.side === 'base' ? B : H).line(b0.at.file, b0.at.line);
+    const quote = (text ?? '').trim().slice(0, 40);
+    heldScreens.push({
+      id: s.id, ...(s.kind === 'job' ? { kind: 'job' as const } : {}), name: s.name, where: s.where,
+      why: `Teslon could not prove this skip: it depends on ${b0.what}${how}, which ${b0.kind === 'changed' ? 'this PR changes' : 'Teslon cannot read'}${n > 1 ? `, and ${n - 1} more` : ''}`,
+      // the blocker's own line, when it names one (an area missing from the facts names none)
+      evidence: [...(text !== null ? [{ label: b0.kind === 'changed' ? 'Changed, and reached' : 'Not read', file: b0.at.file, line: b0.at.line, quote, rule: `${b0.what}: ${b0.kind === 'changed' ? 'changed by this PR' : 'unknown'}`, ...(b0.at.side ? { side: b0.at.side } : {}) }] : []), ...(s.evidence ?? []).slice(0, 2)],
+    });
+  }
+  if (demoted.length) unseen.push({ what: `${demoted.length} skip${demoted.length === 1 ? '' : 's'} the checker could not prove: ${demoted.map((id) => id.replace(/^screen:/, '')).join(', ')}`, why: 'what each one depends on includes code this PR changes, or something Teslon cannot read, so it is not safe to skip', resolve: 'open each one and check it works as before', areas: demoted });
   if (held || heldJobs) unseen.push({ what: `${[held ? `${held} screen${held === 1 ? '' : 's'}` : '', heldJobs ? `${heldJobs} job${heldJobs === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} not reached by what was followed`, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines nothing followed (LEDGER), so no ${held ? 'screen' : 'job'} can be ruled out` : 'a change reaches every screen', resolve: unfollowed.length ? 'read the NOT MODELLED lines, or test these screens' : 'test every screen', areas: heldNotReached });
   if (notRuledOut.length) unseen.push({ what: `${notRuledOut.length} screen${notRuledOut.length === 1 ? '' : 's'} that could not be ruled out: ${notRuledOut.join(', ')}`, why: 'each runs changed code or calls a changed API, but nothing on it was traced to a visible change', resolve: 'open each one and check it works as before', areas: heldNotRuledOut });
   for (const u of ui.unread) unseen.push({ what: `the ${u.framework} front end (${u.files} file${u.files === 1 ? '' : 's'}, e.g. ${u.example})`, why: `this build reads Vue and Angular front ends, not ${u.framework} yet, so these screens are neither listed nor ruled out`, resolve: `test the ${u.framework} screens that use the changed APIs by hand`, files: u.paths });
@@ -736,7 +760,9 @@ export function impact(opts: ImpactOptions): ImpactReport {
   return {
     schema: 'teslon.impact/1', triage, repo: opts.repo, base: B.ref, head: H.ref,
     deltas, surfaces: [...surfaces.values()].sort((a, b) => RANK[b.tier] - RANK[a.tier] || a.id.localeCompare(b.id)),
-    cases, held: heldScreens, unseen, ledger, verification: { hops: count, failed }, notModelled, ms: Date.now() - t0,
+    cases, held: heldScreens, unseen, ledger, verification: { hops: count, failed }, notModelled,
+    certification: { certified: cert.proofs.filter((p) => p.ok).length, demoted, proofs: cert.proofs, unknowns: cert.unknowns, changed: cert.changed, dangling: cert.dangling, assumptions: cert.assumptions },
+    ms: Date.now() - t0,
   };
 }
 

@@ -210,6 +210,15 @@ The first line of every report says which case it was.
   - nothing reaches it through data Teslon cannot read.
   Otherwise it is **Unclear**, never "safe". This holds for jobs as well as
   screens.
+- **Every skip is re-checked by a second, independent checker.** It shares
+  the facts but none of the engine's rules.
+  - It rebuilds what the area depends on from both commits.
+  - It works out on its own what changed.
+  - It refuses the skip if the area runs into changed code, or into
+    something the facts cannot pin down (an unread call, reflection, an
+    unresolved topic).
+  - A refused skip is held as Unclear, with the path that blocked it. See
+    [research/CERTIFICATE-2026-11-05.md](research/CERTIFICATE-2026-11-05.md).
 - **Not visible is a result, not a silence.** Other repositories, production
   data, flags in a flag service, mobile clients and partner callers are listed
   with how to check them.
@@ -251,6 +260,10 @@ and Python. A stack Teslon does not read yet is reported under
   - 9 on spring-petclinic-microservices.
 
   All are trusted. Extra screens are under 5% and held screens under 6%.
+- **Skip checker soundness.** Every area a probe's truth says is reached was
+  handed to the independent checker as if it had been skipped: 748 areas on
+  ShopFlow and OrderDesk. It certified none of them. This runs in CI
+  ([research/CERTIFICATE-2026-11-05.md](research/CERTIFICATE-2026-11-05.md)).
   How far that is from the whole expectation is in
   [research/EXPECTATION-SCORECARD-2026-11-04.md](research/EXPECTATION-SCORECARD-2026-11-04.md).
 - **Bench.** On the labelled bench ([bench/results](bench/results)), Spring +
