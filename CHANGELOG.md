@@ -4,6 +4,14 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 
 ## Unreleased
 
+### Added (live run on GitHub)
+- `bench/probes/publish.mjs <app> <dir> [remote] [--only ids]` publishes a
+  fixture app with probes as branches, and the Teslon workflow on main. Each
+  probe can then be opened as a real pull request.
+- The first live run covered 29 OrderDesk and 26 ShopFlow pull requests on
+  GitHub, run by the Teslon Action. All 55 comments match the lab answer
+  ([research/LIVE-RUN-2026-11-05.md](research/LIVE-RUN-2026-11-05.md)).
+
 ### Added (Phase A, step 1: skip certificates and an independent checker)
 - **Every SKIP carries a certificate, re-derived by a checker that shares
   facts with the engine but none of its rules**

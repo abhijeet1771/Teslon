@@ -19,6 +19,15 @@
 > Part 4 (first answer on an app it has not seen) is where this should show
 > next. A new app's blind spots are listed as unknowns before any skip
 > stands on them. The next new app is the test of that.
+>
+> **Live run, the same day** ([LIVE-RUN-2026-11-05.md](LIVE-RUN-2026-11-05.md)).
+> - 55 real GitHub PRs on OrderDesk and ShopFlow, run by the Teslon Action.
+> - 55 of 55 comments give exactly the lab answer.
+> - All runs are green, and every citation re-checked on GitHub's test merge.
+>
+> Part 9 (proven on real PRs) moves from 2 to 3: the whole path is proven
+> live. It is not higher because the PRs are Teslon's own fixtures, not a
+> real team's. **Total: about 67%.**
 
 ## The expectation
 
