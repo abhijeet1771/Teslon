@@ -4,6 +4,52 @@ Notable changes to Teslon. Dates are the day work landed, not a release.
 
 ## Unreleased
 
+### Added (the gauntlet: hundreds of hard tests, truth from the compiler)
+- `bench/gauntlet` adds a compiler oracle:
+  - javac and Maven build the fixtures, and `javap` reads the bytecode into a
+    call graph;
+  - on top of it go the edges Spring, Jackson, Kafka, Feign, events,
+    validation and JPA make at run time;
+  - a hand-written map gives what each screen calls.
+- Three mutation families run in CI (the `gauntlet` job). Every mutant is
+  compile-proven:
+  - one behaviour mutant per method (200);
+  - every endpoint path and controller prefix moved (34);
+  - a comment inside every method (200).
+
+  All 434 are trusted.
+- 32 super-hard probes: `catalog-superhard.mjs` (OrderDesk) and
+  `catalog-superhard-shopflow.mjs`. They cover start-up failures,
+  `-parameters`, profiles turned on by Kubernetes, `::ng-deep`, selector and
+  input renames, Flyway, the gateway, and Go, Python and Kotlin files.
+- `research/CHANGE-ATLAS-2026-11-05.md`: every kind of change, about 150 in
+  17 families, with Teslon's status.
+- `research/TECH-LANDSCAPE-2026-11-05.md`: the 2025 surveys, what Teslon
+  reads, and the order of the next readers.
+
+### Fixed (found by the gauntlet)
+- A comment or layout change inside a method listed its screens to test.
+  Methods, and whole files, are now compared token for token. This also
+  applies to the Kafka producer and data-write analyses. There are 6 new
+  unit tests (`startup.test.mjs`).
+- Changes that stop a service from starting were skipped. New:
+  `startup.ts`. When one of these is found, every API and job of the service
+  is listed:
+  - a bean outside the component scan;
+  - a removed `@Service` that another bean needs;
+  - a constructor dependency that no bean provides;
+  - a derived query on a property that does not exist;
+  - an edited or out-of-order Flyway migration.
+- `<parameters>false</parameters>` in the compiler plugin was "no effect".
+  Endpoints whose bindings have no name are now listed, and any other change
+  to the compiler plugin is said and held.
+- A deployment that turns a Spring profile on now follows that profile's
+  settings.
+- A component style that escapes its component (`::ng-deep` with no `:host`,
+  or no encapsulation) now counts for every screen.
+- The independent checker learned the start-up risks, profiles and style
+  leaks. Its soundness test covers 895 areas, and it certifies none.
+
 ### Added (live run on GitHub)
 - `bench/probes/publish.mjs <app> <dir> [remote] [--only ids]` publishes a
   fixture app with probes as branches, and the Teslon workflow on main. Each

@@ -82,3 +82,37 @@ jobs:
       - uses: ./
         with:
           comment: 'false'
+
+  # The mutation gauntlet (bench/gauntlet, research/GAUNTLET-2026-11-05.md): both fixtures compiled with javac,
+  # then a compile-proven behaviour mutant per method, every endpoint path and controller prefix moved, and a
+  # comment inside every method. The truth is the bytecode oracle's, not Teslon's. A wrong skip, a silent area,
+  # a failed citation, a crash or a comment-only mutant listed to test fails the build.
+  gauntlet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - run: npm ci && npm run build
+      - name: Compile the fixtures
+        run: |
+          bash bench/gauntlet/build.sh orderdesk "$RUNNER_TEMP/od"
+          bash bench/gauntlet/build.sh shopflow "$RUNNER_TEMP/sf"
+      - name: Make the mutants and run Teslon on each
+        run: |
+          set -eo pipefail
+          for app in orderdesk:od shopflow:sf; do
+            a=${app%%:*}; d="$RUNNER_TEMP/${app##*:}"
+            for k in behaviour route comment; do
+              node bench/gauntlet/mutate.mjs --kind $k $a "$d" "$RUNNER_TEMP/$a-$k.json"
+              node bench/gauntlet/run.mjs "$RUNNER_TEMP/$a-$k.json" | tail -1 | sed "s/^/$a $k: /" | tee -a "$GITHUB_STEP_SUMMARY"
+            done
+          done

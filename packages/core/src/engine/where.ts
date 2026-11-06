@@ -2,7 +2,7 @@ import ts from 'typescript';
 import type { Snapshot, ChangedFile } from './snapshot.js';
 import { exposedAs, templateHits, type SpringFacts, type Endpoint } from './spring.js';
 import { targetsRoute, routeQuote, callMadeBy, usesMembers, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
-import { annStrings, annPairs, type JType, type JMethod } from './java.js';
+import { annStrings, annPairs, sameTokens, type JType, type JMethod } from './java.js';
 import { startupRisks, activeProfiles } from './startup.js';
 import type { Delta, Surface, Case, Hop, Unseen, Tier } from './model.js';
 import { fileKind } from './kinds.js';
@@ -577,6 +577,13 @@ export function followChanges(ctx: WhereCtx): void {
   for (const cf of ctx.changes) {
     if (fileKind(cf.path) !== 'java') continue;
     fileOfGroup = cf.path;
+    // the same Java token for token: only comments or layout changed, and it compiles to the same code
+    if (cf.status === 'modified' && /\.java$/.test(cf.path) && sameTokens(B.read(cf.path) ?? '', H.read(cf.path) ?? '')) {
+      for (const n of cf.headLines) ctx.follow(cf.path, n);
+      for (const n of cf.baseLines) ctx.follow(cf.path, n, 'base');
+      ctx.noEffect(cf.path, 'only comments or layout changed: the code is the same, token for token');
+      continue;
+    }
     const jh = fh.javaFiles.get(cf.path);
     const jbf = fb.javaFiles.get(cf.path);
     interface Group { type: JType; method: JMethod | null; lines: number[]; baseLines: number[]; gone: boolean }

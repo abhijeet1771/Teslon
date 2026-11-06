@@ -28,6 +28,17 @@
 > Part 9 (proven on real PRs) moves from 2 to 3: the whole path is proven
 > live. It is not higher because the PRs are Teslon's own fixtures, not a
 > real team's. **Total: about 67%.**
+>
+> **The gauntlet, 2026-11-06** ([GAUNTLET-2026-11-05.md](GAUNTLET-2026-11-05.md)).
+> - 466 new tests with truth from the compiler or written first: 434
+>   compile-proven mutants and 32 super-hard PRs. All are trusted after the
+>   fixes.
+> - The fixes cover start-up failures, compiler settings, profiles turned on
+>   by deployments, style leaks, and noise from comments.
+>
+> Part 3 (trust on hard PRs) and part 5 (Java patterns) each gain a point:
+> what the compiler accepts but Spring refuses is now covered, with truth not
+> written by Teslon. **Total: about 69%.**
 
 ## The expectation
 

@@ -1,8 +1,8 @@
 # Probe catalog: shopflow
 
-79 probes · 79 trusted · 0 trust failures · 7 imprecise · extra screens 3.9% (P1 ≤ 5%) · held screens 5.3% (P2 ≤ 10%) · 46 logic units covered · slowest 2633 ms
+93 probes · 93 trusted · 0 trust failures · 8 imprecise · extra screens 4.1% (P1 ≤ 5%) · held screens 11.7% (P2 ≤ 10%) · 58 logic units covered · slowest 1519 ms
 
-skip certificates: 766 skips checked · 765 certified (354 of them rely on content analysis) · 1 not proven, held · unknowns that blocked a skip: none · dangling calls 12.7%
+skip certificates: 802 skips checked · 801 certified (378 of them rely on content analysis) · 1 not proven, held · unknowns that blocked a skip: none · dangling calls 12.7%
 
 | probe | logic | Teslon said | result |
 |---|---|---|---|
@@ -85,3 +85,17 @@ skip certificates: 766 skips checked · 765 certified (354 of them rely on conte
 | f20-readme: README explains the topics | files.docs | T0 S0 U0 · High | ✓ |
 | a01-async-write: Sent mails are logged as DELIVERED | async, data.writes | T2 S12 U1 · High | **IMPRECISE** screen:/notifications is unclear, truth says test |
 | a02-enable-async-removed: Mail is no longer sent asynchronously | async | T4 S12 U0 · High · +1 extra | ✓ |
+| v4-01-flyway-edited: The applied orders migration is edited in place | data.migrations, spring.startup | T9 S0 U10 · Partial · 5 held | ✓ |
+| v4-02-flyway-below-applied: A migration numbered below the one already applied | data.migrations, spring.startup | T10 S10 U0 · High | ✓ |
+| v3-03-feign-name: The catalog client asks for "catalog" instead of "catalog-service" | services.feign, services.discovery | T0 S0 U9 · Partial · 8 held | **IMPRECISE** screen:/orders/new is unclear, truth says test |
+| v3-04-gateway-strip-two: The gateway strips two path parts from invoice calls | services.gateway-routes | T0 S0 U9 · Partial · 6 held | ✓ |
+| v4-05-gateway-catch-all-first: A catch-all route to orders-service goes first | services.gateway-routes | T0 S0 U9 · Partial · 2 held | ✓ |
+| v4-06-gateway-drops-auth: The gateway removes the Authorization header, which no service checks | services.gateway-filters, security.http | T0 S0 U9 · Partial · 9 held | ✓ |
+| v4-07-lombok-fluent: lombok.config makes accessors fluent in orders-service | build.lombok, java.accessors | T0 S0 U9 · Partial · 5 held | ✓ |
+| v3-09-listener-concurrency: Stock reservation runs three consumers in parallel | kafka.consumers, concurrency | T1 S14 U0 · High | ✓ |
+| v4-10-vite-base: The front end is built for /shop/ | build.bundler, ui.shell | T0 S0 U9 · Partial | ✓ |
+| v4-11-mount-point: index.html loses the app mount point | ui.shell, ui.html | T10 S6 U0 · High | ✓ |
+| v3-12-toast-host-removed: App.vue stops drawing the toast host | ui.shell, vue.components | T10 S6 U0 · High · +6 extra | ✓ |
+| v1-13-tsconfig-only: The front-end tsconfig turns off strict mode | build.typescript | T0 S0 U9 · Partial · 9 held | ✓ |
+| v4-14-python-price-sync: The nightly price sync rounds prices up | foreign.python, data.writes | T0 S0 U9 · Partial · 7 held | ✓ |
+| v3-15-kotlin-file: A Kotlin helper lands in catalog-service | foreign.kotlin | T0 S0 U9 · Partial · 9 held | ✓ |

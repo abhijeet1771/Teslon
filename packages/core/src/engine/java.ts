@@ -369,3 +369,37 @@ export function annText(a: JAnnotation): string {
 export function hasAnn(list: readonly JAnnotation[], ...names: string[]): JAnnotation | undefined {
   return list.find((a) => names.includes(a.name));
 }
+
+/**
+ * Lines of methods whose code is the same on both sides, token for token (return type, annotations, parameters,
+ * body): a change there is in comments or layout only, and the method runs as before.
+ */
+export function sameCodeLines(base: JavaFile | undefined, head: JavaFile | undefined): { head: Set<number>; base: Set<number> } {
+  const out = { head: new Set<number>(), base: new Set<number>() };
+  if (!base?.ok || !head?.ok) return out;
+  const ann = (a: JAnnotation): string => `@${a.name}(${a.args.map((x) => x.t).join(' ')})`;
+  const sig = (m: JMethod): string => [m.returnType, ...m.annotations.map(ann), ...m.params.map((v) => `${v.annotations.map(ann).join(' ')} ${v.type} ${v.name}`), '{', ...m.body.map((x) => x.t)].join('\u0001');
+  for (const ht of head.types) {
+    const bt = base.types.find((t) => t.name === ht.name);
+    if (!bt) continue;
+    for (const hm of ht.methods) {
+      const hs = ht.methods.filter((m) => m.name === hm.name && m.params.length === hm.params.length);
+      const bs = bt.methods.filter((m) => m.name === hm.name && m.params.length === hm.params.length);
+      if (hs.length !== 1 || bs.length !== 1 || sig(bs[0]!) !== sig(hm)) continue;
+      const span = (m: JMethod, into: Set<number>): void => { for (let n = Math.min(m.line, ...m.annotations.map((a) => a.line)); n <= m.endLine; n++) into.add(n); };
+      span(hm, out.head); span(bs[0]!, out.base);
+    }
+  }
+  return out;
+}
+
+/** The two sources are the same Java, token for token: they differ only in comments and layout. */
+export function sameTokens(a: string, b: string): boolean {
+  // a side that does not parse is not the same code: the readers report it as unreadable
+  try {
+    const x = tokenize(a), y = tokenize(b);
+    return x.length === y.length && x.every((t, i) => t.t === y[i]!.t);
+  } catch {
+    return false;
+  }
+}

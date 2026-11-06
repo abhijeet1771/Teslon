@@ -1,6 +1,6 @@
 import type { Hop } from './model.js';
 import type { SpringFacts, Endpoint, Listener, Channel } from './spring.js';
-import type { JType, JMethod, JavaFile } from './java.js';
+import { sameCodeLines, sameTokens, type JType, type JMethod, type JavaFile } from './java.js';
 import { browserCalls, screenTitle, type WhereCtx } from './where.js';
 import { callMadeBy, routeQuote } from './vue.js';
 import { fileKind } from './kinds.js';
@@ -194,6 +194,8 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
 
   for (const cf of ctx.changes) {
     if (fileKind(cf.path) !== 'java' || /(^|\/)src\/test\//.test(cf.path)) continue;
+    // the same Java token for token writes what it wrote before
+    if (cf.status === 'modified' && /\.java$/.test(cf.path) && sameTokens(B.read(cf.path) ?? '', H.read(cf.path) ?? '')) continue;
     const sides: { side: 'head' | 'base'; f: SpringFacts; jf: JavaFile | undefined; lines: number[]; text: (n: number) => string }[] = [
       { side: 'head', f: fh, jf: fh.javaFiles.get(cf.path), lines: cf.hunks.flatMap((h) => h.head), text: (n) => H.line(cf.path, n) ?? '' },
       { side: 'base', f: fb, jf: fb.javaFiles.get(cf.path), lines: cf.hunks.flatMap((h) => h.base), text: (n) => B.line(cf.path, n) ?? '' },
@@ -565,11 +567,15 @@ export function followWritesAndEvents(ctx: WhereCtx): DataFlow {
     for (const l of [...lh, ...lb]) for (const t of l.takes) if (!/^(ConsumerRecord|Message|String|Object|Acknowledgment|byte)$/.test(t)) messageTypes.add(t);
     for (const cf of ctx.changes) {
       if (fileKind(cf.path) !== 'java' || /(^|\/)src\/test\//.test(cf.path)) continue;
+      if (cf.status === 'modified' && /\.java$/.test(cf.path) && sameTokens(B.read(cf.path) ?? '', H.read(cf.path) ?? '')) continue;
+      // a method whose code is the same, token for token, publishes what it did before
+      const quiet = sameCodeLines(fb.javaFiles.get(cf.path), fh.javaFiles.get(cf.path));
       for (const [side, f, S, ns] of [['head', fh, H, cf.headLines], ['base', fb, B, cf.baseLines]] as const) {
         const jf = f.javaFiles.get(cf.path);
         if (!jf) continue;
         const sideOf = side === 'base' ? { side: 'base' as const } : {};
         for (const n of ns) {
+          if ((side === 'head' ? quiet.head : quiet.base).has(n)) continue;
           const code = (S.line(cf.path, n) ?? '').trim();
           if (!code || /^(\/\/|\*|\/\*|import\s|package\s)/.test(code) || code === '}' || code === '{') continue;
           const at = locate(jf.types, n);

@@ -23,6 +23,7 @@ measures it.
 | 8b: Vue reader and Kafka model | ✓ (5 fields not said) | **12 wrong skips** (a removed guard under a listener, a builder step, links to a renamed route, a migration's job) | ✓ | ✓ | ✓ | 68 / 79 | 4.9% ✓ | 14.9% | 46 |
 | 8c: all fixed | ✓ | ✓ (1 OrderDesk regression found, fixed) | ✓ | ✓ | ✓ | **79 / 79** ShopFlow, **178 / 178** OrderDesk | **3.9%** ✓ / **4.4%** ✓ | **5.3%** ✓ / **2.6%** ✓ | 46 + 70 |
 | 9: skip certificates, an independent checker | ✓ | ✓, now re-derived: of 748 areas the truth says are reached, the checker would certify **0** if the engine had skipped them | ✓ | ✓ | ✓ | **79 / 79**, **178 / 178**, **9 / 9** spm | 3.9% ✓ / 4.4% ✓ | **5.3%** ✓ / **2.6%** ✓ (spm 2.5%) | 46 + 70 |
+| 10: the gauntlet (compiler oracle, 434 mutants, 32 super-hard PRs) | ✓ (199 comment-only mutants listed to test, fixed) | ✓ (**6 wrong skips and 1 silent** on start-up, build, profile and style PRs, fixed) | ✓ | ✓ | ✓ | **196 / 196**, **93 / 93**, **9 / 9**, **434 / 434** mutants | 4.4% ✓ on the original 178 | 2.6% ✓ on the original 178 | 85 + 58 |
 
 ## What each iteration found and fixed
 

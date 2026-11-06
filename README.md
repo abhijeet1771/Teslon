@@ -255,15 +255,26 @@ and Python. A stack Teslon does not read yet is reported under
   - 0 cited lines failed to re-check
   ([research/coverage](research/coverage)).
 - **Probes with truth written first** ([bench/probes](bench/probes)):
-  - 178 PRs on OrderDesk (Spring + Angular);
-  - 79 on ShopFlow (four services on Kafka and Feign, MapStruct, Vue 3);
+  - 196 PRs on OrderDesk (Spring + Angular);
+  - 93 on ShopFlow (four services on Kafka and Feign, MapStruct, Vue 3);
   - 9 on spring-petclinic-microservices.
 
-  All are trusted. Extra screens are under 5% and held screens under 6%.
+  All are trusted. On the original catalogs, extra screens are under 5% and
+  held screens under 6%. The super-hard PRs hold more, as they should for code
+  Teslon cannot read.
 - **Skip checker soundness.** Every area a probe's truth says is reached was
-  handed to the independent checker as if it had been skipped: 748 areas on
+  handed to the independent checker as if it had been skipped: 895 areas on
   ShopFlow and OrderDesk. It certified none of them. This runs in CI
   ([research/CERTIFICATE-2026-11-05.md](research/CERTIFICATE-2026-11-05.md)).
+- **The gauntlet.** These tests have truth from the compiler, not from
+  Teslon:
+  - 434 compile-proven mutants on both fixtures: one per method, one per
+    endpoint path and prefix, and a comment inside every method;
+  - 32 super-hard PRs that the compiler approves and the app does not: start-up
+    failures, build settings, profiles, style leaks, Go and Python.
+
+  All are trusted, and the job runs in CI
+  ([research/GAUNTLET-2026-11-05.md](research/GAUNTLET-2026-11-05.md)).
   How far that is from the whole expectation is in
   [research/EXPECTATION-SCORECARD-2026-11-04.md](research/EXPECTATION-SCORECARD-2026-11-04.md).
 - **Bench.** On the labelled bench ([bench/results](bench/results)), Spring +

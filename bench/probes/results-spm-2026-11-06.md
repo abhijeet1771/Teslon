@@ -1,6 +1,6 @@
 # Probe catalog: spm
 
-9 probes · 9 trusted · 0 trust failures · 0 imprecise · extra screens 1.2% (P1 ≤ 5%) · held screens 2.5% (P2 ≤ 10%) · 10 logic units covered · slowest 1799 ms
+9 probes · 9 trusted · 0 trust failures · 0 imprecise · extra screens 1.2% (P1 ≤ 5%) · held screens 2.5% (P2 ≤ 10%) · 10 logic units covered · slowest 1378 ms
 
 skip certificates: 55 skips checked · 44 certified (1 of them rely on content analysis) · 11 not proven, held · unknowns that blocked a skip: http-client 9 · dangling calls 7.3%
 
