@@ -235,13 +235,15 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const noEffectFiles = new Map<string, string>();
   const touchedUi = new Set<string>();
   const uiMembers = new Map<string, { owner: string; member: string; line: number }[]>();
+  // reasons no area can be ruled out, found by the follow: a service that may not start, for one
+  const holdAll: string[] = [];
   const whereCtx: WhereCtx = {
     B, H, fb, fh, ui, ub, changes, deltas, unseen,
     surface: (x) => surface(x), addCase, closure,
     explained: (file, line) => explainedLines.get(file)?.has(line) ?? false,
     follow, touched, touchedUi,
     noEffect: (file, reason) => noEffectFiles.set(file, reason),
-    receiving: [], affected: [], uiMembers,
+    receiving: [], affected: [], uiMembers, holdAll,
   };
 
   /* ---------- 1a. response shape: JSON fields renamed, removed or retyped ---------- */
@@ -594,7 +596,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
   const notRuledOut: string[] = [];
   // a skip says "not affected": only true when every changed line was explained or followed
   // with every changed line followed, a screen the change does not reach is skipped, with its proof
-  const canSkip = !unfollowed.length && !surfaces.has('screen:*');
+  const canSkip = !unfollowed.length && !surfaces.has('screen:*') && !holdAll.length;
   const touchedPaths = [...touched].map((e) => ({ e, exp: exposedAs(fh, e) }));
   const hitsTouched = (c: { tpl: string; verbs: readonly string[] }): boolean => touchedPaths.some(({ e, exp }) => c.verbs.includes(e.verb) && (templateHits(c.tpl, exp ? exp.path : e.path) || templateHits(c.tpl, e.path)));
   let held = 0;
@@ -615,6 +617,7 @@ export function impact(opts: ImpactOptions): ImpactReport {
     if (!canSkip) {
       held++;
       if (unfollowed.length) hold(r, `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this screen cannot be ruled out`);
+      else if (holdAll.length) hold(r, holdAll[0]!, 'screen:*');
       else hold(r, 'a change reaches every screen', 'screen:*');
       continue;
     }
@@ -679,13 +682,13 @@ export function impact(opts: ImpactOptions): ImpactReport {
   if (heldShowsData.length) unseen.push({ what: `${heldShowsData.length} screen${heldShowsData.length === 1 ? '' : 's'} or job${heldShowsData.length === 1 ? '' : 's'} that show data this PR writes differently: ${heldScreens.filter((h) => heldShowsData.includes(h.id)).map((h) => h.where.startsWith('/') ? h.where : h.name).join(', ')}`, why: 'they run none of the changed code, but they read rows that changed code writes', resolve: 'open each one on data written after this change and check what it shows', areas: heldShowsData });
   // a job skip rests on every changed line being followed, like a screen's: with lines nothing followed, it is held too
   let heldJobs = 0;
-  if (unfollowed.length) {
+  if (unfollowed.length || holdAll.length) {
     for (const s of [...surfaces.values()]) {
       if (s.tier !== 'skip' || s.kind !== 'job') continue;
       surfaces.delete(s.id);
       heldJobs++;
       heldNotReached.push(s.id);
-      heldScreens.push({ id: s.id, kind: 'job', name: s.name, where: s.where, why: `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this job cannot be ruled out`, evidence: s.evidence ?? [] });
+      heldScreens.push({ id: s.id, kind: 'job', name: s.name, where: s.where, why: unfollowed.length ? `${unfollowed.length} changed file${unfollowed.length === 1 ? ' has' : 's have'} lines Teslon did not follow, so this job cannot be ruled out` : holdAll[0]!, evidence: s.evidence ?? [] });
     }
   }
   /* ---------- 3b. a skip is a proof: the independent checker certifies each one, or it is held ---------- */

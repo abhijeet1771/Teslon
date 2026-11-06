@@ -4,6 +4,7 @@ import { templateHits, throughGateway, flattenYaml, type SpringFacts, type Endpo
 import type { FrontendFacts, Component } from './vue.js';
 import type { JType, JMethod, JAnnotation, Tok } from './java.js';
 import { fileKind } from './kinds.js';
+import { startupRisks, activeProfiles } from './startup.js';
 
 /**
  * Skip certificates, and the checker that issues them.
@@ -806,7 +807,26 @@ export function certify(inp: CertifyInput): Certification {
     const file = cf.path;
     const kind = fileKind(file);
     if (kind === 'docs' || kind === 'ci' || kind === 'tooling' || kind === 'test') { assume('Tests, docs, CI and tooling are not part of the running app.'); continue; }
-    if (kind === 'deploy') { assume('Deployment files are their own area to test (DEPLOY); they do not change what the code does.'); continue; }
+    if (kind === 'deploy') {
+      // a deployment that turns a Spring profile on or off changes every setting that profile's file sets
+      const was = activeProfiles(B.read(file) ?? ''), now = activeProfiles(H.read(file) ?? '');
+      const dl = (H.read(file) ?? '').split('\n');
+      for (const p of new Set([...now, ...was])) {
+        if (now.has(p) === was.has(p)) continue;
+        const line = Math.max(1, dl.findIndex((l) => new RegExp(`\\b${p}\\b`).test(l)) + 1);
+        for (const pf of H.files.filter((f) => new RegExp(`(^|/)application-${p}\\.(ya?ml|properties)$`).test(f))) {
+          const ls = (H.read(pf) ?? '').split('\n');
+          for (let n = 1; n <= ls.length; n++) { const k = configKey(ls, n, pf.endsWith('.properties')); if (k && /[:=]\s*\S/.test(ls[n - 1]!)) mark(`set:${moduleOf(pf)}:${k}`, { file, line }, `${base(file)} turns the "${p}" profile ${now.has(p) ? 'on' : 'off'}, and with it ${k} from ${base(pf)}`); }
+        }
+      }
+      assume('Deployment files are their own area to test (DEPLOY); they do not change what the code does, except the Spring profiles they turn on.');
+      continue;
+    }
+    // a component style that escapes its component (::ng-deep with no :host before it, or no encapsulation): every page
+    if ((kind === 'frontend' || kind === 'style') && !cf.binary) {
+      const leak = cf.headLines.find((n) => { const t = H.line(file, n) ?? ''; return (/::ng-deep/.test(t) && !/:host\b[^{,]*::ng-deep/.test(t)) || /ViewEncapsulation\.(None|ShadowDom)/.test(t); });
+      if (leak) mark('global:fe', { file, line: leak }, `${base(file)}:${leak}: a style that escapes its component applies to every page`);
+    }
     if (cf.binary && kind !== 'asset') { mark('global:java:*', { file, line: 1 }, `${base(file)}: a binary file changed`); mark('global:fe', { file, line: 1 }, `${base(file)}: a binary file changed`); continue; }
     if (file.endsWith('.java')) {
       for (const s of sides) {
@@ -1056,6 +1076,14 @@ export function certify(inp: CertifyInput): Certification {
     if (!entityTable.has(key)) continue;
     const tb = `table:${modOf(key)}/${entityTable.get(key)}`;
     if (!delta.has(tb)) mark(tb, at, `the mapping of ${clsOf(key)} (${at.what}), with no migration in this change`);
+  }
+
+  // a service that may not start (a bean it cannot make, a derived query it cannot build, a migration Flyway refuses):
+  // every area of it is down. These are read from both commits' facts by startup.ts.
+  for (const r of startupRisks(B, H, fb, fh, inp.changes)) {
+    const at: Cite = { file: r.hop.file, line: r.hop.line, ...(r.hop.side === 'base' ? { side: 'base' as const } : {}) };
+    if (r.certain) mark(`global:java:${r.module}`, at, `the service may not start: ${r.reason}`);
+    else unknownAt(`global:java:${r.module}`, 'startup', `the service may not start: ${r.reason}`, at);
   }
 
   /* ---------------- settings: who reads a changed key ---------------- */

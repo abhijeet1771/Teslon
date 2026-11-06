@@ -2,7 +2,8 @@ import ts from 'typescript';
 import type { Snapshot, ChangedFile } from './snapshot.js';
 import { exposedAs, templateHits, type SpringFacts, type Endpoint } from './spring.js';
 import { targetsRoute, routeQuote, callMadeBy, usesMembers, type FrontendFacts, type Route, type Component, type ApiCall } from './vue.js';
-import { annStrings, type JType, type JMethod } from './java.js';
+import { annStrings, annPairs, type JType, type JMethod } from './java.js';
+import { startupRisks, activeProfiles } from './startup.js';
 import type { Delta, Surface, Case, Hop, Unseen, Tier } from './model.js';
 import { fileKind } from './kinds.js';
 
@@ -43,6 +44,8 @@ export interface WhereCtx {
   readonly affected?: { at: string; hop: Hop }[];
   /** Front-end modules where only named members changed: the members, so a screen that uses none of them is ruled out. */
   readonly uiMembers?: Map<string, { owner: string; member: string; line: number }[]>;
+  /** Reasons no area can be ruled out (a service that may not start): every area not listed is held. */
+  readonly holdAll?: string[];
 }
 
 const fileName = (p: string): string => p.split('/').pop() ?? p;
@@ -607,6 +610,23 @@ export function followChanges(ctx: WhereCtx): void {
         add(jbf?.types, n, true);
       }
     }
+    // a method whose tokens, signature and annotations are the same on both sides changed only in comments or
+    // layout: it compiles to the same code and runs as before
+    const sig = (m: JMethod): string => [m.returnType, ...m.annotations.map((a) => `@${a.name}(${a.args.map((x) => x.t).join(' ')})`), ...m.params.map((v) => `${v.annotations.map((a) => `@${a.name}(${a.args.map((x) => x.t).join(' ')})`).join(' ')} ${v.type} ${v.name}`), '{', ...m.body.map((x) => x.t)].join('\u0001');
+    const sameCode = (g: Group): boolean => {
+      if (g.gone || !g.method) return false;
+      const bt = jbf?.types.find((t) => t.name === g.type.name);
+      const bm = bt?.methods.filter((m) => m.name === g.method!.name && m.params.length === g.method!.params.length) ?? [];
+      const hm = g.type.methods.filter((m) => m.name === g.method!.name && m.params.length === g.method!.params.length);
+      return bm.length === 1 && hm.length === 1 && sig(bm[0]!) === sig(g.method);
+    };
+    const quiet = [...groups.values()].filter(sameCode);
+    for (const g of quiet) {
+      for (const n of g.lines) ctx.follow(cf.path, n);
+      for (const n of g.baseLines) ctx.follow(cf.path, n, 'base');
+      groups.delete([...groups].find(([, v]) => v === g)![0]);
+    }
+    if (quiet.length && !groups.size) { ctx.noEffect(cf.path, `only comments or layout changed in ${[...new Set(quiet.map((g) => `${simple(g.type.name)}.${g.method!.name}()`))].join(', ')}: the code is the same, token for token`); continue; }
     for (const g of groups.values()) {
       const cls = simple(g.type.name);
       const S0 = g.gone ? B : H;
@@ -1338,6 +1358,9 @@ export function followChanges(ctx: WhereCtx): void {
     }
     // the page shell: index.html loads the app, so it is every screen
     if (kind === 'frontend' && /\.html?$/.test(cf.path) && /<script[^>]+src=|<div[^>]+id=["']app["']|<router-view|ng-app|ng-view|<[a-z]+-root[\s>]/.test(S.read(cf.path) ?? '') && !u.components.has(cf.path) && ![...u.components.values()].some((c) => c.elements.some((e) => e.file === cf.path))) targets = ['*'];
+    // a component style that escapes its component (::ng-deep with no :host before it, or no encapsulation)
+    // applies to the whole page once the component has been drawn: every screen
+    if (atHead && real.some((n) => { const t = H.line(cf.path, n) ?? ''; return (/::ng-deep/.test(t) && !/:host\b[^{,]*::ng-deep/.test(t)) || /ViewEncapsulation\.(None|ShadowDom)/.test(t); })) targets = ['*'];
     const id = `ui:${cf.path}`;
     // an Angular template is its own file: the component that draws it is the one whose elements live there
     const comp = u.components.get(cf.path) ?? [...u.components.values()].find((c) => c.elements.some((e) => e.file === cf.path));
@@ -1552,7 +1575,7 @@ export function followChanges(ctx: WhereCtx): void {
   for (const cf of ctx.changes) {
     if (fileKind(cf.path) !== 'dependencies' || cf.status === 'deleted') continue;
     const name = fileName(cf.path);
-    if (name === 'pom.xml') followPom(ctx, cf, consumersOfModule);
+    if (name === 'pom.xml') { followCompiler(cf); followPom(ctx, cf, consumersOfModule); }
     else if (name === 'package.json') followPackageJson(ctx, cf);
     else if (/lock/.test(name)) {
       // lockfiles move with their manifest; a lock-only change moves versions with no manifest line
@@ -1560,6 +1583,37 @@ export function followChanges(ctx: WhereCtx): void {
       if (!ctx.changes.some((c) => c.path === manifest)) ctx.unseen.push({ what: `${cf.path} changed with no change to ${fileName(manifest)}`, why: 'resolved versions moved; which packages moved is not read yet', resolve: 'diff the lockfile for packages the app imports', files: [cf.path] });
       for (const n of cf.headLines) ctx.follow(cf.path, n);
     }
+  }
+
+  /**
+   * How javac is told to compile: with -parameters off (Spring Boot's parent turns it on), Spring 6.1 can no longer
+   * bind a @PathVariable or @RequestParam that has no name of its own. Those endpoints fail; the rest are as before.
+   * Any other change to the compiler plugin (the release, annotation processors, arguments) is said, not passed over.
+   */
+  function followCompiler(cf: ChangedFile): void {
+    const head = H.read(cf.path) ?? '', base = B.read(cf.path) ?? '';
+    if (compilerBlock(head) === compilerBlock(base) && compilerParams(head) === compilerParams(base)) return;
+    const dir = cf.path.includes('/') ? cf.path.slice(0, cf.path.lastIndexOf('/')) : '';
+    const root = /<modules>/.test(head);
+    const mine = (e: Endpoint): boolean => root || !dir || e.module === dir || e.file.startsWith(`${dir}/`);
+    const at = Math.max(1, head.split('\n').findIndex((l) => /maven-compiler-plugin|<parameters>|maven\.compiler\.parameters/.test(l)) + 1);
+    const hop: Hop = { label: 'Build changed', file: cf.path, line: at, quote: (H.line(cf.path, at) ?? '').trim().slice(0, 24).trim(), rule: 'how javac compiles the code changed' };
+    if (compilerParams(base) !== false && compilerParams(head) === false) {
+      const id = `build:${cf.path}:parameters`;
+      const why = 'javac no longer keeps parameter names, and this parameter has no name of its own';
+      let n = 0;
+      for (const e of fh.endpoints.filter(mine)) {
+        const t = fh.javaFiles.get(e.file)?.types.find((x) => simple(x.name) === e.cls);
+        const unnamed = (t?.methods ?? []).filter((m) => m.name === e.method).flatMap((m) => m.params).find((v) => v.annotations.some((a) => /^(PathVariable|RequestParam|RequestHeader|CookieValue|MatrixVariable|RequestAttribute|SessionAttribute)$/.test(a.name) && !annPairs(a).has('value') && !annPairs(a).has('name') && !(annPairs(a).size === 0 && annStrings(a).length)));
+        if (!unnamed) continue;
+        const pa = unnamed.annotations.find((a) => /^(PathVariable|RequestParam|RequestHeader|CookieValue|MatrixVariable|RequestAttribute|SessionAttribute)$/.test(a.name))!;
+        n += consumers(e, [{ ...hop, rule: '<parameters>false</parameters>: javac no longer keeps parameter names' }, { label: 'Has no name', file: e.file, line: pa.line, quote: pa.name, rule: `@${pa.name} ${unnamed.type} ${unnamed.name} is bound by its parameter name, which is now gone` }], id, why);
+      }
+      for (const l of cf.headLines) ctx.follow(cf.path, l);
+      if (n) ctx.deltas.push({ id, kind: 'code-changed', title: `${cf.path}: parameter names are no longer compiled in`, endpoint: '', rules: [], causes: [hop] });
+      return;
+    }
+    ctx.unseen.push({ what: `the compiler settings in ${cf.path} changed`, why: 'they decide what the code compiles to (the Java release, annotation processors such as MapStruct or Lombok, compiler arguments); what that changes at run time is not read yet', resolve: 'build both commits and compare, or ask the developer what the change is for', files: [cf.path] });
   }
 
   function consumersOfModule(module: string, chain: Hop[], deltaId: string, why: string): number {
@@ -1596,10 +1650,69 @@ export function followChanges(ctx: WhereCtx): void {
     for (const n of real) ctx.follow(cf.path, n);
     for (const n of removed) ctx.follow(cf.path, n, 'base');
     ctx.deltas.push({ id: `deploy:${cf.path}`, kind: 'deploy-changed', title: `${fileName(cf.path)}: ${[...new Set(items.map((i) => i.svc).filter(Boolean))].join(', ') || 'deployment'} changed`, endpoint: '', rules: [], causes: real.length ? items.slice(0, 1).map((it) => ({ label: 'Deployment', file: cf.path, line: it.n, quote: snippet(it.t), rule: it.t })) : [{ label: 'Removed', file: cf.path, line: removed[0]!, quote: snippet(B.line(cf.path, removed[0]!)), side: 'base', rule: `removed: ${(B.line(cf.path, removed[0]!) ?? '').trim()}` }] });
+    // a deployment that turns a Spring profile on or off turns that profile's settings on or off: follow each of them
+    const was = activeProfiles(B.read(cf.path) ?? ''), now = activeProfiles(text);
+    const flipped = [...now, ...was].filter((p) => now.has(p) !== was.has(p));
+    for (const prof of new Set(flipped)) {
+      const on = now.has(prof);
+      const at = Math.max(1, lines.findIndex((l) => new RegExp(`\\b${prof}\\b`).test(l)) + 1);
+      const pHop: Hop = { label: on ? 'Profile turned on' : 'Profile turned off', file: cf.path, line: on ? at : 1, quote: on ? prof : '', rule: `${fileName(cf.path)} ${on ? 'activates' : 'no longer activates'} the Spring profile "${prof}"` };
+      for (const pf of H.files.filter((f) => new RegExp(`(^|/)application-${prof}\\.(ya?ml|properties)$`).test(f))) {
+        const pl = (H.read(pf) ?? '').split('\n');
+        const module = fh.moduleOf(pf);
+        const id = `profile:${cf.path}:${prof}:${pf}`;
+        let n = 0;
+        for (let i = 1; i <= pl.length; i++) {
+          if (!/\S.*[:=]\s*\S/.test(pl[i - 1] ?? '') || /^\s*#/.test(pl[i - 1] ?? '')) continue;
+          const key = /\.ya?ml$/.test(pf) ? yamlKey(pl, i) : /^\s*([\w.\-[\]]+)\s*[=:]/.exec(pl[i - 1]!)?.[1] ?? null;
+          if (!key) continue;
+          const kHop: Hop = { label: 'Its setting', file: pf, line: i, quote: snippet(pl[i - 1]!), rule: `${key} is set in ${fileName(pf)}` };
+          const why = `${key} ${on ? 'now takes' : 'no longer takes'} its value from ${fileName(pf)}`;
+          const rds = configReaders(fh, key);
+          if (rds.length) for (const rd of rds) for (const r of reachFrom(fh, rd.at)) n += entry(r, [pHop, kHop, { label: 'Reads it', file: rd.file, line: rd.line, quote: rd.quote, rule: rd.how }, ...r.hops], id, why);
+          else if (/^(spring|server)\./.test(key)) for (const e of fh.endpoints.filter((x) => x.module === module)) n += consumers(e, [pHop, kHop], id, why);
+        }
+        if (n) ctx.deltas.push({ id, kind: 'code-changed', title: `${fileName(cf.path)} ${on ? 'turns on' : 'turns off'} the "${prof}" profile (${fileName(pf)})`, endpoint: '', rules: [], causes: [pHop] });
+        else ctx.unseen.push({ what: `${fileName(cf.path)} ${on ? 'turns on' : 'turns off'} the "${prof}" profile`, why: `the settings of ${pf} ${on ? 'now apply' : 'no longer apply'} where this is deployed, and Teslon found no code that reads them`, resolve: `check what ${fileName(pf)} sets`, files: [cf.path, pf] });
+      }
+    }
+  }
+
+  /* ---------- start-up: a change that stops a service from starting stops every API and job of it ---------- */
+  for (const risk of startupRisks(B, H, fb, fh, ctx.changes)) {
+    const id = `startup:${risk.module}:${risk.hop.file}:${risk.hop.line}`;
+    const why = `${risk.module || 'the service'} may not start: ${risk.reason}`;
+    if (!risk.certain) {
+      ctx.unseen.push({ what: risk.reason, why: `if it is so, ${risk.module || 'the service'} does not start, and every API and job of it is down`, resolve: 'start the service once on this commit, or ask the developer', files: [risk.hop.file] });
+      ctx.holdAll?.push(`${risk.module || 'the service'} may not start (${risk.reason}), so nothing can be ruled out`);
+      continue;
+    }
+    let n = 0;
+    for (const e of fh.endpoints.filter((x) => x.module === risk.module)) n += consumers(e, [risk.hop], id, why);
+    for (const l of fh.listeners.filter((x) => x.module === risk.module)) n += entry({ kind: 'listener', at: `${l.cls}.${l.method}`, hops: [] }, [risk.hop], id, why);
+    ctx.follow(risk.hop.file, risk.hop.line, risk.hop.side === 'base' ? 'base' : undefined);
+    ctx.deltas.push({ id, kind: 'code-changed', title: `${risk.module || 'The service'} may not start: ${risk.reason}`, endpoint: '', rules: [], causes: [risk.hop] });
+    if (!n) ctx.unseen.push({ what: risk.reason, why: 'the service may not start, and Teslon sees no API or job of it to list', resolve: 'start the service once on this commit', files: [risk.hop.file] });
   }
 }
 
 /* ---------- Maven ---------- */
+
+/** The maven-compiler-plugin block, whitespace folded: what javac is told. */
+function compilerBlock(text: string): string {
+  const m = /<plugin>(?:(?!<\/plugin>)[\s\S])*?<artifactId>maven-compiler-plugin<\/artifactId>(?:(?!<\/plugin>)[\s\S])*?<\/plugin>/.exec(text);
+  return (m?.[0] ?? '').replace(/\s+/g, ' ');
+}
+/** Whether javac keeps parameter names: on under Spring Boot's parent, unless the plugin or a property turns it off. */
+function compilerParams(text: string): boolean | null {
+  const plug = compilerBlock(text);
+  if (/-parameters\b/.test(plug)) return true;
+  const flag = /<parameters>\s*(true|false)\s*<\/parameters>/.exec(plug)?.[1];
+  if (flag) return flag === 'true';
+  const prop = /<maven\.compiler\.parameters>\s*(true|false)\s*<\/maven\.compiler\.parameters>/.exec(text)?.[1];
+  if (prop) return prop === 'true';
+  return /<artifactId>spring-boot-starter-parent<\/artifactId>/.test(text) ? true : null;
+}
 
 interface PomDep { readonly key: string; readonly version: string; readonly line: number }
 
@@ -1648,7 +1761,9 @@ function followPom(ctx: WhereCtx, cf: ChangedFile, consumersOfModule: (module: s
   const buildOnly = cf.headLines.filter((n) => head.inert(n));
   for (const n of buildOnly) ctx.follow(cf.path, n);
   if (!moved.length) {
-    if (cf.headLines.every((n) => head.inert(n) || !(ctx.H.line(cf.path, n) ?? '').trim()) && cf.baseLines.every((n) => base.inert(n) || !(ctx.B.line(cf.path, n) ?? '').trim())) {
+    const headText = ctx.H.read(cf.path) ?? '', baseText = ctx.B.read(cf.path) ?? '';
+    const compilerMoved = compilerBlock(headText) !== compilerBlock(baseText) || compilerParams(headText) !== compilerParams(baseText);
+    if (!compilerMoved && cf.headLines.every((n) => head.inert(n) || !(ctx.H.line(cf.path, n) ?? '').trim()) && cf.baseLines.every((n) => base.inert(n) || !(ctx.B.line(cf.path, n) ?? '').trim())) {
       ctx.noEffect(cf.path, 'build section or project metadata of pom.xml: it changes how the service is built, not what it runs');
     }
     return;

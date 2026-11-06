@@ -1,3 +1,4 @@
+import { superhardShopflowProbes } from './catalog-superhard-shopflow.mjs';
 /**
  * Probes on ShopFlow (fixtures/shopflow): four Spring Boot services that talk
  * through Kafka topics and Feign, MapStruct and hand-written mappers, builders,
@@ -644,4 +645,5 @@ public class ApiExceptionHandler {
     apply: (t) => t.edit(`${N}/config/AsyncConfig.java`, '@EnableAsync\n', ''),
     truth: { reach: [MAIL, PAYFAIL], quiet: others('/notifications') },
   },
+  ...superhardShopflowProbes,
 ];

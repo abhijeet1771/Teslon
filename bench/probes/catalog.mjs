@@ -1,5 +1,6 @@
 import { contractProbes } from './catalog-contracts.mjs';
 import { hardestProbes } from './catalog-hardest.mjs';
+import { superhardProbes } from './catalog-superhard.mjs';
 /**
  * The probe catalog: real developer pull requests on OrderDesk, one per kind
  * of change, each tagged with the engine logic it exercises. The truth was
@@ -386,6 +387,7 @@ export const probes = [
     // truth corrected after the first run: the framework under every endpoint moves, so every screen is reached
     truth: { every: true },
   },
+  ...superhardProbes,
   ...contractProbes,
   ...hardestProbes,
 ];
